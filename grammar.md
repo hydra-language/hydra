@@ -98,8 +98,14 @@ Array slicing comes with the language with the special := operator:
 
 Declaration:
     let arr: [i32, 5] = {1, 2, 3, 4, 5};
+    let slice: [i32, 3] = &arr[0..2]; // tells the compiler that you want to make a readonly slice of the original
+                                    // in order to make an editable one you must make a copy on the heap, see below
+    
+    // Heap version
+    let heap_slice: [i32, 3] := |arr|[0..2];
 
-
+    With this you can now do operations on it
+    ie. changing values via index, maybe a .to_vec() will be added in the stdlib
 
 ```
 
