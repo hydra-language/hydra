@@ -7,12 +7,11 @@ A modern, statically-typed programming language because I got bored and liked Ru
 ## ✨ Features
 
 * **Static Typing**: Strong type safety to catch errors at compile time.
-* **Clear Syntax**: A clean and familiar C-style syntax that is easy to read and write.
+* **Clear Syntax**: A clean and familiar C and Rust-style syntax that is easy to read and write.
 * **Memory Safety**: Explicit control over mutability with `let` and `const` keywords.
-* **Rich Primitives**: A comprehensive set of integer, floating-point, character, and boolean types.
-* **Powerful Arrays**: Built-in support for fixed-size arrays with control over element mutability.
-* **Expressive Slicing**: Native syntax for creating read-only or mutable array slices.
-* **Modern Control Flow**: Intuitive range-based `for` loops, `forEach` loops for collections, and standard `while` loops.
+* **Primitives**: A comprehensive set of integer, floating-point, character, and boolean types.
+* **Powerful Arrays**: Built-in support for fixed-size arrays with control over element mutability and native syntax for creating read-only or mutable array slices.
+* **Control Flow**: Intuitive range-based `for` loops, `forEach` loops for collections, and standard `while` loops.
 
 ***
 
@@ -170,7 +169,7 @@ for (i in 0..10) {
     println("{}", i);
 }
 
-// Implicit reversed iteration
+// Implicit reversed iteration if start > end
 // Prints numbers 5 through 0
 for (i in 5..=0) {
     println("{}", i);
