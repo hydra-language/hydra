@@ -119,7 +119,7 @@ fn print_sum(numbers: [i32, N]) -> void {
     forEach (num in numbers) {
         sum = sum + num;
     }
-    // Assume a println function exists
+
     println("Sum: {}", sum);
 }
 
