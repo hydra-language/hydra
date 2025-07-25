@@ -1,6 +1,6 @@
 # Hydra
 
-A modern, statically-typed programming language because I got bored
+A modern, statically-typed programming language because I got bored and liked Rust
 
 ***
 
