@@ -37,7 +37,7 @@ The language provides a set of fundamental data types:
 | `return`  | `void`    | `in`      | `for`     |
 | `if`      | `else`    | `else if` | `forEach` |
 | `while`   | `break`   | `skip`    | `include` |
-| `typedef` | `None`    |           |           |
+| `typedef` | `None`    | `as`      |           |
 
 * `skip`: Equivalent to `continue` in other languages.
 * `include`: Used for importing modules.
@@ -58,7 +58,7 @@ x = 22; // This is valid
 
 // An immutable 32-bit float
 const PI: f32 = 3.14;
-// PI = 3.14159; // This would cause a compile-time error
+PI = 3.14159; // This would cause a compile-time error
 ```
 
 ### Arrays
@@ -74,11 +74,11 @@ a[0] = 100; // Valid
 
 // A mutable array of immutable chars
 let b: [const char, 5] = { 'h', 'e', 'l', 'l', 'o' };
-// b[0] = 'j'; // Compile-time error: elements are const
+b[0] = 'j'; // Compile-time error: elements are const
 
 // An immutable array of mutable i64s
 const c: [i64, 3] = { 1, 2, 3 };
-// c = { 4, 5, 6 }; // Compile-time error: binding is const
+c = { 4, 5, 6 }; // Compile-time error: binding is const
 
 // A fully immutable array
 const d: [const char, 2] = { 'x', 'y' };
@@ -98,6 +98,7 @@ let arr: [i32, 5] = {1, 2, 3, 4, 5};
 let read_only_slice: [i32, 3] = &arr[0..2];
 
 // Create a new, mutable slice on the heap.
+// NOTE: what allocates it on the heap is the bars between arr -> |arr|
 let heap_slice: [i32, 2] := |arr|[3..5];
 heap_slice[0] = 40; // This is valid
 ```
@@ -121,6 +122,14 @@ fn print_sum(numbers: [i32, N]) -> void {
     // Assume a println function exists
     println("Sum: {}", sum);
 }
+
+fn main() -> void {
+    let passer: [i32, 5] = {1, 2, 3, 4, 5};
+    let pass_thru: [i32, 10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+
+    print_sum(passer);
+    print_sum(pass_thru); // Compiler will inline 'N' in print_sum to the size of the passer and pass_thru variables
+}
 ```
 
 ### Structs
@@ -136,14 +145,14 @@ struct Student {
 };
 
 // Struct Instantiation
-let student1: Student = Student {
+let student: Student = Student {
     name = "Joseph";
     age = 16;
     gpa = 3.92;
 };
 
 // Accessing fields
-println("{}", student1.name); // Prints "Joseph"
+println("{}", student.name); // Prints "Joseph"
 ```
 
 ### Control Flow
