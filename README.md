@@ -10,7 +10,7 @@ A modern, statically-typed programming language because I got bored and liked Ru
 * **Clear Syntax**: A clean and familiar C and Rust-style syntax that is easy to read and write.
 * **Memory Safety**: Explicit control over mutability with `let` and `const` keywords.
 * **Primitives**: A comprehensive set of integer, floating-point, character, and boolean types.
-* **Powerful Arrays**: Built-in support for fixed-size arrays with control over element mutability and native syntax for creating read-only or mutable array slices.
+* **Powerful Arrays**: Built-in support for fixed-size arrays with control over element mutability
 * **Control Flow**: Intuitive range-based `for` loops, `forEach` loops for collections, and standard `while` loops.
 
 ***
@@ -87,7 +87,7 @@ const d: [const char, 2] = { 'x', 'y' };
 
 Slicing creates a view or a copy of a portion of an array.
 
-* **Read-only Slice**: Use the `&` prefix to create a reference to a section of the original array.
+* **Read-only Slice**: Use the `&` prefix with the `:=` operator to create a reference slice to a section of the original array.
 * **Mutable Slice**: Use the `|array|` syntax with the `:=` operator to create a new, mutable slice on the heap.
 
 ```rust
@@ -158,7 +158,7 @@ println("{}", student.name); // Prints "Joseph"
 
 #### For Loops
 
-`for` loops iterate over a range. The direction (incrementing or decrementing) is inferred from the start and end values.
+`for` loops iterate over a range. Incrementing or decrementing is inferred based on if start < end
 
 * `start..end`: Exclusive range (does not include `end`).
 * `start..=end`: Inclusive range (includes `end`).
@@ -169,7 +169,7 @@ for (i in 0..10) {
     println("{}", i);
 }
 
-// Implicit reversed iteration if start > end
+// Inferred reversed iteration because start > end
 // Prints numbers 5 through 0
 for (i in 5..=0) {
     println("{}", i);
@@ -197,7 +197,7 @@ let i: i32 = 0;
 
 while (i < 5) {
     println("{}", i);
-    i = i + 1;
+    i += 1;
 }
 ```
 
