@@ -1,5 +1,11 @@
 # ignoring grammar.md
 grammar.md
 
+# ignoring .tokens
+*.tokens
+
 # target binaries
 target/
+
+# examples
+examples/
