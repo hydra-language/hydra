@@ -14,7 +14,7 @@ mod tests {
         let mut lexer = Lexer::new(source);
         let tokens = lexer.tokenize().expect("Failed to tokenize");
 
-        // We'll just check that the token types are as expected in order.
+        // Checking that the token types are as expected in order.
         let token_types: Vec<_> = tokens.iter().map(|t| &t.token_type).collect();
 
         let expected_types = vec![

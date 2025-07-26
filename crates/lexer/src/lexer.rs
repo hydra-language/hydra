@@ -1,3 +1,11 @@
+/**
+ * ========
+ * lexer.rs
+ * ========
+ * 
+ * This file is responsible for taking the source code and tokenizing it
+ */
+
 use super::token::{Token, TokenType};
 
 pub struct Lexer<'a> {

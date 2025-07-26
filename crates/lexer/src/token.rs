@@ -1,3 +1,10 @@
+/**
+ * ========
+ * token.rs
+ * ========
+ * 
+ * This file is responsible for defining the tokens Hydra will recognize
+ */
 
 // ===========================================================================
 // TOKEN DEFINITIONS
@@ -18,7 +25,7 @@ pub enum TokenType {
     // Keywords
     Let,
     Const,
-    Function, // fn
+    Function,         // fn
     Struct,
     Extension,
     Return,
@@ -61,7 +68,7 @@ pub enum TokenType {
     RangeExclusive,   // ..
     RangeInclusive,   // ..=
     ArraySlice,       // :=
-    HeapPointerBar,     // |
+    HeapPointerBar,   // |
 
     // Punctuation
     LeftParen,
@@ -74,12 +81,12 @@ pub enum TokenType {
     RightAngle,
     Semicolon,
     Comma,
-    Dot,                // .
-    Ellipsis,          // ...
-    Colon,              // :
-    DoubleColon,        // ::
-    Optional,           // ?
-    Reference,          // &
+    Dot,              // .
+    Ellipsis,         // ...
+    Colon,            // :
+    DoubleColon,      // ::
+    Optional,         // ?
+    Reference,        // &
 
     // Special
     Newline,
