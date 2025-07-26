@@ -92,6 +92,8 @@ impl<'a> Lexer<'a> {
             },
             ':' => if self.match_char(':') {
                 Some(TokenType::DoubleColon)
+            } else if self.match_char('=') {
+                Some(TokenType::ArraySlice)
             } else {
                 Some(TokenType::Colon)
             },
@@ -260,6 +262,8 @@ impl<'a> Lexer<'a> {
             "let" => TokenType::Let,
             "const" => TokenType::Const,
             "fn" => TokenType::Function,
+            "struct" => TokenType::Struct,
+            "extension" => TokenType::Extension,
             "return" => TokenType::Return,
             "in" => TokenType::In,
             "as" => TokenType::As,

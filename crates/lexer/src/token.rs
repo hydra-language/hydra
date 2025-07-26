@@ -19,6 +19,8 @@ pub enum TokenType {
     Let,
     Const,
     Function, // fn
+    Struct,
+    Extension,
     Return,
     In,
     As,
@@ -56,6 +58,10 @@ pub enum TokenType {
     Or,               // ||
     Not,              // !
     Arrow,            // ->
+    RangeExclusive,   // ..
+    RangeInclusive,   // ..=
+    ArraySlice,       // :=
+    HeapPointerBar,     // |
 
     // Punctuation
     LeftParen,
@@ -66,12 +72,9 @@ pub enum TokenType {
     RightBracket,
     LeftAngle,
     RightAngle,
-    HeapPointerBar,     // |
     Semicolon,
     Comma,
     Dot,                // .
-    RangeExclusive,     // ..
-    RangeInclusive,     // ..=
     Ellipsis,          // ...
     Colon,              // :
     DoubleColon,        // ::
