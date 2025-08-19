@@ -29,7 +29,8 @@ The language provides a set of fundamental data types:
 * **String**: `string` (a pseudo-primitive, delimited by double quotes, e.g., `"hello"`)
 
 ### Keywords
-                                            
+
+|           |           |           |           |                                            
 | :-------- | :-------- | :-------- | :-------- |
 | `let`     | `const`   | `struct`  | `fn`      |
 | `return`  | `void`    | `in`      | `for`     |
