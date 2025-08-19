@@ -1,10 +1,3 @@
-/**
- * ========
- * lexer.rs
- * ========
- * 
- * This file is responsible for taking the source code and tokenizing it
- */
 
 use super::token::{Token, TokenType};
 
@@ -100,8 +93,6 @@ impl<'a> Lexer<'a> {
             },
             ':' => if self.match_char(':') {
                 Some(TokenType::DoubleColon)
-            } else if self.match_char('=') {
-                Some(TokenType::ArraySlice)
             } else {
                 Some(TokenType::Colon)
             },
@@ -173,7 +164,7 @@ impl<'a> Lexer<'a> {
                         self.advance();
                     }
                 }
-                
+
                 None
             } else if self.match_char('='){
                 Some(TokenType::DivideAssign)
@@ -187,6 +178,8 @@ impl<'a> Lexer<'a> {
             },
             '=' => if self.match_char('=') {
                 Some(TokenType::Equal)
+            } else if self.match_char('>') {
+                Some(TokenType::EqualArrow)
             } else {
                 Some(TokenType::Assign)
             },
@@ -245,8 +238,35 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
-    fn scan_number(&mut self, _first_digit: char) -> Result<Option<TokenType>, String> {
-        // Loop to consume all parts of the number (digits and underscores)
+    fn scan_number(&mut self, first_digit: char) -> Result<Option<TokenType>, String> {
+        // Check for hex or binary
+        if first_digit == '0' {
+            match self.peek() {
+                'x' | 'X' => {
+                    self.advance(); // consume 'x'
+                    while self.peek().is_ascii_hexdigit() || self.peek() == '_' {
+                        self.advance();
+                    }
+                    let lexeme = &self.input[self.start_offset()..self.current_offset()];
+                    let value = i64::from_str_radix(&lexeme[2..].replace('_', ""), 16)
+                        .map_err(|_| format!("Invalid hexadecimal literal: '{}'", lexeme))?;
+                    return Ok(Some(TokenType::IntLiteral(value)));
+                }
+                'b' => {
+                    self.advance(); // consume 'b'
+                    while self.peek() == '0' || self.peek() == '1' || self.peek() == '_' {
+                        self.advance();
+                    }
+                    let lexeme = &self.input[self.start_offset()..self.current_offset()];
+                    let value = i64::from_str_radix(&lexeme[2..].replace('_', ""), 2)
+                        .map_err(|_| format!("Invalid binary literal: '{}'", lexeme))?;
+                    return Ok(Some(TokenType::IntLiteral(value)));
+                }
+                _ => {}
+            }
+        }
+
+        // --- Decimal / Float path ---
         while self.peek().is_ascii_digit() || self.peek() == '_' {
             self.advance();
         }
@@ -255,29 +275,18 @@ impl<'a> Lexer<'a> {
         if self.peek() == '.' && self.peek_next().is_ascii_digit() {
             self.advance(); // Consume the '.'
 
-            // Consume the fractional part
             while self.peek().is_ascii_digit() {
                 self.advance();
             }
 
-            // --- Float Path ---
             let lexeme = &self.input[self.start_offset()..self.current_offset()];
-
-            // Manually remove underscores because f64::parse() does not support them
             let value: f64 = lexeme.replace('_', "").parse()
                 .map_err(|_| format!("Invalid float literal: '{}'", lexeme))?;
-
             Ok(Some(TokenType::FloatLiteral(value)))
-        } 
-        else {
-            // --- Integer Path ---
+        } else {
             let lexeme = &self.input[self.start_offset()..self.current_offset()];
-            
-            // .parse::<i64>() handles underscores automatically
-            let value: i64 = lexeme.replace('_',"")
-                .parse()
+            let value: i64 = lexeme.replace('_', "").parse()
                 .map_err(|_| format!("Invalid integer literal: '{}'", lexeme))?;
-            
             Ok(Some(TokenType::IntLiteral(value)))
         }
     }
@@ -310,6 +319,7 @@ impl<'a> Lexer<'a> {
             "skip" => TokenType::Skip,
             "include" => TokenType::Include,
             "typedef" => TokenType::Typedef,
+            "size" => TokenType::Size,
             "None" => TokenType::None,
             "true" => TokenType::BoolLiteral(true),
             "false" => TokenType::BoolLiteral(false),
@@ -446,7 +456,7 @@ impl<'a> Lexer<'a> {
         }
 
         self.advance(); // consume closing '
-        
+
         Ok(Some(TokenType::CharLiteral(c)))
     }
 
