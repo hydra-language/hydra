@@ -29,14 +29,13 @@ The language provides a set of fundamental data types:
 * **String**: `string` (a pseudo-primitive, delimited by double quotes, e.g., `"hello"`)
 
 ### Keywords
-
-|           |           |           |           |
+                                            
 | :-------- | :-------- | :-------- | :-------- |
 | `let`     | `const`   | `struct`  | `fn`      |
 | `return`  | `void`    | `in`      | `for`     |
-| `if`      | `else`    | `else if` | `forEach` |
+| `if`      | `else`    | `forEach` | `generic` |
 | `while`   | `break`   | `skip`    | `include` |
-| `typedef` | `None`    | `as`      |           |
+| `typedef` | `None`    | `as`      | `size`    |
 
 * `skip`: Equivalent to `continue` in other languages.
 * `include`: Used for importing modules.
