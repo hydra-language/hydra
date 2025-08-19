@@ -31,6 +31,7 @@ pub enum TokenType {
     Skip,
     Include,
     Typedef,
+    Size,
     None,
 
     // Operators
@@ -55,9 +56,9 @@ pub enum TokenType {
     Or,                 // ||
     Not,                // !
     Arrow,              // ->
+    EqualArrow,         // =>
     RangeExclusive,     // ..
     RangeInclusive,     // ..=
-    ArraySlice,         // :=
     Pipe,               // |
 
     // Bitwise
