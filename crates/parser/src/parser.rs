@@ -52,7 +52,7 @@ use crate::ast::*;
         }
     }
 
-    pub fn parse(&mut self) -> Result<Program, String> {
+    /*pub fn parse(&mut self) -> Result<Program, String> {
         let mut statements = Vec::new();
 
         while !self.is_at_end() {
@@ -60,9 +60,9 @@ use crate::ast::*;
         }
         
         return Ok(statements)
-    }
+    }*/
 
-    fn parse_declaration(&mut self) -> Result<Statement, String> {
+    /*fn parse_declaration(&mut self) -> Result<Statement, String> {
         match self.peek() {
             TokenType::Let | TokenType::Const => self.parse_variable(),
             TokenType::Function => self.parse_function(),
@@ -70,25 +70,5 @@ use crate::ast::*;
             
             _ => self.parse_expr(),
         }
-    }
-
-    pub fn parse_variable(&self) -> Result<Statement, String> {
-
-    }
-
-    pub fn parse_function(&self) -> Result<Statement, String> {
-
-    }
-
-    pub fn parse_struct(&self) -> Result<Statement, String> {
-
-    }
-
-    pub fn parse_expr(&self) -> Result<Statement, String> {
-
-    }
-
-    pub fn parse_extension(&self) -> Result<Statement, String> {
-
-    }
+    }*/
  }
