@@ -1,11 +1,3 @@
-/**
- * ========
- * token.rs
- * ========
- * 
- * This file is responsible for defining the tokens Hydra will recognize
- */
-
 // ===========================================================================
 // TOKEN DEFINITIONS
 // ===========================================================================
@@ -25,14 +17,12 @@ pub enum TokenType {
     // Keywords
     Let,
     Const,
-    Function,         // fn
+    Function,           // fn
     Struct,
-    Extension,
     Return,
     In,
     As,
     If,
-    ElseIf,
     Else,
     For,
     ForEach,
@@ -44,31 +34,44 @@ pub enum TokenType {
     None,
 
     // Operators
-    Assign,           // =
-    Equal,            // ==
-    NotEqual,         // !=
-    LessEqual,        // <=
-    GreaterEqual,     // >=
-    Plus,             // +
-    Minus,            // -
-    Multiply,         // *
-    Divide,           // /
-    Modulo,           // %
-    Increment,        // ++
-    Decrement,        // --
-    PlusAssign,       // +=
-    MinusAssign,      // -=
-    MultiplyAssign,   // *=
-    DivideAssign,     // /=
-    ModuloAssign,     // %=
-    And,              // &&
-    Or,               // ||
-    Not,              // !
-    Arrow,            // ->
-    RangeExclusive,   // ..
-    RangeInclusive,   // ..=
-    ArraySlice,       // :=
-    HeapPointerBar,   // |
+    Assign,             // =
+    Equal,              // ==
+    NotEqual,           // !=
+    LessEqual,          // <=
+    GreaterEqual,       // >=
+    Plus,               // +
+    Minus,              // -
+    Multiply,           // *
+    Divide,             // /
+    Modulo,             // %
+    Increment,          // ++
+    Decrement,          // --
+    PlusAssign,         // +=
+    MinusAssign,        // -=
+    MultiplyAssign,     // *=
+    DivideAssign,       // /=
+    ModuloAssign,       // %=
+    And,                // &&
+    Or,                 // ||
+    Not,                // !
+    Arrow,              // ->
+    RangeExclusive,     // ..
+    RangeInclusive,     // ..=
+    ArraySlice,         // :=
+    Pipe,               // |
+
+    // Bitwise
+    // BitwiseAnd,      // &
+    // BitwiseOr,       // |
+    BitwiseXor,         // ^
+    BitShiftLeft,       // <<
+    BitShiftRight,      // >>
+    BitAndAssign,       // &=
+    BitOrAssign,        // |=
+    BitXorAssign,       // ^=
+    ShiftAssignLeft,    // <<=
+    ShiftAssignRight,   // >>=  
+
 
     // Punctuation
     LeftParen,
@@ -77,16 +80,16 @@ pub enum TokenType {
     RightBrace,
     LeftBracket,
     RightBracket,
-    LeftAngle,
-    RightAngle,
+    LeftAngle,          // <
+    RightAngle,         // > 
     Semicolon,
     Comma,
-    Dot,              // .
-    Ellipsis,         // ...
-    Colon,            // :
-    DoubleColon,      // ::
-    Optional,         // ?
-    Reference,        // &
+    Dot,                // .
+    Ellipsis,           // ...
+    Colon,              // :
+    DoubleColon,        // ::
+    Optional,           // ?
+    Ampersand,          // &
 
     // Special
     Newline,
