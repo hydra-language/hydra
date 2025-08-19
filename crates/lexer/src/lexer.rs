@@ -107,13 +107,22 @@ impl<'a> Lexer<'a> {
             },
             '&' => if self.match_char('&') {
                 Some(TokenType::And)
+            } else if self.match_char('=') {
+                Some(TokenType::BitAndAssign)
             } else {
-                Some(TokenType::Reference)
+                Some(TokenType::Ampersand)
             },
             '|' => if self.match_char('|') {
                 Some(TokenType::Or)
+            } else if self.match_char('=') {
+                Some(TokenType::BitOrAssign)
             } else {
-                Some(TokenType::HeapPointerBar)
+                Some(TokenType::Pipe)
+            },
+            '^' => if self.match_char('=') {
+                Some(TokenType::BitXorAssign)
+            } else {
+                Some(TokenType::BitwiseXor)
             },
             '?' => Some(TokenType::Optional),
             ',' => Some(TokenType::Comma),
@@ -186,15 +195,33 @@ impl<'a> Lexer<'a> {
             } else {
                 Some(TokenType::Not)
             },
-            '<' => if self.match_char('=') {
-                Some(TokenType::LessEqual)
-            } else {
-                Some(TokenType::LeftAngle)
+            '<' => {
+                if self.peek() == '<' && self.peek_next() == '=' {
+                    self.advance(); // consume '<'
+                    self.advance(); // consume '='
+
+                    Some(TokenType::ShiftAssignLeft)
+                } else if self.match_char('<') {
+                    Some(TokenType::BitShiftLeft)
+                } else if self.match_char('=') {
+                    Some(TokenType::LessEqual)
+                } else {
+                    Some(TokenType::LeftAngle)
+                }
             },
-            '>' => if self.match_char('=') {
-                Some(TokenType::GreaterEqual)
-            } else {
-                Some(TokenType::RightAngle)
+            '>' => {
+                if self.peek() == '>' && self.peek_next() == '=' {
+                    self.advance();
+                    self.advance();
+
+                    Some(TokenType::ShiftAssignRight)
+                } else if self.match_char('>') {
+                    Some(TokenType::BitShiftRight)
+                } else if self.match_char('=') {
+                    Some(TokenType::GreaterEqual)
+                } else {
+                    Some(TokenType::RightAngle)
+                }
             },
             '\n' => {
                 self.line += 1;
@@ -246,7 +273,7 @@ impl<'a> Lexer<'a> {
             // --- Integer Path ---
             let lexeme = &self.input[self.start_offset()..self.current_offset()];
             
-            // .parse::<i64>() handles underscores automatically, no change needed here
+            // .parse::<i64>() handles underscores automatically
             let value: i64 = lexeme.replace('_',"")
                 .parse()
                 .map_err(|_| format!("Invalid integer literal: '{}'", lexeme))?;
@@ -271,12 +298,10 @@ impl<'a> Lexer<'a> {
             "const" => TokenType::Const,
             "fn" => TokenType::Function,
             "struct" => TokenType::Struct,
-            "extension" => TokenType::Extension,
             "return" => TokenType::Return,
             "in" => TokenType::In,
             "as" => TokenType::As,
             "if" => TokenType::If,
-            "else if" => TokenType::ElseIf,
             "else" => TokenType::Else,
             "for" => TokenType::For,
             "forEach" => TokenType::ForEach,
