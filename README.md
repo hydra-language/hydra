@@ -25,7 +25,7 @@ The language provides a set of fundamental data types:
 * **Unsigned Integers**: `u8`, `u16`, `u32`, `u64`
 * **Floating-Point**: `f32`, `f64`
 * **Character**: `char` (delimited by single quotes, e.g., `'a'`)
-* **Boolean**: `boolean` (`true` or `false`)
+* **Boolean**: `bool` (`true` or `false`)
 * **String**: `string` (a pseudo-primitive, delimited by double quotes, e.g., `"hello"`)
 
 ### Keywords
@@ -34,9 +34,9 @@ The language provides a set of fundamental data types:
 | :-------- | :-------- | :-------- | :-------- |
 | `let`     | `const`   | `struct`  | `fn`      |
 | `return`  | `void`    | `in`      | `for`     |
-| `if`      | `else`    | `forEach` | `generic` |
-| `while`   | `break`   | `skip`    | `include` |
-| `typedef` | `None`    | `as`      | `size`    |
+| `if`      | `else`    | `forEach` | `while`   |
+| `break`   | `skip`    | `include` | `typedef` |
+| `None`    | `as`      | `size`    | `match`   |
 
 * `skip`: Equivalent to `continue` in other languages.
 * `include`: Used for importing modules.
@@ -111,8 +111,21 @@ fn add(a: i32, b: i32) -> i32 {
     return a + b;
 }
 
-// Functions can accept generics via the generic keyword.
-fn print_sum(numbers: [i32, generic N: size]) -> void {
+fn main() -> void {
+    const sum: i32 = add(3, 4);
+
+    println("Sum: {}\n", sum);
+}
+```
+### Generics
+
+Hydra supports generics only at **compile time**
+They are not type parameters like Rust 'T' or C++ templates
+Instead they act as **constant values the compiler inlines**
+
+```rust
+// Takes an array of anysize, must be known at compile time 
+fn print_sum(numbers: [i32, size]) -> void {
     let sum: i32 = 0;
     forEach (num in numbers) {
         sum = sum + num;
@@ -122,42 +135,37 @@ fn print_sum(numbers: [i32, generic N: size]) -> void {
 }
 
 fn main() -> void {
-    let passer: [i32, 5] = {1, 2, 3, 4, 5};
-    let pass_thru: [i32, 10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    let arr: [i32, 5] = {1, 2, 3, 4, 5};
+    let bigger_arr: [i32, 10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
 
-    print_sum(passer);
-    print_sum(pass_thru); // Compiler will inline 'N' in print_sum to the size of the passer and pass_thru variables
+    print_sum(arr);
+    print_sum(bigger_arr); // Compiler will inline size with the size given to the variables;
 }
 ```
 
-### Structs and Extensions
+### Structs
 
 Structs are composite data types that group together variables under a single name.
 You are able declare field members along with functions inside the struct
 
 ```rust
 // Struct Declaration
-struct Point {
-    x: i32,
-    y: i32,
-
-    fn new(x: x, y: y) -> Point {
-        return Point {
-            x = x;
-            y = y;
-        }
+struct Vec3 {
+    e: [f64, 3],
+    
+    fn new(x: f64, y: f64, z: f64) -> Vec3 {
+        return Vec3 {
+            e = { x, y, z };
+        };
     }
 }
 
-// Struct Instantiation
-let point: Point = Point { x = 15, y = 12 };
-
 fn main() -> void {
-    let point: Point = point::new(15, 12);
-    println("{}", point) // Prints the point
+    let vector: Vec3 = vector::new(15, 12, 18);
+    println("{}", vector) // Prints the vector
 
     // Accessing fields
-    println("{}, {}", point.x, point.y);
+    println("{}, {}, {}", vector.e[0], vector.e[1], vector.e[2]); // Prints the vector via field accessing
 }
 ```
 
@@ -177,7 +185,7 @@ for (i in 0..10) {
 }
 
 // Inferred reversed iteration because start > end
-// Prints numbers 5 through 0
+// Prints numbers 5 to 0
 for (i in 5..=0) {
     println("{}", i);
 }
