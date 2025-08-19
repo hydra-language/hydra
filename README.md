@@ -1,6 +1,6 @@
 # Hydra
 
-A modern, statically-typed programming language because I got bored and liked Rust
+A statically-typed programming language because I got bored and liked Rust
 
 ***
 
@@ -87,8 +87,8 @@ const d: [const char, 2] = { 'x', 'y' };
 
 Slicing creates a view or a copy of a portion of an array.
 
-* **Read-only Slice**: Use the `&` prefix with the `:=` operator to create a reference slice to a section of the original array.
-* **Mutable Slice**: Use the `|array|` syntax with the `:=` operator to create a new, mutable slice on the heap.
+* **Read-only Slice**: Use the `&` prefix to create a reference slice to a section of the original array.
+* **Mutable Slice**: Use the `|array|` syntax to create a new, mutable slice on the heap.
 
 ```rust
 let arr: [i32, 5] = {1, 2, 3, 4, 5};
@@ -111,9 +111,8 @@ fn add(a: i32, b: i32) -> i32 {
     return a + b;
 }
 
-// Functions can accept arrays with a generic size parameter 'N'.
-// This is resolved at compile-time via monomorphization.
-fn print_sum(numbers: [i32, N]) -> void {
+// Functions can accept generics via the generic keyword.
+fn print_sum(numbers: [i32, generic N: size]) -> void {
     let sum: i32 = 0;
     forEach (num in numbers) {
         sum = sum + num;
@@ -131,27 +130,35 @@ fn main() -> void {
 }
 ```
 
-### Structs
+### Structs and Extensions
 
 Structs are composite data types that group together variables under a single name.
+You are able declare field members along with functions inside the struct
 
 ```rust
 // Struct Declaration
-struct Student {
-    name: string;
-    age: i32;
-    gpa: f32;
-};
+struct Point {
+    x: i32,
+    y: i32,
+
+    fn new(x: x, y: y) -> Point {
+        return Point {
+            x = x;
+            y = y;
+        }
+    }
+}
 
 // Struct Instantiation
-let student: Student = Student {
-    name = "Joseph";
-    age = 16;
-    gpa = 3.92;
-};
+let point: Point = Point { x = 15, y = 12 };
 
-// Accessing fields
-println("{}", student.name); // Prints "Joseph"
+fn main() -> void {
+    let point: Point = point::new(15, 12);
+    println("{}", point) // Prints the point
+
+    // Accessing fields
+    println("{}, {}", point.x, point.y);
+}
 ```
 
 ### Control Flow
