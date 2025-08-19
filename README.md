@@ -221,6 +221,19 @@ while (i < 5) {
 * **`break`**: Exits the current loop immediately.
 * **`skip`**: Skips the rest of the current iteration and proceeds to the next one (equivalent to `continue`).
 
+### Pattern Matching
+
+Hydra supports pattern matching via the `match` keyword.
+`match` **can be used as an expression** to produce a value
+
+```rust
+let x: i32 = 10;
+
+let check: string = match (x % 2) {
+    0 => "even",
+    1 => "odd"
+};
+```
 ***
 
 ## 🚀 Getting Started
