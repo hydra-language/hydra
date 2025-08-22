@@ -4,8 +4,6 @@ A statically-typed programming language inspired by hatred of Java :)
 
 ---
 
-Hydra is a new programming language designed for clarity, safety, and performance. 
-
 ## 🚀 Current Status
 
 Hydra is currently in the **language specification phase**. The core syntax and features have been designed, and the project is focused on building the foundational compiler and toolchain.
