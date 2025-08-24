@@ -316,6 +316,7 @@ impl<'a> Lexer<'a> {
             "forEach" => TokenType::ForEach,
             "while" => TokenType::While,
             "break" => TokenType::Break,
+            "match" => TokenType::Match,
             "skip" => TokenType::Skip,
             "include" => TokenType::Include,
             "typedef" => TokenType::Typedef,
