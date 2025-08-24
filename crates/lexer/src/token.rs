@@ -27,6 +27,7 @@ pub enum TokenType {
     For,
     ForEach,
     While,
+    Match,
     Break,
     Skip,
     Include,
