@@ -1,19 +1,13 @@
-/**
- * ======
- * ast.rs
- * ======
- * 
- * This file is responsible for defining the ast nodes of Hydra
- */
+
+// This file defines the AST nodes for the Hydra programming language
 
 pub type Program = Vec<Statement>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Statement {
-    VariableDeclaration(VarDecl), // e.g let x: i32 = 5;
+    VariableDeclaration(VarDecl),
     FunctionDeclaration(FnDecl),
     StructDeclaration(StructDecl),
-    ExtensionDeclaration(ExtensionDecl),
     IncludeDeclaration(IncludeDecl),
     TypedefDeclaration(TypedefDecl),
 
@@ -24,30 +18,42 @@ pub enum Statement {
     },
 
     For(ForRangeLoop),
-
     ForEach(ForEachLoop),
-
     While {
         condition: Expr,
         body: Vec<Statement>,
     },
 
+    Match {
+        expr: Expr,
+        arms: Vec<MatchArm>,
+    },
+
     Return(Option<Expr>),
     Break,
     Skip,
-    Expression(Expr), // stand alones like function calls
+    Expression(Expr),
+    Block(Vec<Statement>),
 }
 
-#[derive(Debug)]
-pub enum Expr {
-    // most basic values
-    // 123, 3.14, "hello", 'c', true
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub value: Expr,
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
     Literal(LiteralValue),
+    Identifier(String),
+    Wildcard, // _ pattern
+}
 
-    // Var name
+#[derive(Debug, Clone)]
+pub enum Expr {
+    Literal(LiteralValue),
     Variable(String),
-
-    // Math
+    
     Binary {
         left: Box<Expr>,
         op: BinaryOp,
@@ -61,12 +67,28 @@ pub enum Expr {
 
     FunctionCall {
         name: String,
-        args: Vec<Expr>
+        args: Vec<Expr>,
+    },
+
+    MethodCall {
+        object: Box<Expr>,
+        method: String,
+        args: Vec<Expr>,
+    },
+
+    StaticCall {
+        type_name: String,
+        method: String,
+        args: Vec<Expr>,
     },
 
     StructInit {
         name: String,
-        fields: Vec<(String, Expr)>
+        fields: Vec<(String, Expr)>,
+    },
+
+    ArrayInit {
+        elements: Vec<Expr>,
     },
 
     Assignment {
@@ -74,15 +96,15 @@ pub enum Expr {
         value: Box<Expr>,
     },
 
-    Update {
+    CompoundAssignment {
         name: String,
-        op: BinaryOp, // for += or -=
+        op: BinaryOp,
         value: Box<Expr>,
     },
 
-    Get {
+    FieldAccess {
         object: Box<Expr>,
-        name: String,
+        field: String,
     },
 
     Index {
@@ -91,11 +113,11 @@ pub enum Expr {
     },
 
     Slice {
-        is_heap_allocated: bool, // distinguish '|arr|' from '&arr'
+        is_heap_allocated: bool, // true for |arr|, false for &arr
         array: Box<Expr>,
-        range_start: Box<Expr>,
-        range_end: Box<Expr>,
-        is_inclusive: bool, // distinguish .. from ..=
+        start: Box<Expr>,
+        end: Box<Expr>,
+        is_inclusive: bool, // true for ..=, false for ..
     },
 
     Cast {
@@ -103,12 +125,19 @@ pub enum Expr {
         target_type: Type,
     },
 
-    Path {
-        parts: Vec<String>,
-    }
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        is_inclusive: bool,
+    },
+
+    Match {
+        expr: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LiteralValue {
     Int(i64),
     Float(f64),
@@ -118,25 +147,41 @@ pub enum LiteralValue {
     None,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
+    // Primitive integer types
     I8, I16, I32, I64,
     U8, U16, U32, U64,
+    
+    // Floating point types
     F32, F64,
+    
+    // Other primitives
     Char,
     Bool,
     String,
     Void,
-    Custom(String), // Struct names
+    
+    // Custom types (structs)
+    Custom(String),
+    
+    // Array type with optional element mutability
     Array {
-        is_element_const: bool, // true if declared with 'const', false otherwise
+        element_const: bool, // true if elements are const
         element_type: Box<Type>,
         size: ArraySize,
     },
+    
     Optional(Box<Type>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArraySize {
+    Concrete(u64),
+    Generic(String), // for compile-time generics like 'size'
+}
+
+#[derive(Debug, Clone)]
 pub struct VarDecl {
     pub is_mutable: bool, // true for 'let', false for 'const'
     pub name: String,
@@ -144,83 +189,97 @@ pub struct VarDecl {
     pub initializer: Expr,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FnDecl {
     pub name: String,
-    pub params: Vec<(String, Type)>,
+    pub params: Vec<Parameter>,
     pub return_type: Type,
     pub body: Vec<Statement>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub struct Parameter {
+    pub name: String,
+    pub param_type: Type,
+}
+
+#[derive(Debug, Clone)]
 pub struct StructDecl {
     pub name: String,
-    pub fields: Vec<(String, Type)>
+    pub fields: Vec<StructField>,
+    pub methods: Vec<FnDecl>,
 }
 
-#[derive(Debug)]
-pub struct ExtensionDecl {
-    pub name: String, // Name of struct being extended
-    pub methods: Vec<FnDecl>, // List of functions defined without the extension block
+#[derive(Debug, Clone)]
+pub struct StructField {
+    pub name: String,
+    pub field_type: Type,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IncludeDecl {
     pub path: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypedefDecl {
     pub alias: String,
     pub original_type: Type,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ForRangeLoop {
     pub iterator_name: String,
-    pub range_start: Box<Expr>,
-    pub range_end: Box<Expr>,
-    pub is_inclusive: bool, // true for ..= false for ..
+    pub range: Expr, // This will be a Range expression
     pub body: Vec<Statement>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ForEachLoop {
     pub element_name: String,
-    pub iterable: Box<Expr>,
+    pub iterable: Expr,
     pub body: Vec<Statement>,
 }
 
-#[derive(Debug)]
-pub enum ArraySize {
-    Concrete(u64),
-    Generic(String), // holds N
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOp {
-    Add, 
-    Subtract, 
-    Multiply, 
-    Divide, 
+    // Arithmetic
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
     Modulo,
-    Equals, 
-    NotEquals,
-    LessEquals, 
-    GreaterEquals,
+    
+    // Comparison
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    
+    // Logical
     And,
     Or,
+    
+    // Bitwise
     BitwiseAnd,
     BitwiseOr,
     BitwiseXor,
     BitShiftLeft,
     BitShiftRight,
+    
+    // Range operators
+    Range,          // ..
+    RangeInclusive, // ..=
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOp {
-    Increment, // ++x or x++
-    Decrement, // --x or x--
-    Not, // !
-    Negate, // flip sign
+    Not,        // !
+    Negate,     // -
+    PreIncrement,  // ++x
+    PostIncrement, // x++
+    PreDecrement,  // --x
+    PostDecrement, // x--
 }
