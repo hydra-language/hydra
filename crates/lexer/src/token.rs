@@ -1,23 +1,42 @@
-// ===========================================================================
-// TOKEN DEFINITIONS
-// ===========================================================================
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenType {
+    // -----------------------------------------------------------------------
     // Literals
+    // -----------------------------------------------------------------------
     IntLiteral(i64),
     FloatLiteral(f64),
     StringLiteral(String),
     CharLiteral(char),
     BoolLiteral(bool),
 
-    // Identifer
+    // -----------------------------------------------------------------------
+    // Identifier
+    // -----------------------------------------------------------------------
     Identifier(String),
 
+    // -----------------------------------------------------------------------
+    // Primitive Types
+    // -----------------------------------------------------------------------
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    String,
+    Char,
+    Bool,
+
+    // -----------------------------------------------------------------------
     // Keywords
+    // -----------------------------------------------------------------------
     Let,
     Const,
-    Function,           // fn
+    Function,       // fn
     Struct,
     Return,
     In,
@@ -29,71 +48,84 @@ pub enum TokenType {
     While,
     Match,
     Break,
-    Skip,
+    Continue,
     Include,
     Typedef,
     Size,
     None,
 
+    // -----------------------------------------------------------------------
     // Operators
-    Assign,             // =
-    Equal,              // ==
-    NotEqual,           // !=
+    // -----------------------------------------------------------------------
+
+    // Assignment & compound assignment
+    Equal,              // =
+    DoubleEqual,        // ==
+    ExclamEqual,        // !=
     LessEqual,          // <=
     GreaterEqual,       // >=
+    PlusEqual,          // +=
+    MinusEqual,         // -=
+    StarEqual,          // *=
+    ForwardSlashEqual,  // /=
+    ModuloEqual,        // %=
+    AmpersandEqual,     // &=
+    PipeEqual,          // |=
+    CarrotEqual,        // ^=
+    DoubleLeftEqual,    // <<=
+    DoubleRightEqual,   // >>=
+
+    // Arithmetic
     Plus,               // +
     Minus,              // -
-    Multiply,           // *
-    Divide,             // /
+    Star,               // *
+    ForwardSlash,       // /
     Modulo,             // %
-    Increment,          // ++
-    Decrement,          // --
-    PlusAssign,         // +=
-    MinusAssign,        // -=
-    MultiplyAssign,     // *=
-    DivideAssign,       // /=
-    ModuloAssign,       // %=
-    And,                // &&
-    Or,                 // ||
-    Not,                // !
+    PlusPlus,           // ++
+    MinusMinus,         // --
+
+    // Bitwise and References ( & )
+    Ampersand,          // &
+    Pipe,               // |
+    Carrot,             // ^
+    DoubleLeftAngle,    // <<
+    DoubleRightAngle,   // >>
+
+    // Logical
+    DoubleAmpersand,    // &&
+    DoublePipe,         // ||
+    ExclamationMark,    // !
+
+    // Comparison
+    LeftAngle,          // <
+    RightAngle,         // >
+    
+    // Other operators
     Arrow,              // ->
     EqualArrow,         // =>
     RangeExclusive,     // ..
     RangeInclusive,     // ..=
-    Pipe,               // |
+    Dot,                // .
+    Ellipsis,           // ...
+    QuestionMark,       // ?
 
-    // Bitwise
-    // BitwiseAnd,      // &
-    // BitwiseOr,       // |
-    BitwiseXor,         // ^
-    BitShiftLeft,       // <<
-    BitShiftRight,      // >>
-    BitAndAssign,       // &=
-    BitOrAssign,        // |=
-    BitXorAssign,       // ^=
-    ShiftAssignLeft,    // <<=
-    ShiftAssignRight,   // >>=  
-
-
+    // -----------------------------------------------------------------------
     // Punctuation
+    // -----------------------------------------------------------------------
     LeftParen,
     RightParen,
     LeftBrace,
     RightBrace,
     LeftBracket,
     RightBracket,
-    LeftAngle,          // <
-    RightAngle,         // > 
     Semicolon,
     Comma,
-    Dot,                // .
-    Ellipsis,           // ...
     Colon,              // :
     DoubleColon,        // ::
-    Optional,           // ?
-    Ampersand,          // &
 
+    // -----------------------------------------------------------------------
     // Special
+    // -----------------------------------------------------------------------
     Newline,
     Eof,
 }
