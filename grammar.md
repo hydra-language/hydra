@@ -21,11 +21,11 @@ Comments are used for annotating code and are ignored by the compiler. Hydra use
 2\. Variable Declarations
 -------------------------
 
-Variables are declared using the **`let`** keyword for mutable variables and **`const`** for immutable constants. Type annotations are mandatory.
+Variables are declared using the **`let`** keyword for mutable variables and **`const`** for immutable constants. Type annotations are not mandatory for variables.
 
 **Syntax**:
 
-    <let | const> <variable_name>: <type> = <initial_value>;
+    <let | const> <variable_name>: <type?> = <initial_value>;
 
 **Examples**:
 ```rust
@@ -241,7 +241,26 @@ while (i < 5) {
 ### Loop Control
 
 *   **`break`**: Exits the current loop entirely.
-*   **`skip`**: Skips the remainder of the current iteration and continues to the next one (like `continue` in other languages).
+*   **`break if (<condition>)`: Exits the loop if the condition evaluates to true
+*   **`continue if (condition)`**: Skips the remainder of the current iteration and continues to the next one if condition is true
+
+This skips the traditional wrapping of `continue` or `break` in an `if` statement
+You may also run a block before the control action, see below
+
+```rust
+// prints i and skips even numbers
+for (i in 0..10) {
+    continue if (i % 2 == 0) {
+        println("{}", i);
+    };
+}
+
+for (i in 0..20) {
+    break if (i % 7 == 0 && i != 0) {
+        println("{}", i);
+    };
+}
+```
 
 * * *
 
