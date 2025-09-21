@@ -28,10 +28,6 @@ impl<'a> Lexer<'a> {
         while !self.is_at_end() {
             self.skip_whitespace();
 
-            if self.is_at_end() {
-                break;
-            }
-
             self.start = self.current;
             let start_line = self.line;
             let start_column = self.column;
@@ -72,22 +68,23 @@ impl<'a> Lexer<'a> {
             ']' => Some(TokenType::RightBracket),
             ';' => Some(TokenType::Semicolon),
             '.' => {
-                if self.peek() == '.' && self.peek_next() == '.' {
-                    self.advance();
-                    self.advance();
+                if self.peek() == '.' {
+                    if self.peek_next() == '.' {
+                        self.advance();
+                        self.advance();
 
-                    Some(TokenType::Ellipsis)
-                } else if self.peek() == '.' {
-                    self.advance();
+                        Some(TokenType::Ellipsis)
+                    } else if self.peek_next() == '=' {
+                        self.advance();
+                        self.advance();
 
-                    Some(TokenType::RangeExclusive)
-                } else if self.peek() == '.' && self.peek_next() == '=' {
-                    self.advance();
-                    self.advance();
+                        Some(TokenType::RangeInclusive)
+                    } else {
+                        self.advance();
 
-                    Some(TokenType::RangeInclusive)
-                }
-                else {
+                        Some(TokenType::RangeExclusive)
+                    }
+                } else {
                     Some(TokenType::Dot)
                 }
             },
@@ -97,47 +94,47 @@ impl<'a> Lexer<'a> {
                 Some(TokenType::Colon)
             },
             '&' => if self.match_char('&') {
-                Some(TokenType::And)
+                Some(TokenType::DoubleAmpersand)
             } else if self.match_char('=') {
-                Some(TokenType::BitAndAssign)
+                Some(TokenType::AmpersandEqual)
             } else {
                 Some(TokenType::Ampersand)
             },
             '|' => if self.match_char('|') {
-                Some(TokenType::Or)
+                Some(TokenType::DoublePipe)
             } else if self.match_char('=') {
-                Some(TokenType::BitOrAssign)
+                Some(TokenType::PipeEqual)
             } else {
                 Some(TokenType::Pipe)
             },
             '^' => if self.match_char('=') {
-                Some(TokenType::BitXorAssign)
+                Some(TokenType::CarrotEqual)
             } else {
-                Some(TokenType::BitwiseXor)
+                Some(TokenType::Carrot)
             },
-            '?' => Some(TokenType::Optional),
+            '?' => Some(TokenType::QuestionMark),
             ',' => Some(TokenType::Comma),
             '+' => if self.match_char('=') {
-                Some(TokenType::PlusAssign)
+                Some(TokenType::PlusEqual)
             } else if self.match_char('+') {
-                Some(TokenType::Increment)
+                Some(TokenType::PlusPlus)
             } else {
                 Some(TokenType::Plus)
             },
             '-' => if self.match_char('=') {
-                Some(TokenType::MinusAssign)
+                Some(TokenType::MinusEqual)
             } else if self.match_char('-') {
-                Some(TokenType::Decrement)
+                Some(TokenType::MinusMinus)
             } else if self.match_char('>') {
                 Some(TokenType::Arrow)
             } else {
                 Some(TokenType::Minus)
             },
             '*' => if self.match_char('=') {
-                Some(TokenType::MultiplyAssign)
+                Some(TokenType::StarEqual)
             }
             else {
-                Some(TokenType::Multiply)
+                Some(TokenType::Star)
             },
             '/' => if self.match_char('/') {
                 while self.peek() != '\n' && !self.is_at_end() {
@@ -167,35 +164,35 @@ impl<'a> Lexer<'a> {
 
                 None
             } else if self.match_char('='){
-                Some(TokenType::DivideAssign)
+                Some(TokenType::ForwardSlashEqual)
             } else {
-                Some(TokenType::Divide)
+                Some(TokenType::ForwardSlash)
             },
             '%' => if self.match_char('=') {
-                Some(TokenType::ModuloAssign)
+                Some(TokenType::ModuloEqual)
             } else {
                 Some(TokenType::Modulo)
             },
             '=' => if self.match_char('=') {
-                Some(TokenType::Equal)
+                Some(TokenType::DoubleEqual)
             } else if self.match_char('>') {
                 Some(TokenType::EqualArrow)
             } else {
-                Some(TokenType::Assign)
+                Some(TokenType::Equal)
             },
             '!' => if self.match_char('=') {
-                Some(TokenType::NotEqual)
+                Some(TokenType::ExclamEqual)
             } else {
-                Some(TokenType::Not)
+                Some(TokenType::ExclamationMark)
             },
             '<' => {
                 if self.peek() == '<' && self.peek_next() == '=' {
                     self.advance(); // consume '<'
                     self.advance(); // consume '='
 
-                    Some(TokenType::ShiftAssignLeft)
+                    Some(TokenType::DoubleLeftEqual)
                 } else if self.match_char('<') {
-                    Some(TokenType::BitShiftLeft)
+                    Some(TokenType::DoubleLeftAngle)
                 } else if self.match_char('=') {
                     Some(TokenType::LessEqual)
                 } else {
@@ -207,9 +204,9 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     self.advance();
 
-                    Some(TokenType::ShiftAssignRight)
+                    Some(TokenType::DoubleRightEqual)
                 } else if self.match_char('>') {
-                    Some(TokenType::BitShiftRight)
+                    Some(TokenType::DoubleRightAngle)
                 } else if self.match_char('=') {
                     Some(TokenType::GreaterEqual)
                 } else {
@@ -303,6 +300,19 @@ impl<'a> Lexer<'a> {
 
     fn get_keyword_or_identifier(&self, text: &str) -> TokenType {
         match text {
+            "i8" => TokenType::I8,
+            "i16" => TokenType::I16,
+            "i32" => TokenType::I32,
+            "i64" => TokenType::I64,
+            "u8" => TokenType::U8,
+            "u16" => TokenType::U16,
+            "u32" => TokenType::U32,
+            "u64" => TokenType::U64,
+            "f32" => TokenType::F32,
+            "f64" => TokenType::F64,
+            "char" => TokenType::Char,
+            "string" => TokenType::String,
+            "bool" => TokenType::Bool,
             "let" => TokenType::Let,
             "const" => TokenType::Const,
             "fn" => TokenType::Function,
@@ -317,7 +327,7 @@ impl<'a> Lexer<'a> {
             "while" => TokenType::While,
             "break" => TokenType::Break,
             "match" => TokenType::Match,
-            "skip" => TokenType::Skip,
+            "continue" => TokenType::Continue,
             "include" => TokenType::Include,
             "typedef" => TokenType::Typedef,
             "size" => TokenType::Size,
@@ -371,7 +381,11 @@ impl<'a> Lexer<'a> {
     fn skip_whitespace(&mut self) {
         while !self.is_at_end() {
             match self.peek() {
-                ' ' | '\r' | '\t' => {
+                ' ' | '\r' | '\t' | '\n' => {
+                    if self.peek() == '\n' {
+                        self.line += 1;
+                        self.column = 0;
+                    }
                     self.advance();
                 },
                 _ => break,
