@@ -27,7 +27,6 @@ pub enum TokenType {
     U64,
     F32,
     F64,
-    String,
     Char,
     Bool,
 
@@ -50,7 +49,6 @@ pub enum TokenType {
     Break,
     Continue,
     Include,
-    Typedef,
     Size,
     None,
 
