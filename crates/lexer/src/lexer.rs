@@ -322,7 +322,7 @@ impl<'a> Lexer<'a> {
             "if" => TokenType::If,
             "else" => TokenType::Else,
             "for" => TokenType::For,
-            "forEach" => TokenType::ForEach,
+            "foreach" => TokenType::ForEach,
             "while" => TokenType::While,
             "break" => TokenType::Break,
             "match" => TokenType::Match,
