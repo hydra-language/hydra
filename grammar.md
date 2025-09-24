@@ -50,7 +50,6 @@ Hydra includes a standard set of primitive types.
 *   **Floating-Point**: `f32`, `f64`
 *   **Character**: `char` (e.g., `'c'`)
 *   **Boolean**: `bool` (`true` or `false`)
-*   **String**: `string` (e.g., `"hello"`)
 
 ### Arrays
 
@@ -58,7 +57,7 @@ Arrays have a fixed size and can have mutable or immutable elements, independent
 
 **Syntax**:
 
-    <let | const> <name>: [<element_mutability?> <type>, <size>] = { <elements> };
+    <let | const> <name>: [<const?> <type>, <size>] = { <elements> };
 
 *   `<element_mutability?>` is an optional **`const`** keyword to make the elements immutable.
 
@@ -79,32 +78,58 @@ c = { 4, 5, 6 }; // ERROR: binding 'c' is const.
 // A fully immutable array.
 const d: [const char, 2] = { 'x', 'y' };
 ```
+
 ### Array Slicing
 
 Slicing creates a view or a copy of a portion of an array.
 
-**Read-only Slice Syntax**:
+**Array Slice Syntax**:
 
-    let <slice_name>: [<type>, <size>] = &<array_name>[<start>..<end>];
+    <let | const> <name>: [<const?> <type>, <size>] = &<original>[<start>..<end>];
 
-**Mutable Heap Slice Syntax**:
+    <let | const> <name>: [<const?> <type>, <size>] = |<original>|[<start>..<end>];
 
-    let <slice_name>: [<type>, <size>] = |<array_name>|[<start>..<end>];
+*   `&` creates a reference slice (no allocation)
+*   The `|...|` syntax allocates the new slice on the heap. Elements are copied and independent of the original array
+*   The rules of arrays layed out above still apply here.
 
-*   The `|...|` syntax allocates the new slice on the heap.
+* * **Mutability Rules for Reference Slices (`&`)**:
+
+1. Edits are allowed **only if**:
+   - The original array is mutable (`let`), and  
+   - The elements are mutable (no `const` in element type), and  
+   - The slice binding itself is mutable (`let`).
+2. Immutable arrays or arrays with `const` elements cannot be modified through a reference slice, even if the slice is bound with `let`.  
+
+**Mutability Rules for Heap Slices (`|...|`)**:
+
+1. Heap slices copy the elements into new memory.  
+2. Mutability of a heap slice is independent of the original array:
+   - `let` heap slice → editable elements  
+   - `const` heap slice → read-only elements  
+3. This allows you to take a `const` array with `const` elements and produce a fully mutable heap slice.
 
 **Examples**:
+
 ```rust
 let arr: [i32, 5] = {1, 2, 3, 4, 5};
-    
-// Create a read-only slice referencing the original array.
-let read_only_slice: [i32, 3] = &arr[0..2];
-    
-// Create a new, mutable slice on the heap.
-let heap_slice: [i32, 2] = |arr|[3..5];
-heap_slice[0] = 40; // OK
-```
-* * *
+
+// Reference slice of mutable elements
+let ref_slice: [i32, 2] = &arr[1..3];
+ref_slice[0] = 10; // ✅ OK
+
+// Const reference slice
+const const_slice: [i32, 2] = &arr[1..3];
+const_slice[0] = 20; // ❌ ERROR: slice binding is const
+
+// Reference slice from const array
+const arr2: [i32, 5] = {1,2,3,4,5};
+let ref_slice2: [i32, 2] = &arr2[0..2];
+ref_slice2[0] = 1; // ❌ ERROR: original array is const
+
+// Heap slice (independent copy)
+let heap_slice: [i32, 3] = |arr2|[1..4];
+heap_slice[0] = 99; // ✅ OK*
 
 4\. Structs
 -----------
@@ -146,7 +171,7 @@ Functions are defined with the **`fn`** keyword, mandatory type annotations for 
 
 **Syntax**:
 
-    fn <function_name>(<param1>: <type1>, <param2>: <type2>) -> <return_type> {
+    fn <function_name>(<param1>: <type1>, <param2>: <type2>, ...) -> <return_type> {
         // Function body
         return <value>;
     }
@@ -160,7 +185,7 @@ Hydra supports compile-time generics, where a generic parameter like **`size`** 
 // The 'size' parameter allows this function to accept an i32 array of any length.
 fn print_sum(numbers: [i32, size]) -> void {
     let sum: i32 = 0;
-    forEach (num in numbers) {
+    foreach (num in numbers) {
         sum = sum + num;
     }
     println("Sum: {}", sum);
@@ -206,18 +231,18 @@ for (i in 0..10) {
 ```
 ### For Each Loops
 
-The **`forEach`** loop iterates over every element in a collection, such as an array.
+The **`foreach`** loop iterates over every element in a collection, such as an array.
 
 **Syntax**:
 
-    forEach (<variable> in <collection>) {
+    foreach (<variable> in <collection>) {
         // Loop body
     }
 
 **Example**:
 ```rust
 const letters: [const char, 3] = { 'a', 'b', 'c' };
-forEach (letter in letters) {
+foreach (letter in letters) {
     println("{}", letter);
 }
 ```
