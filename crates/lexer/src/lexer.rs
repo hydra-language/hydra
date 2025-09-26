@@ -73,16 +73,16 @@ impl<'a> Lexer<'a> {
                         self.advance();
                         self.advance();
 
-                        Some(TokenType::Ellipsis)
+                        Some(TokenType::TripleDot)
                     } else if self.peek_next() == '=' {
                         self.advance();
                         self.advance();
 
-                        Some(TokenType::RangeInclusive)
+                        Some(TokenType::DoubleDotEqual)
                     } else {
                         self.advance();
 
-                        Some(TokenType::RangeExclusive)
+                        Some(TokenType::DoubleDot)
                     }
                 } else {
                     Some(TokenType::Dot)
@@ -300,6 +300,8 @@ impl<'a> Lexer<'a> {
 
     fn get_keyword_or_identifier(&self, text: &str) -> TokenType {
         match text {
+            "isize" => TokenType::ISize,
+            "usize" => TokenType::USize,
             "i8" => TokenType::I8,
             "i16" => TokenType::I16,
             "i32" => TokenType::I32,
@@ -316,9 +318,11 @@ impl<'a> Lexer<'a> {
             "const" => TokenType::Const,
             "fn" => TokenType::Function,
             "struct" => TokenType::Struct,
+            "extension" => TokenType::Extension,
             "return" => TokenType::Return,
             "in" => TokenType::In,
             "as" => TokenType::As,
+            "on" => TokenType::On,
             "if" => TokenType::If,
             "else" => TokenType::Else,
             "for" => TokenType::For,
@@ -328,7 +332,9 @@ impl<'a> Lexer<'a> {
             "match" => TokenType::Match,
             "continue" => TokenType::Continue,
             "include" => TokenType::Include,
-            "size" => TokenType::Size,
+            "trait" => TokenType::Trait,
+            "anysize" => TokenType::AnySize,
+            "anytype" => TokenType::AnyType,
             "None" => TokenType::None,
             "true" => TokenType::BoolLiteral(true),
             "false" => TokenType::BoolLiteral(false),
