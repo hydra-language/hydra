@@ -17,10 +17,12 @@ pub enum TokenType {
     // -----------------------------------------------------------------------
     // Primitive Types
     // -----------------------------------------------------------------------
+    ISize,
     I8,
     I16,
     I32,
     I64,
+    USize,
     U8,
     U16,
     U32,
@@ -35,11 +37,13 @@ pub enum TokenType {
     // -----------------------------------------------------------------------
     Let,
     Const,
-    Function,       // fn
+    Function,               // fn
     Struct,
+    Extension,
     Return,
     In,
     As,
+    On,
     If,
     Else,
     For,
@@ -48,8 +52,10 @@ pub enum TokenType {
     Match,
     Break,
     Continue,
-    Include,
-    Size,
+    Include,                // for imports
+    Trait,
+    AnySize,                // comptime generic used in function parameters of arrays
+    AnyType,                // comptime generic used in function parameters, return types and struct fields
     None,
 
     // -----------------------------------------------------------------------
@@ -101,10 +107,10 @@ pub enum TokenType {
     // Other operators
     Arrow,              // ->
     EqualArrow,         // =>
-    RangeExclusive,     // ..
-    RangeInclusive,     // ..=
     Dot,                // .
-    Ellipsis,           // ...
+    DoubleDot,          // ..
+    DoubleDotEqual,     // ..=
+    TripleDot,          // ...
     QuestionMark,       // ?
 
     // -----------------------------------------------------------------------
