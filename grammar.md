@@ -178,25 +178,53 @@ Functions are defined with the **`fn`** keyword, mandatory type annotations for 
 
 ### Compile-Time Generics
 
-Hydra supports compile-time generics, where a generic parameter like **`size`** acts as a constant value that the compiler inlines based on the provided arguments.
+Hydra supports compile-time generics:
+    **`anysize`** - a constant value the compiler inlines
+    **`anytype`** - another constant value the compiler inlines with the type of the variable associated with in during the type check phase of compilation
 
 **Example**:
 ```rust
-// The 'size' parameter allows this function to accept an i32 array of any length.
-fn print_sum(numbers: [i32, size]) -> void {
+// The 'anysize' parameter allows this function to accept an i32 array of any length.
+fn print_sum(numbers: [i32, anysize]) -> void {
     let sum: i32 = 0;
     foreach (num in numbers) {
         sum = sum + num;
     }
     println("Sum: {}", sum);
 }
+
+fn identity(x: anytype) -> anytype {
+    return x::typeof();
+}
     
 fn main() -> void {
-    let arr: [i32, 5] = {1, 2, 3, 4, 5};
-    let bigger_arr: [i32, 10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    let size_5_arr: [i32, 5] = {1, 2, 3, 4, 5};
+    let size_10_arr: [i32, 10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
     
-    print_sum(arr);        // Compiler inlines 'size' as 5
-    print_sum(bigger_arr); // Compiler inlines 'size' as 10
+    print_sum(size_5_arr);      // Compiler inlines 'size' as 5
+    print_sum(size_10_arr);     // Compiler inlines 'size' as 10
+
+    const x = 22;                   // inferring type as i32
+    const typeof_x = identity(x);   // returns type i32
+
+    // NOTE: if you annotate the variable with a type
+    // the function will just automatically return that
+    // type, it will not perform analysis. For example:
+    let y: f64 = 3.14;
+    const typeof_y = identity(y);
+
+    // You could also annotate the variable holding
+    // the function call. If the type you annotate
+    // with doesnt match the type passed, a error
+    // will occur. This is the problem `anytype`
+    // solves. For example:
+    let z = "Hello";
+    const typeof_z_wrong: i32 = identity(z);      // This will throw an error
+    const typeof_z_right: anytype = identity(z);
+    
+    println("{}", typeof_x);
+    println("{}", typeof_y);
+    println("{}", typeof_z_right);
 }
 ```
 * * *
