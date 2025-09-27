@@ -130,6 +130,7 @@ ref_slice2[0] = 1; // ❌ ERROR: original array is const
 // Heap slice (independent copy)
 let heap_slice: [i32, 3] = |arr2|[1..4];
 heap_slice[0] = 99; // ✅ OK*
+```
 
 4\. Structs
 -----------
