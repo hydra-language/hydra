@@ -132,10 +132,11 @@ let heap_slice: [i32, 3] = |arr2|[1..4];
 heap_slice[0] = 99; // ✅ OK*
 ```
 
-4\. Structs
+4\. Structs and Extensions
 -----------
 
 Structs are user-defined types that group related data and functions.
+Extensions are a way to override `trait` functions for user defined types
 
 **Syntax**:
 
@@ -144,6 +145,12 @@ Structs are user-defined types that group related data and functions.
         ...
         fn <method_name>(<parameters>) -> <return_type> {
             // Method body
+        }
+    }
+
+    extension <trait> on <user_type> {
+        fn <trait>(&self) -> anytype {
+            /* Your override here */
         }
     }
 
@@ -156,6 +163,12 @@ struct Vec3 {
         return Vec3 {
             e = { x, y, z };
         };
+    }
+}
+
+extension Copy on Vec3 {
+    fn copy(&self, dest: anytype, len: anysize) -> anytype {
+        /* Your override here */
     }
 }
     
