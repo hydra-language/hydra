@@ -132,8 +132,7 @@ impl<'a> Lexer<'a> {
             },
             '*' => if self.match_char('=') {
                 Some(TokenType::StarEqual)
-            }
-            else {
+            } else {
                 Some(TokenType::Star)
             },
             '/' => if self.match_char('/') {
@@ -151,8 +150,7 @@ impl<'a> Lexer<'a> {
                         self.advance();
 
                         break;
-                    }
-                    else {
+                    } else {
                         if self.peek() == '\n' {
                             self.line += 1;
                             self.column = 0;
@@ -222,11 +220,9 @@ impl<'a> Lexer<'a> {
             _ => {
                 if c.is_ascii_digit() {
                     return self.scan_number(c);
-                } 
-                else if c.is_alphabetic() || c == '_' {
+                } else if c.is_alphabetic() || c == '_' {
                     return self.scan_identifier(c);
-                } 
-                else {
+                } else {
                     return Err(format!("Unexpected character '{}' at line {}, column {}", c, self.line, self.column));
                 }
             }
@@ -353,8 +349,7 @@ impl<'a> Lexer<'a> {
     fn match_char(&mut self, expected: char) -> bool {
         if self.is_at_end() || self.chars[self.current] != expected {
             false
-        } 
-        else {
+        } else {
             self.current += 1;
             self.column += 1;
             true
@@ -364,8 +359,7 @@ impl<'a> Lexer<'a> {
     fn peek(&self) -> char {
         if self.is_at_end() {
             '\0'
-        } 
-        else {
+        } else {
             self.chars[self.current]
         }
     }
