@@ -53,6 +53,7 @@ pub enum TokenType {
     Break,
     Continue,
     Include,                // for imports
+    Typedef,                // for aliasing predefined types and others
     Trait,
     AnySize,                // comptime generic used in function parameters of arrays
     AnyType,                // comptime generic used in function parameters, return types and struct fields
@@ -103,7 +104,7 @@ pub enum TokenType {
     // Comparison
     LeftAngle,          // <
     RightAngle,         // >
-    
+
     // Other operators
     Arrow,              // ->
     EqualArrow,         // =>
@@ -130,8 +131,7 @@ pub enum TokenType {
     // -----------------------------------------------------------------------
     // Special
     // -----------------------------------------------------------------------
-    Newline,
-    Eof,
+    EOF,
 }
 
 #[derive(Debug, Clone)]

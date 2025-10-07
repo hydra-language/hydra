@@ -28,6 +28,10 @@ impl<'a> Lexer<'a> {
         while !self.is_at_end() {
             self.skip_whitespace();
 
+            if self.is_at_end() {
+                break;
+            }
+
             self.start = self.current;
             let start_line = self.line;
             let start_column = self.column;
@@ -45,7 +49,7 @@ impl<'a> Lexer<'a> {
         }
 
         tokens.push(Token {
-            token_type: TokenType::Eof,
+            token_type: TokenType::EOF,
             lexeme: "",
             line: self.line,
             column: self.column,
@@ -211,12 +215,6 @@ impl<'a> Lexer<'a> {
                     Some(TokenType::RightAngle)
                 }
             },
-            '\n' => {
-                self.line += 1;
-                self.column = 0;
-
-                Some(TokenType::Newline)
-            }
             _ => {
                 if c.is_ascii_digit() {
                     return self.scan_number(c);
@@ -328,6 +326,7 @@ impl<'a> Lexer<'a> {
             "match" => TokenType::Match,
             "continue" => TokenType::Continue,
             "include" => TokenType::Include,
+            "typedef" => TokenType::Typedef,
             "trait" => TokenType::Trait,
             "anysize" => TokenType::AnySize,
             "anytype" => TokenType::AnyType,
@@ -379,11 +378,12 @@ impl<'a> Lexer<'a> {
     fn skip_whitespace(&mut self) {
         while !self.is_at_end() {
             match self.peek() {
-                ' ' | '\r' | '\t' | '\n' => {
-                    if self.peek() == '\n' {
-                        self.line += 1;
-                        self.column = 0;
-                    }
+                ' ' | '\r' | '\t' => {
+                    self.advance();
+                },
+                '\n' => {
+                    self.line += 1;
+                    self.column = 0;
                     self.advance();
                 },
                 _ => break,
