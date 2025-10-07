@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 lexer = { path = "../crates/lexer" }
+parser = { path = "../crates/parser/" }
+codegen = { path = "../crates/codegen/" }
+inkwell = { version = "0.2.0", features = ["llvm14-0"] }
 clap = { version = "4.3", features = ["derive"] }
 
 [[bin]]

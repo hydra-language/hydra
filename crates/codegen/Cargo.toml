@@ -1,0 +1,13 @@
+[package]
+name = "codegen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+inkwell = { version = "0.2.0", features = ["llvm14-0"] }
+parser = { path = "../parser" }
+lexer = { path = "../lexer" }
+
+[lib]
+name = "codegen"
+path = "src/lib.rs"
