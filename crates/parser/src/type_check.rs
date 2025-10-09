@@ -74,8 +74,8 @@ impl<'a> TypeChecker<'a> {
 
     fn is_primitive(&self, type_name: &str) -> bool {
         matches!(type_name,
-            "i8" | "i16" | "i32" | "i64" |
-            "u8" | "u16" | "u32" | "u64" |
+            "i8" | "i16" | "i32" | "i64" | "isize" |
+            "u8" | "u16" | "u32" | "u64" | "usize" |
             "f32" | "f64" |
             "bool" | "char" | "void"
         )

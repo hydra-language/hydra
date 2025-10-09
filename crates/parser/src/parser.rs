@@ -8,9 +8,9 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: Vec<Token<'a>>) -> Self {
-        return Self {
+        Self {
             tokens, current: 0
-        };
+        }
     }
 
     pub fn parse(&mut self) -> Result<Vec<ASTNode<'a>>, String> {
@@ -20,7 +20,9 @@ impl<'a> Parser<'a> {
             statements.push(self.parse_declaration()?);
         }
 
-        return Ok(statements);
+        self.main_function_exists(&statements)?;
+
+        Ok(statements)
     }
 
     fn parse_declaration(&mut self) -> Result<ASTNode<'a>, String> {
@@ -64,12 +66,12 @@ impl<'a> Parser<'a> {
         let initializer = self.parse_expression()?;
         self.consume(TokenType::Semicolon, "error: expected ';' at the end of line")?;
 
-        return Ok(ASTNode::VariableDeclaration {
+        Ok(ASTNode::VariableDeclaration {
             is_const,
             name,
             type_annotation,
             initializer: Box::new(initializer),
-        });
+        })
     }
 
     fn parse_function(&mut self) -> Result<ASTNode<'a>, String> {
@@ -102,28 +104,28 @@ impl<'a> Parser<'a> {
         }
         self.consume(TokenType::RightBrace, "error: expected '}' to close function body")?;
 
-        return Ok(ASTNode::FunctionDeclaration {
+        Ok(ASTNode::FunctionDeclaration {
             name: name.clone(),
             parameters,
             return_type: return_type.clone(),
             body,
-        });
+        })
     }
 
     fn parse_return(&mut self) -> Result<ASTNode<'a>, String> {
         let value = self.parse_expression()?;
         self.consume(TokenType::Semicolon, "error: expected ';' after return value")?;
 
-        return Ok(ASTNode::ReturnStatement {
+        Ok(ASTNode::ReturnStatement {
             value: Box::new(value),
-        });
+        })
     }
 
     fn parse_statement(&mut self) -> Result<ASTNode<'a>, String> {
         let expr = self.parse_expression()?;
         self.consume(TokenType::Semicolon, "error: expected ';' after expression")?;
 
-        return Ok(expr);
+        Ok(expr)
     }
 
     fn parse_expression(&mut self) -> Result<ASTNode<'a>, String> {
@@ -137,7 +139,7 @@ impl<'a> Parser<'a> {
             expr = self.finish_parse_fn_call(name_token)?;
         }
         
-        return Ok(expr);
+        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<ASTNode<'a>, String> {
@@ -186,24 +188,42 @@ impl<'a> Parser<'a> {
         }
         self.consume(TokenType::RightParen, "error: expected ')' to close function body");
 
-        return Ok(ASTNode::FunctionCallExpression { name, arguments: args });
+        Ok(ASTNode::FunctionCallExpression { name, arguments: args })
+    }
+
+    fn main_function_exists(&self, ast: &[ASTNode<'a>]) -> Result<(), String> {
+        let main_found = ast.iter().any(|node| {
+            if let ASTNode::FunctionDeclaration { name, parameters, return_type, .. } = node {
+                name.lexeme == "main" && parameters.is_empty() && return_type.lexeme == "void"
+            } else {
+                false
+            }
+        });
+
+        if main_found {
+            Ok(())
+        } else {
+            Err("error: no 'main' function found\n
+                help: your program must have an entry declared as\n\tfn main() -> void"
+            .to_string())
+        }
     }
 
     fn match_token(&mut self, token: TokenType) -> bool {
         if self.check(token) {
             self.advance();
 
-            return true;
+            true
         } else {
-            return false;
+            false
         }
     }
 
     fn consume(&mut self, token: TokenType, msg: &str) -> Result<&Token<'a>, String> {
         if self.check(token) {
-            return Ok(self.advance());
+            Ok(self.advance())
         } else {
-            return Err(msg.to_string());
+            Err(msg.to_string())
         }
     }
 
@@ -227,14 +247,14 @@ impl<'a> Parser<'a> {
             self.current += 1;
         }
 
-        return self.previous();
+        self.previous()
     }
 
     fn is_at_end(&self) -> bool {
-        return self.tokens[self.current].token_type == TokenType::EOF;
+        self.tokens[self.current].token_type == TokenType::EOF
     }
 
     fn previous(&self) -> &Token<'a> {
-        return &self.tokens[self.current - 1];
+        &self.tokens[self.current - 1]
     }
 }
