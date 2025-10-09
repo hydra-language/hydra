@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+inkwell = { version = "0.2.0", features = ["llvm14-0"] }
+clap = { version = "4.3", features = ["derive"] }
+
 lexer = { path = "../crates/lexer" }
 parser = { path = "../crates/parser/" }
 codegen = { path = "../crates/codegen/" }
-inkwell = { version = "0.2.0", features = ["llvm14-0"] }
-clap = { version = "4.3", features = ["derive"] }
 
 [[bin]]
 name = "hydrac"
