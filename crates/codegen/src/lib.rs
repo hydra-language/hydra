@@ -24,7 +24,7 @@ impl<'ctx> CodeGen<'ctx> {
         let builder = context.create_builder();
         let module = context.create_module(module_name);
 
-        return Self {
+        Self {
             context,
             builder,
             module,
@@ -38,7 +38,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.generate_node(node)?;
         }
 
-        return Ok(());
+        Ok(())
     }
 
     fn generate_node(&mut self, node: &ASTNode) -> Result<Option<BasicValueEnum<'ctx>>, String> {
@@ -78,17 +78,16 @@ impl<'ctx> CodeGen<'ctx> {
             TokenType::IntLiteral(val) => self.context.i32_type().const_int(*val as u64, false).into(),
             TokenType::FloatLiteral(val) => self.context.f64_type().const_float(*val).into(),
             TokenType::CharLiteral(val) => self.context.i8_type().const_int(*val as u64, false).into(),
+            // theres something wrong about casting the char to a u64 when im trying to print that
+            // out
             _ => panic!("error: unsupported literal type"),
         }
     }
 
-    fn generate_function_declaration(
-        &mut self,
-        name: &Token,
-        params: &[(Token, Token)],
-        return_type: &Token,
-        body: &[ASTNode],
-    ) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+    fn generate_function_declaration(&mut self, name: &Token, params: &[(Token, Token)],
+                                    return_type: &Token, body: &[ASTNode]) -> 
+                                    Result<Option<BasicValueEnum<'ctx>>, String> 
+    {
         let fn_name = name.lexeme;
         
         let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = params.iter()
@@ -121,20 +120,16 @@ impl<'ctx> CodeGen<'ctx> {
             self.generate_node(node)?;
         }
 
-        if return_type.lexeme == "void" {
-            if self.builder.get_insert_block().and_then(|b| b.get_terminator()).is_none() {
+        if return_type.lexeme == "void" && self.builder.get_insert_block().and_then(|b| b.get_terminator()).is_none() {
                 self.builder.build_return(None);
-            }
         }
 
         Ok(Some(function.as_global_value().as_basic_value_enum()))
     }
     
-    fn generate_variable_declaration(
-        &mut self,
-        name: &Token,
-        initializer: &ASTNode,
-    ) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+    fn generate_variable_declaration(&mut self, name: &Token, initializer: &ASTNode) -> 
+                                    Result<Option<BasicValueEnum<'ctx>>, String> 
+    {
         let var_name = name.lexeme;
         let initial_value = self.generate_node(initializer)?.unwrap();
         
@@ -174,11 +169,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.module.add_function("printf", printf_type, None)
     }
 
-    fn generate_function_call(
-        &mut self,
-        name: &Token,
-        args: &[ASTNode],
-    ) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+    fn generate_function_call(&mut self, name: &Token, args: &[ASTNode]) -> Result<Option<BasicValueEnum<'ctx>>, String> {
         if name.lexeme == "println" {
             return self.generate_println_call(args);
         }
@@ -186,13 +177,10 @@ impl<'ctx> CodeGen<'ctx> {
         Err(format!("Unknown function call: {}", name.lexeme))
     }
 
-    fn generate_println_call(
-        &mut self,
-        args: &[ASTNode],
-    ) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+    fn generate_println_call(&mut self, args: &[ASTNode]) -> Result<Option<BasicValueEnum<'ctx>>, String> {
         let printf = self.get_printf_declaration();
 
-        let format_str_node = args.get(0).ok_or("println requires a format string.")?;
+        let format_str_node = args.first().ok_or("println requires a format string.")?;
         let format_str_literal = match format_str_node {
             ASTNode::Expression { token } => match &token.token_type {
                 TokenType::StringLiteral(s) => s,
@@ -200,7 +188,13 @@ impl<'ctx> CodeGen<'ctx> {
             },
             _ => return Err("Invalid first argument to println.".to_string()),
         };
+
         
+        // TODO: map the hydra types to the c formatters
+        // isize, usize, i/u8-64 all map to %d
+        // f32 and f64 map to %.2f for now
+        // char maps to %c and prints the char value NOT ascii like %d
+        // bool maps to %b
         let c_format_str = format_str_literal.replace("{}", "%d") + "\n";
         let format_str_ptr = self.builder
             .build_global_string_ptr(&c_format_str, "format_str")
@@ -218,11 +212,7 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(None)
     }
 
-    fn create_entry_block_alloca<T: inkwell::types::BasicType<'ctx>>(
-        &self,
-        name: &str,
-        ty: T,
-    ) -> PointerValue<'ctx> {
+    fn create_entry_block_alloca<T: inkwell::types::BasicType<'ctx>>(&self, name: &str, ty: T) -> PointerValue<'ctx> {
         let builder = self.context.create_builder();
         let entry = self.current_function.unwrap().get_first_basic_block().unwrap();
 
