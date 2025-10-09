@@ -2,6 +2,7 @@ use std::{fs, path::Path, process::{self, Command}};
 
 use clap::{Arg, Command as ClapCommand};
 use inkwell::context::Context;
+
 use lexer::Lexer;
 use parser::parser::Parser;
 use parser::type_check::TypeChecker;
@@ -110,7 +111,7 @@ fn main() {
     let tokens = match lexer.tokenize() {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("Lexer error: {}", e);
+            eprintln!("lexer error: {}", e);
             process::exit(1);
         }
     };
@@ -124,7 +125,7 @@ fn main() {
             .join("\n");
         let token_filename = input_path.with_extension("tokens").to_string_lossy().into_owned();
         if let Err(e) = fs::write(&token_filename, token_output) {
-            eprintln!("error writing token file '{}': {}", token_filename, e);
+            eprintln!("error: writing token file '{}' failed: {}", token_filename, e);
             process::exit(1);
         }
         println!("Tokens written to: {}", token_filename);
@@ -136,7 +137,7 @@ fn main() {
     let ast = match parser.parse() {
         Ok(ast) => ast,
         Err(e) => {
-            eprintln!("Parser error: {}", e);
+            eprintln!("parser error: {}", e);
             process::exit(1);
         }
     };
@@ -166,16 +167,16 @@ fn main() {
     let mut codegen = CodeGen::new(&context, module_name);
 
     if let Err(e) = codegen.generate(&ast) {
-        eprintln!("CodeGen error: {}", e);
+        eprintln!("codegen error: {}", e);
         process::exit(1);
     }
 
     if emit_ir {
         let ir_output = codegen.ir_to_string();
-        let ir_filename = input_path.with_extension("ir").to_string_lossy().into_owned();
+        let ir_filename = input_path.with_extension("ll").to_string_lossy().into_owned();
 
         if let Err(e) = fs::write(&ir_filename, ir_output) {
-            eprintln!("error: writing IR file '{}' failed: {}", ir_filename, e);
+            eprintln!("error: writing IR to .ll file '{}' failed: {}", ir_filename, e);
             process::exit(1);
         }
         println!("IR written to: {}", ir_filename);
@@ -186,21 +187,22 @@ fn main() {
     let obj_path_str = format!("{}.o", module_name);
     let obj_path = Path::new(&obj_path_str);
     if let Err(e) = codegen.write_to_object_file(obj_path) {
-        eprintln!("error writing object file: {}", e);
+        eprintln!("error: writing object file: {} failed", e);
         process::exit(1);
     }
 
     // Link the object file into an executable
-    let linker_output = Command::new("cc")
+    let linker_output = Command::new("clang")
         .arg(&obj_path_str)
         .arg("-o")
         .arg(module_name)
+        .arg("-O2")
         .output()
-        .expect("Failed to execute linker");
+        .expect("error: failed to execute linker");
 
     if !linker_output.status.success() {
         eprintln!(
-            "Linker error:\n{}",
+            "linker error:\n{}",
             String::from_utf8_lossy(&linker_output.stderr)
         );
         process::exit(1);
@@ -208,6 +210,6 @@ fn main() {
 
     // Clean up the temporary object file
     if let Err(e) = fs::remove_file(obj_path) {
-        eprintln!("Warning: could not remove temporary object file: {}", e);
+        eprintln!("warning: could not remove temporary object file: {}", e);
     }
 }
