@@ -23,7 +23,7 @@ mod tests {
             &TokenType::LeftBrace,
             &TokenType::RightBrace,
             &TokenType::Semicolon,
-            &TokenType::Eof,
+            &TokenType::EOF,
         ];
 
         assert_eq!(token_types, expected_types);
@@ -41,6 +41,6 @@ mod tests {
             TokenType::StringLiteral(s) => assert_eq!(s, "hello\nworld"),
             other => panic!("Expected string literal, got {:?}", other),
         }
-        assert!(matches!(tokens[1].token_type, TokenType::Eof));
+        assert!(matches!(tokens[1].token_type, TokenType::EOF));
     }
 }
