@@ -113,7 +113,7 @@ fn main() -> void {
 }
 ```
 
-Supposed you wanted to make your String representation.
+Suppose you wanted to make your own String representation.
 It could look like this, for example:
 ```rust
 struct String {
