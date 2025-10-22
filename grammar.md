@@ -21,7 +21,7 @@ Comments are used for annotating code and are ignored by the compiler. Hydra use
 2\. Variable Declarations
 -------------------------
 
-Variables are declared using the **`let`** keyword for mutable variables and **`const`** for immutable constants. Type annotations are not mandatory for variables.
+Variables are declared using the **`let`** keyword for mutable variables and **`const`** for immutable constants. Type annotations are not mandatory for stack allocated variables.
 
 **Syntax**:
 
@@ -45,8 +45,8 @@ const PI: f32 = 3.14;
 
 Hydra includes a standard set of primitive types.
 
-*   **Signed Integers**: `i8`, `i16`, `i32`, `i64`
-*   **Unsigned Integers**: `u8`, `u16`, `u32`, `u64`
+*   **Signed Integers**: `isize`, `i8`, `i16`, `i32`, `i64`
+*   **Unsigned Integers**: `usize`, `u8`, `u16`, `u32`, `u64`
 *   **Floating-Point**: `f32`, `f64`
 *   **Character**: `char` (e.g., `'c'`)
 *   **Boolean**: `bool` (`true` or `false`)
@@ -58,8 +58,6 @@ Arrays have a fixed size and can have mutable or immutable elements, independent
 **Syntax**:
 
     <let | const> <name>: [<const?> <type>, <size>] = { <elements> };
-
-*   `<element_mutability?>` is an optional **`const`** keyword to make the elements immutable.
 
 **Examples**:
 ```rust
@@ -79,60 +77,66 @@ c = { 4, 5, 6 }; // ERROR: binding 'c' is const.
 const d: [const char, 2] = { 'x', 'y' };
 ```
 
-### Array Slicing
+4\. Memory
+-----------
 
-Slicing creates a view or a copy of a portion of an array.
+Memory works in a little bit of a complicated way. 
+The idea is RAII for stack allocated items (Resource Aqcuistion Is Initialization)
+and ARC (Automatic Reference Counting) for heap allocated.
 
-**Array Slice Syntax**:
+The idea behind this is to eliminate the need for a super strict borrow checker
+like Rust has and whilst having memory safety without a garbage collector.
 
-    <let | const> <name>: [<const?> <type>, <size>] = &<original>[<start>..<end>];
-
-    <let | const> <name>: [<const?> <type>, <size>] = |<original>|[<start>..<end>];
-
-*   `&` creates a reference slice (no allocation)
-*   The `|...|` syntax allocates the new slice on the heap. Elements are copied and independent of the original array
-*   The rules of arrays layed out above still apply here.
-
-* * **Mutability Rules for Reference Slices (`&`)**:
-
-1. Edits are allowed **only if**:
-   - The original array is mutable (`let`), and  
-   - The elements are mutable (no `const` in element type), and  
-   - The slice binding itself is mutable (`let`).
-2. Immutable arrays or arrays with `const` elements cannot be modified through a reference slice, even if the slice is bound with `let`.  
-
-**Mutability Rules for Heap Slices (`|...|`)**:
-
-1. Heap slices copy the elements into new memory.  
-2. Mutability of a heap slice is independent of the original array:
-   - `let` heap slice → editable elements  
-   - `const` heap slice → read-only elements  
-3. This allows you to take a `const` array with `const` elements and produce a fully mutable heap slice.
-
-**Examples**:
+### Stack
+In Hydra, all primitive types and their array equivalents are stack allocated and are managed by RAII
 
 ```rust
-let arr: [i32, 5] = {1, 2, 3, 4, 5};
-
-// Reference slice of mutable elements
-let ref_slice: [i32, 2] = &arr[1..3];
-ref_slice[0] = 10; // ✅ OK
-
-// Const reference slice
-const const_slice: [i32, 2] = &arr[1..3];
-const_slice[0] = 20; // ❌ ERROR: slice binding is const
-
-// Reference slice from const array
-const arr2: [i32, 5] = {1,2,3,4,5};
-let ref_slice2: [i32, 2] = &arr2[0..2];
-ref_slice2[0] = 1; // ❌ ERROR: original array is const
-
-// Heap slice (independent copy)
-let heap_slice: [i32, 3] = |arr2|[1..4];
-heap_slice[0] = 99; // ✅ OK*
+fn main() -> void {
+    const x: i32 = 10; // x is an primtive i32 and is allocated 4 bytes on the stack
+    const arr: [f64, 5] = {3.14, 3.14, 3.14, 3.14, 3.14}; // arr is an array of 5 f64s and is allocated 40 bytes on the stack
+}
 ```
 
-4\. Structs and Extensions
+### Heap
+Reference types or non primitive types are a bit different.
+These are allocated on the heap by wrapping them in pipes (`|`).
+These give a reference to the stack managed by ARC.
+
+```rust
+fn main() -> void {
+    // this is a heap allocated Vec (dynamic array)
+    // under the hood, variables are wrapped in | |
+    // specifically, the struct returned in new is allocated the heap,
+    // which in turn, makes anything that depends on new also heap allocated
+    let vec: Vec<i32> = Vec<i32>::new();
+    vec::push(5);
+}
+```
+
+Supposed you wanted to make your String representation.
+It could look like this, for example:
+```rust
+struct String {
+    data: [const char, anysize],
+    len: usize,
+    capacity: usize,
+
+    fn new(data: &[const char, anysize]) -> |String| {
+        let len: usize = data::length();
+        let capacity = &len;
+
+        // there is no need to wrap String in | | in the return statement
+        // as the return type of the function is a heap allocation
+        return String { 
+            data = data,
+            len = len,
+            capacity = len
+        };
+    }
+}
+```
+
+5\. Structs and Extensions
 -----------
 
 Structs are user-defined types that group related data and functions.
@@ -178,7 +182,7 @@ println("{}", vector.e[0]); // Accessing a field
 ```
 * * *
 
-5\. Functions and Generics
+6\. Functions and Generics
 --------------------------
 
 Functions are defined with the **`fn`** keyword, mandatory type annotations for parameters, and a specified return type. Use **`void`** for functions that do not return a value.
@@ -189,6 +193,44 @@ Functions are defined with the **`fn`** keyword, mandatory type annotations for 
         // Function body
         return <value>;
     }
+
+A very simple example
+```rust
+fn add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+fn main() -> void {
+    const sum: i32 = add(5, 3);
+}
+```
+
+Lets say you'd like to take an i64 and do arithmetic with an i32.
+You would need to cast the smaller type to the bigger type
+using the **`as`** keyword.
+
+There are two ways of doing this:
+Cast the value in the return statement or cast the parameter
+when the function is called.
+
+The return type, in this instance, needs to match the bigger type.
+```rust
+fn add(a: i32, b: i64) -> i64 {
+    return a as i64 + b; // cast in return statement
+}
+
+fn subtract(a: i32, b: i64) -> i64 {
+    return a - b;
+}
+
+fn main() -> void {
+    const sum: i64 = add(5, 6);
+    const difference: i64 = subtract(10 as i64, 5);
+
+    println("{}", sum);
+    println("{}", difference);
+}
+```
 
 ### Compile-Time Generics
 
@@ -243,7 +285,7 @@ fn main() -> void {
 ```
 * * *
 
-6\. Control Flow
+7\. Control Flow
 ----------------
 
 ### For Loops
@@ -261,8 +303,9 @@ The **`for`** loop iterates over a numerical range. The direction (incrementing 
 
 **Examples**:
 ```rust
-// Prints 0, 1, 2, ..., 9
-for (i in 0..10) {
+fn main() -> void {
+    // Prints 0, 1, 2, ... 9
+    for (i in 0..10) {
         println("{}", i);
     }
     
@@ -331,7 +374,7 @@ for (i in 0..20) {
 
 * * *
 
-7\. Pattern Matching
+8\. Pattern Matching
 --------------------
 
 The **`match`** keyword provides powerful pattern matching. It can be used as an expression to return a value.
