@@ -1,6 +1,10 @@
+// TODO:
+//   modularize for each type of codegen (ie. function, variable, etc)
+//   printf accepting all formats
+
 use std::collections::HashMap;
 
-use inkwell::targets::{InitializationConfig, Target, TargetMachine};
+use inkwell::targets::{InitializationConfig, Target, TargetData, TargetMachine};
 use inkwell::OptimizationLevel;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -17,12 +21,32 @@ pub struct CodeGen<'ctx> {
     module: Module<'ctx>,
     named_values: HashMap<String, PointerValue<'ctx>>,
     current_function: Option<FunctionValue<'ctx>>,
+    target_data: TargetData
 }
 
 impl<'ctx> CodeGen<'ctx> {
+
     pub fn new(context: &'ctx Context, module_name: &str) -> Self {
+        Target::initialize_native(&InitializationConfig::default()).unwrap();
+
+        let triple = TargetMachine::get_default_triple();
+        let target = Target::from_triple(&triple).unwrap();
+        let target_machine = target.create_target_machine(
+            &triple,
+            "generic",
+            "",
+            OptimizationLevel::Default,
+            inkwell::targets::RelocMode::PIC,
+            inkwell::targets::CodeModel::Default
+        ).unwrap();
+
+        let target_data = target_machine.get_target_data();
+
         let builder = context.create_builder();
         let module = context.create_module(module_name);
+
+        module.set_triple(&triple);
+        module.set_data_layout(&target_data.get_data_layout());
 
         Self {
             context,
@@ -30,6 +54,7 @@ impl<'ctx> CodeGen<'ctx> {
             module,
             named_values: HashMap::new(),
             current_function: None,
+            target_data
         }
     }
 
@@ -46,41 +71,114 @@ impl<'ctx> CodeGen<'ctx> {
             ASTNode::FunctionDeclaration { name, parameters, return_type, body } => {
                 self.generate_function_declaration(name, parameters, return_type, body)
             }
-            ASTNode::VariableDeclaration { is_const: _, name, type_annotation: _, initializer } => {
-                self.generate_variable_declaration(name, initializer)
+            ASTNode::VariableDeclaration { is_const: _, name, type_annotation, initializer } => {
+                self.generate_variable_declaration(name, type_annotation, initializer)
             }
             ASTNode::ReturnStatement { value } => {
                 self.generate_return(value)
             }
             ASTNode::Expression { token } => {
-                Ok(Some(self.generate_literal(token)))
-            }
+                let inferred_type = match &token.token_type {
+                    TokenType::IntLiteral(_) => self.context.i32_type().into(),
+                    TokenType::FloatLiteral(_) => self.context.f64_type().into(),
+                    TokenType::BoolLiteral(_) => self.context.bool_type().into(),
+                    TokenType::CharLiteral(_) => self.context.i8_type().into(),
+                    _ => return Err("error: unsupported literal type".to_string())
+                };
+
+                Ok(Some(self.generate_literal(token, inferred_type)))
+            }            
             ASTNode::VariableExpression { name } => {
                 self.generate_variable_load(name)
             }
             ASTNode::FunctionCallExpression { name, arguments } => {
                 self.generate_function_call(name, arguments)
             }
+            ASTNode::BinaryExpression { left, operator, right } => {
+                self.generate_binary_expression(left, operator, right)
+            }
             _ => Err("error: unsupported AST node for codegen".to_string()),
+        }
+    }
+
+    fn generate_binary_expression(&mut self, left: &ASTNode, operator: &Token, right: &ASTNode) -> 
+                                Result<Option<BasicValueEnum<'ctx>>, String> 
+    {
+        let left_val = self.generate_node(left)?.unwrap();
+        let right_val = self.generate_node(right)?.unwrap();
+
+        match operator.token_type {
+            TokenType::Plus => {
+                let result = self.builder.build_int_add(
+                    left_val.into_int_value(),
+                    right_val.into_int_value(),
+                    "addtmp"
+                );
+
+                Ok(Some(result.into()))
+            },
+
+            TokenType::Minus => {
+                let result = self.builder.build_int_sub(
+                    left_val.into_int_value(), 
+                    right_val.into_int_value(),
+                    "subtmp"
+                );
+
+                Ok(Some(result.into()))
+            }
+
+            _ => Err(format!("error: unsupported binary operator: {:?}", operator.token_type)),
         }
     }
 
     fn get_type(&self, type_str: &str) -> BasicTypeEnum<'ctx> {
         match type_str {
-            "i32" => self.context.i32_type().into(),
+            "isize" | "usize" => self.context.ptr_sized_int_type(&self.target_data, None).into(),
+            "i8" | "u8" | "char" => self.context.i8_type().into(),
+            "i16" | "u16" => self.context.i16_type().into(),
+            "i32" | "u32" => self.context.i32_type().into(),
+            "i64" | "u64"=> self.context.i64_type().into(),
+            "f32" => self.context.f32_type().into(),
             "f64" => self.context.f64_type().into(),
+            "bool" => self.context.bool_type().into(),
             _ => panic!("error: unsupported type {}", type_str),
         }
     }
 
-    fn generate_literal(&self, token: &Token) -> BasicValueEnum<'ctx> {
+    fn generate_literal(&self, token: &Token, target_type: BasicTypeEnum<'ctx>) -> BasicValueEnum<'ctx> {
         match &token.token_type {
-            TokenType::IntLiteral(val) => self.context.i32_type().const_int(*val as u64, false).into(),
-            TokenType::FloatLiteral(val) => self.context.f64_type().const_float(*val).into(),
-            TokenType::CharLiteral(val) => self.context.i8_type().const_int(*val as u64, false).into(),
-            // theres something wrong about casting the char to a u64 when im trying to print that
-            // out
-            _ => panic!("error: unsupported literal type"),
+            TokenType::IntLiteral(val) => match target_type {
+                BasicTypeEnum::IntType(int_type) => {
+                    if *val < 0 {
+                        int_type.const_int((*val as i64) as u64, true).into()
+                    } else {
+                        int_type.const_int(*val as u64, false).into()
+                    }
+                }
+
+                _ => panic!("error: int literal can not be assigned to non integer type")
+            },
+
+            TokenType::FloatLiteral(val) => match target_type {
+                BasicTypeEnum::FloatType(float_type) => float_type.const_float(*val).into(),
+                _ => panic!("error: float literal cannot be assigned to non-float type"),
+            },
+
+            TokenType::CharLiteral(val) => match target_type {
+                BasicTypeEnum::IntType(int_type) => 
+                    int_type.const_int(*val as u64, false).into(), 
+                _ => panic!("error: char literal can not be assigned to non-integer type")
+            },
+
+            TokenType::BoolLiteral(val) => match target_type {
+                BasicTypeEnum::IntType(int_type) if int_type.get_bit_width() == 1 => {
+                    int_type.const_int(if *val { 1 } else { 0 }, false).into()
+                }
+                _ => panic!("error: bool literal must be either true or false")
+            }
+
+            _ => panic!("error: unsupported literal type")
         }
     }
 
@@ -89,7 +187,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     Result<Option<BasicValueEnum<'ctx>>, String> 
     {
         let fn_name = name.lexeme;
-        
+
         let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = params.iter()
             .map(|(_, param_type)| self.get_type(param_type.lexeme).into())
             .collect();
@@ -111,7 +209,8 @@ impl<'ctx> CodeGen<'ctx> {
 
         for (i, param) in function.get_param_iter().enumerate() {
             let param_name = params[i].0.lexeme;
-            let alloca = self.create_entry_block_alloca(param_name, param.get_type());
+            let param_type = self.get_type(&params[i].1.lexeme);
+            let alloca = self.create_entry_block_alloca(param_name, param_type);
             self.builder.build_store(alloca, param);
             self.named_values.insert(param_name.to_string(), alloca);
         }
@@ -121,18 +220,43 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         if return_type.lexeme == "void" && self.builder.get_insert_block().and_then(|b| b.get_terminator()).is_none() {
-                self.builder.build_return(None);
+            self.builder.build_return(None);
         }
 
         Ok(Some(function.as_global_value().as_basic_value_enum()))
     }
-    
-    fn generate_variable_declaration(&mut self, name: &Token, initializer: &ASTNode) -> 
-                                    Result<Option<BasicValueEnum<'ctx>>, String> 
+
+    fn generate_variable_declaration(&mut self, name: &Token, type_annotation: &Option<Token>, 
+                                initializer: &ASTNode) -> Result<Option<BasicValueEnum<'ctx>>, String> 
     {
         let var_name = name.lexeme;
-        let initial_value = self.generate_node(initializer)?.unwrap();
-        
+        let var_type = if let Some(type_token) = type_annotation {
+            self.get_type(&type_token.lexeme)
+        } else {
+            match initializer {
+                ASTNode::Expression { token } => {
+                    match &token.token_type {
+                        TokenType::IntLiteral(_) => self.context.i32_type().into(),
+                        TokenType::FloatLiteral(_) => self.context.f64_type().into(),
+                        TokenType::BoolLiteral(_) => self.context.bool_type().into(),
+                        TokenType::CharLiteral(_) => self.context.i8_type().into(),
+
+                        _ => return Err("Cannot infer type from initializer".to_string())
+                    }
+                }
+
+                _ => {
+                    let init_val = self.generate_node(initializer)?.unwrap();
+                    init_val.get_type()
+                }
+            }
+        };
+
+        let initial_value = match initializer {
+            ASTNode::Expression { token } => self.generate_literal(token, var_type),
+            _ => self.generate_node(initializer)?.unwrap(),
+        };
+
         let alloca = self.create_entry_block_alloca(var_name, initial_value.get_type());
         self.builder.build_store(alloca, initial_value);
         self.named_values.insert(var_name.to_string(), alloca);
@@ -169,12 +293,33 @@ impl<'ctx> CodeGen<'ctx> {
         self.module.add_function("printf", printf_type, None)
     }
 
-    fn generate_function_call(&mut self, name: &Token, args: &[ASTNode]) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+    fn generate_function_call(&mut self, name: &Token, args: &[ASTNode]) -> 
+                            Result<Option<BasicValueEnum<'ctx>>, String> 
+    {
         if name.lexeme == "println" {
             return self.generate_println_call(args);
         }
-        
-        Err(format!("Unknown function call: {}", name.lexeme))
+
+        // Look up the function in the module
+        let function = self
+            .module
+            .get_function(name.lexeme)
+            .ok_or_else(|| format!("Unknown function call: {}", name.lexeme))?;
+
+        // Generate code for each argument
+        let mut compiled_args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::new();
+        for arg in args {
+            let arg_val = self.generate_node(arg)?.unwrap();
+            compiled_args.push(arg_val.into());
+        }
+
+        // Build the call instruction
+        let call_value = self
+            .builder
+            .build_call(function, &compiled_args, "calltmp");
+
+        // Return the result of the function call (if it's not void)
+        Ok(call_value.try_as_basic_value().left())
     }
 
     fn generate_println_call(&mut self, args: &[ASTNode]) -> Result<Option<BasicValueEnum<'ctx>>, String> {
@@ -189,7 +334,7 @@ impl<'ctx> CodeGen<'ctx> {
             _ => return Err("Invalid first argument to println.".to_string()),
         };
 
-        
+
         // TODO: map the hydra types to the c formatters
         // isize, usize, i/u8-64 all map to %d
         // f32 and f64 map to %.2f for now
@@ -206,7 +351,7 @@ impl<'ctx> CodeGen<'ctx> {
             let arg_val = self.generate_node(arg_node)?.unwrap();
             printf_args.push(arg_val.into());
         }
-        
+
         self.builder.build_call(printf, &printf_args, "printf_call");
 
         Ok(None)
