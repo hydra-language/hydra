@@ -13,6 +13,7 @@ Comments are used for annotating code and are ignored by the compiler. Hydra use
 **Syntax**:
 
     // This is a single-line comment.
+
     /* This is a multi
         line comment */
 
@@ -80,12 +81,12 @@ const d: [const char, 2] = { 'x', 'y' };
 4\. Memory
 -----------
 
-Memory works in a little bit of a complicated way. 
+Memory works in a little bit of a complicated way.
 The idea is RAII for stack allocated items (Resource Aqcuistion Is Initialization)
-and ARC (Automatic Reference Counting) for heap allocated.
+and ARC (Automatic Reference Counting) for heap allocated items.
 
 The idea behind this is to eliminate the need for a super strict borrow checker
-like Rust has and whilst having memory safety without a garbage collector.
+like Rust has, whilst having memory safety without a garbage collector.
 
 ### Stack
 In Hydra, all primitive types and their array equivalents are stack allocated and are managed by RAII
@@ -93,9 +94,10 @@ In Hydra, all primitive types and their array equivalents are stack allocated an
 ```rust
 fn main() -> void {
     const x: i32 = 10; // x is an primtive i32 and is allocated 4 bytes on the stack
-    const arr: [f64, 5] = {3.14, 3.14, 3.14, 3.14, 3.14}; // arr is an array of 5 f64s and is allocated 40 bytes on the stack
+    const arr: [f64, 2] = { 3.14, 3.14 }; // arr is an array of 2 f64s and is allocated on the stack
 }
 ```
+---
 
 ### Heap
 Reference types or non primitive types are a bit different.
@@ -135,9 +137,10 @@ struct String {
     }
 }
 ```
+---
 
 5\. Structs and Extensions
------------
+--------------------------
 
 Structs are user-defined types that group related data and functions.
 Extensions are a way to override `trait` functions for user defined types
@@ -210,8 +213,7 @@ You would need to cast the smaller type to the bigger type
 using the **`as`** keyword.
 
 There are two ways of doing this:
-Cast the value in the return statement or cast the parameter
-when the function is called.
+Cast the value in the return statement or cast the parameter when the function is called.
 
 The return type, in this instance, needs to match the bigger type.
 ```rust
@@ -234,53 +236,38 @@ fn main() -> void {
 
 ### Compile-Time Generics
 
-Hydra supports compile-time generics:
-    **`anysize`** - a constant value the compiler inlines
-    **`anytype`** - another constant value the compiler inlines with the type of the variable associated with in during the type check phase of compilation
+Hydra supports compile-time generics: \
+`anysize` - a constant value the compiler inlines \
+`anytype` - another constant value the compiler inlines with the type of the variable associated with in during the type check phase of compilation
 
-**Example**:
+### Anysize
+The `anysize` generic allows this function to accept an i32 array of any length.
 ```rust
-// The 'anysize' parameter allows this function to accept an i32 array of any length.
 fn print_sum(numbers: [i32, anysize]) -> void {
     let sum: i32 = 0;
     foreach (num in numbers) {
-        sum = sum + num;
+        sum += num;
     }
     println("Sum: {}", sum);
 }
+```
+However, keep in mind, this does NOT mean your array can be dynamically resized. \
+Once the compiler finds the size of the array, all other references to it will also be of the same size. \
+If the compiler detects an attempt to resize the array, your program will not compile
+---
 
-fn identity(x: anytype) -> anytype {
-    return x::typeof();
+### Anytype
+The `anytype` generic allows a function to accept a value of any type
+```rust
+fn get_type(value: anytype) -> void {
+    const type = typeof(value);
+    
+    println("Type: {}, Value: {}", type, value);  
 }
-    
+
 fn main() -> void {
-    let size_5_arr: [i32, 5] = {1, 2, 3, 4, 5};
-    let size_10_arr: [i32, 10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-    
-    print_sum(size_5_arr);      // Compiler inlines 'size' as 5
-    print_sum(size_10_arr);     // Compiler inlines 'size' as 10
-
-    const x = 22;                   // inferring type as i32
-    const typeof_x = identity(x);   // returns type i32
-
-    // NOTE: if you annotate the variable with a type
-    // the function will just automatically return that
-    // type, it will not perform analysis. For example:
-    let y: f64 = 3.14;
-    const typeof_y = identity(y);
-
-    // You could also annotate the variable holding
-    // the function call. If the type you annotate
-    // with doesnt match the type passed, a error
-    // will occur. This is the problem `anytype`
-    // solves. For example:
-    let z = "Hello";
-    const typeof_z_wrong: i32 = identity(z);      // This will throw an error
-    const typeof_z_right: anytype = identity(z);
-    
-    println("{}", typeof_x);
-    println("{}", typeof_y);
-    println("{}", typeof_z_right);
+    get_type(10);
+    get_type('c');    
 }
 ```
 * * *
@@ -395,3 +382,4 @@ let check: string = match (x % 2) {
     1 => "odd"
 };
 ```
+
