@@ -10,6 +10,7 @@ clap = { version = "4.3", features = ["derive"] }
 lexer = { path = "../crates/lexer" }
 parser = { path = "../crates/parser/" }
 codegen = { path = "../crates/codegen/" }
+errors = { path = "../crates/errors/" }
 
 [[bin]]
 name = "hydrac"

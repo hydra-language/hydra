@@ -3,5 +3,6 @@ members = [
     "crates/lexer",
     "crates/parser",
     "crates/codegen",
+    "crates/errors",
     "cli"
 ]
