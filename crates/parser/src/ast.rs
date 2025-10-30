@@ -29,6 +29,12 @@ pub enum ASTNode<'a> {
         arguments: Vec<ASTNode<'a>>,
     },
 
+    BinaryExpression {
+        left: Box<ASTNode<'a>>,
+        operator: Token<'a>,
+        right: Box<ASTNode<'a>>
+    },
+
     Primtive {
         token: Token<'a>,
     },
