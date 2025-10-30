@@ -1,112 +1,66 @@
-use std::{fs, path::Path, process::{self, Command}};
+use std::{env, fs, path::{Path, PathBuf}, process::{self, Command}};
 
-use clap::{Arg, Command as ClapCommand};
+use clap::{ArgAction, CommandFactory, Parser as ClapParser};
 use inkwell::context::Context;
 
 use lexer::Lexer;
 use parser::parser::Parser;
 use parser::type_check::TypeChecker;
 use codegen::CodeGen;
+use errors::*;
+
+#[derive(ClapParser, Debug)]
+#[command(name = "hydrac", version = env!("CARGO_PKG_VERSION"))]
+struct Cli {
+    #[arg(value_name = "INPUT")]
+    input: Option<String>,
+
+    #[arg(long, action = ArgAction::SetTrue, help = "emit tokens to a .tokens file")]
+    tokens: bool,
+
+    #[arg(long, action = ArgAction::SetTrue, help = "emit ast nodes to a .nodes file")]
+    ast: bool,
+
+    #[arg(long, action = ArgAction::SetTrue, help = "emit llvm ir to a .ll file")]
+    ir: bool,
+
+    #[arg(short, long, value_name = "OUTPUT", help = "specify name of output file")]
+    output: Option<String>
+}
 
 fn main() {
-    let matches = ClapCommand::new("hydrac")
-        .version(env!("CARGO_PKG_VERSION"))
-        .about("Hydra Compiler CLI")
-        .arg(
-            Arg::new("input")
-                .help("Input .hydra source file")
-                .required(false)
-                .value_name("INPUT")
-                .index(1),
-        )
-        .arg(
-            Arg::new("tokens")
-                .long("tokens")
-                .help("Emit tokens to a .tokens file")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("ast")
-                .long("ast")
-                .help("Emit AST nodes to a .nodes file")
-                .action(clap::ArgAction::SetTrue)
-        )
-        .arg(
-            Arg::new("ir")
-                .long("ir")
-                .help("Emir llvm ir to a .ir file")
-                .action(clap::ArgAction::SetTrue)
-        )
-        .get_matches();
+    let cli = Cli::parse();
 
-    let input = match matches.get_one::<String>("input") {
-        Some(i) => i,
-        None => {
-            ClapCommand::new("hydrac")
-                .version(env!("CARGO_PKG_VERSION"))
-                .about("Hydra Compiler CLI")
-                .arg(
-                    Arg::new("input")
-                        .help("Input .hydra source file")
-                        .required(false)
-                        .value_name("INPUT")
-                        .index(1),
-                )
-                .arg(
-                    Arg::new("tokens")
-                        .long("tokens")
-                        .help("Emit tokens to a .tokens file")
-                        .action(clap::ArgAction::SetTrue),
-                )
-                .arg(
-                    Arg::new("ast")
-                        .long("ast")
-                        .help("Emit AST nodes to a .nodes file")
-                        .action(clap::ArgAction::SetTrue)
-                )
-                .arg(
-                    Arg::new("ir")
-                        .long("ir")
-                        .help("Emir llvm ir to a .ir file")
-                        .action(clap::ArgAction::SetTrue)
-                )
-                .print_help()
-                .unwrap();
-            println!();
-            process::exit(0)
-        }
-    };
+    if cli.input.is_none() {
+        Cli::command().print_help().unwrap();
+        println!();
 
-    let emit_tokens = matches.get_flag("tokens");
-    let emit_ast = matches.get_flag("ast");
-    let emit_ir = matches.get_flag("ir");
-    let input_path = Path::new(input);
+        process::exit(1);
+    }
 
-    // --- Get the file stem for naming the module and output file ---
-    let module_name = input_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
+    let input = cli.input.unwrap();
+    let input_path = Path::new(&input);
 
-    // Validate .hydra extension
+    let module_name = cli.output.clone().unwrap_or_else(|| {
+        input_path.file_stem().and_then(|s| s.to_str()).unwrap_or("output").to_string()
+    });
+
     match input_path.extension().and_then(|e| e.to_str()) {
         Some("hydra") => {}
         _ => {
-            eprintln!("error: '{}' is not a .hydra file", input);
+            eprintln!("error: '{}' is not a hydra file", input);
             process::exit(1);
         }
     }
 
-    // Read source file
-    let contents = match fs::read_to_string(input) {
+    let contents = match fs::read_to_string(&input) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("error reading '{}': {}", input, e);
+            eprintln!("error: failed while reading '{}': {}", input, e);
             process::exit(1);
         }
     };
 
-    // Run lexer
     let mut lexer = Lexer::new(&contents);
     let tokens = match lexer.tokenize() {
         Ok(t) => t,
@@ -116,100 +70,148 @@ fn main() {
         }
     };
 
-    // Emit tokens to a file if requested
-    if emit_tokens {
-        let token_output = tokens
-            .iter()
+    if cli.tokens {
+        let token_output = tokens.iter()
             .map(|t| format!("{:?}", t))
             .collect::<Vec<_>>()
             .join("\n");
+
         let token_filename = input_path.with_extension("tokens").to_string_lossy().into_owned();
         if let Err(e) = fs::write(&token_filename, token_output) {
-            eprintln!("error: writing token file '{}' failed: {}", token_filename, e);
+            eprintln!("error: write to tokens file '{}' failed: {}", token_filename, e);
             process::exit(1);
         }
-        println!("Tokens written to: {}", token_filename);
-        return;
+
+        println!("info: tokens written to: {}", token_filename);
     }
 
-    // Run parser
     let mut parser = Parser::new(tokens);
     let ast = match parser.parse() {
         Ok(ast) => ast,
         Err(e) => {
-            eprintln!("parser error: {}", e);
+            e.report(&contents, &input);
             process::exit(1);
         }
     };
 
-    if emit_ast {
-        let ast_output = ast
-            .iter()
+    if cli.ast {
+        let ast_ouput = ast.iter()
             .map(|node| format!("{:#?}", node))
             .collect::<Vec<_>>()
             .join("\n\n");
+
         let ast_filename = input_path.with_extension("nodes").to_string_lossy().into_owned();
-        if let Err(e) = fs::write(&ast_filename, ast_output) {
-            eprintln!("error: writing AST file '{}': {}", ast_filename, e);
+        if let Err(e) = fs::write(&ast_filename, ast_ouput) {
+            eprintln!("error: writing nodes to ast file '{}' failed: {}", ast_filename, e);
             process::exit(1);
         }
-        println!("AST written to: {}", ast_filename);
-        return;
+
+        println!("info: ast nodes written to: {}", ast_filename);
     }
 
     let mut type_checker = TypeChecker::new();
     if let Err(e) = type_checker.check(&ast) {
         eprintln!("error: {}", e);
         process::exit(1);
-    };
+    }
 
     let context = Context::create();
-    let mut codegen = CodeGen::new(&context, module_name);
+    let mut codegen = CodeGen::new(&context, &module_name);
 
     if let Err(e) = codegen.generate(&ast) {
         eprintln!("codegen error: {}", e);
         process::exit(1);
     }
 
-    if emit_ir {
-        let ir_output = codegen.ir_to_string();
-        let ir_filename = input_path.with_extension("ll").to_string_lossy().into_owned();
+    let ll_file = input_path.with_extension("ll");
+    let ir_output = codegen.ir_to_string();
+    fs::write(&ll_file, ir_output).unwrap_or_else(|e| {
+        eprintln!("error: writing ir to file '{}' failed: {}", ll_file.display(), e);
+        process::exit(1);
+    });
 
-        if let Err(e) = fs::write(&ir_filename, ir_output) {
-            eprintln!("error: writing IR to .ll file '{}' failed: {}", ir_filename, e);
-            process::exit(1);
-        }
-        println!("IR written to: {}", ir_filename);
+    if cli.ir {
+        println!("info: ir written to file: {}", ll_file.display());
         return;
     }
 
-    // Compile to object file
-    let obj_path_str = format!("{}.o", module_name);
-    let obj_path = Path::new(&obj_path_str);
-    if let Err(e) = codegen.write_to_object_file(obj_path) {
-        eprintln!("error: writing object file: {} failed", e);
+    let obj_file = PathBuf::from(format!("{}.o", module_name));
+    let clang_status = Command::new("clang")
+        .args([ll_file.to_str().unwrap(), "-c", "-o", obj_file.to_str().unwrap(), "-O2", "-Wno-override-module"])
+        .status()
+        .expect("error: failed to run clang\nhelp: try installing a clang compiler");
+
+    if !clang_status.success() {
+        eprintln!("error: failed to run clang\nhelp: try installing a clang compiler");
         process::exit(1);
     }
 
-    // Link the object file into an executable
-    let linker_output = Command::new("clang")
-        .arg(&obj_path_str)
+    let exe_path = env::current_exe().expect("error: failed to get current executable path");
+
+    let runtime_dir = exe_path.parent()
+        .expect("error: failed to locate directory hydrac is located in")
+        .join("../../runtime/arch");
+
+    let arch = env::consts::ARCH;
+
+    let start_s = match arch {
+        "x86_64" => runtime_dir.join("x86_64/start.s"),
+        "aarch64" => runtime_dir.join("arm/start.s"),
+        _ => {
+            eprintln!("error: unsupported architecture: '{}'", arch);
+            process::exit(1);
+        }
+    };
+
+    let start_o = start_s.with_extension("o");
+
+    if !start_o.exists() || start_o.metadata().unwrap().modified().unwrap() 
+        < start_s.metadata().unwrap().modified().unwrap() 
+    {
+        let mut assemble_cmd = Command::new("as");
+        if arch == "x86_64" {
+            assemble_cmd.arg("--64");
+        }
+
+        let status = assemble_cmd.arg(&start_s)
+            .arg("-o")
+            .arg(&start_o)
+            .status()
+            .expect("error: runtime linking failed");
+
+        if !status.success() {
+            eprintln!("error: runtime linking failed");
+            process::exit(1);
+        }
+    }
+
+    let dynamic_linker = match arch {
+        "x86_64" => "/lib64/ld-linux-x86-64.so.2",
+        "aarch64" => "/lib/ld-linux-aarch64.so.1",
+        _ => unreachable!()
+    };
+
+    let linker_status = Command::new("ld")
+        .arg("--pie")
         .arg("-o")
-        .arg(module_name)
-        .arg("-O2")
-        .output()
-        .expect("error: failed to execute linker");
+        .arg(&module_name)
+        .arg(&start_o)
+        .arg(&obj_file)
+        .arg("-dynamic-linker")
+        .arg(dynamic_linker)
+        .arg("-lc")
+        .status()
+        .expect("error: linking against libc failed");
 
-    if !linker_output.status.success() {
-        eprintln!(
-            "linker error:\n{}",
-            String::from_utf8_lossy(&linker_output.stderr)
-        );
+
+    if !linker_status.success() {
+        eprintln!("error: linking against libc failed");
         process::exit(1);
     }
 
-    // Clean up the temporary object file
-    if let Err(e) = fs::remove_file(obj_path) {
-        eprintln!("warning: could not remove temporary object file: {}", e);
+    for file in [&obj_file, &ll_file, &start_o] {
+        if let Err(e) = fs::remove_file(file) {
+            eprintln!("warning: could not remove object file '{}': {}", file.display(), e);
+        }
     }
 }
