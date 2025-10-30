@@ -1,5 +1,8 @@
+// TODO:
+//      modularize for generating nodes (ie. separate files for function nodes, variable nodes, etc)
+
 use lexer::{Token, TokenType};
-use crate::ast::ASTNode;
+use crate::{ParserError, ast::ASTNode};
 
 pub struct Parser<'a> {
     tokens: Vec<Token<'a>>,
@@ -13,7 +16,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse(&mut self) -> Result<Vec<ASTNode<'a>>, String> {
+    pub fn parse(&mut self) -> Result<Vec<ASTNode<'a>>, ParserError<'a>> {
         let mut statements = Vec::new();
 
         while !self.is_at_end() {
@@ -25,7 +28,7 @@ impl<'a> Parser<'a> {
         Ok(statements)
     }
 
-    fn parse_declaration(&mut self) -> Result<ASTNode<'a>, String> {
+    fn parse_declaration(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         if self.match_token(TokenType::Let) || self.match_token(TokenType::Const) {
             self.parse_variable()
         } else if self.match_token(TokenType::Function) {
@@ -37,34 +40,37 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_type(&mut self) -> Result<Token<'a>, String> {
-        let var_type = &self.tokens[self.current].token_type;
+    fn parse_type(&mut self) -> Result<Token<'a>, ParserError<'a>> {
+        let current_token = &self.tokens[self.current];
 
         use TokenType::*;
-        match var_type {
+        match &current_token.token_type {
             Identifier(_) => Ok(self.advance().clone()),
 
             ISize | I8 | I16 | I32 | I64 | 
             USize | U8 | U16 | U32 | U64 |
             F32 | F64 | Char | Bool => Ok(self.advance().clone()),
 
-            _ => Err("error: expected a type name".to_string()),
+            _ => Err(ParserError::Generic { 
+                message: "expected a type name".to_string(),
+                token: current_token.clone()
+            })
         }
     }
 
-    fn parse_variable(&mut self) -> Result<ASTNode<'a>, String> {
+    fn parse_variable(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         let is_const = self.previous().token_type == TokenType::Const;
-        let name = self.consume(TokenType::Identifier("".to_string()), "error: expected variable name")?.clone();
+        let name = self.consume(TokenType::Identifier("".to_string()), "variable name")?.clone();
         let mut type_annotation = None;
         
         if self.match_token(TokenType::Colon) {
             type_annotation = Some(self.parse_type()?);
 
         }
-        self.consume(TokenType::Equal, "error: expected '=' after variable name")?;
+        self.consume(TokenType::Equal, "'=' after variable name")?;
 
         let initializer = self.parse_expression()?;
-        self.consume(TokenType::Semicolon, "error: expected ';' at the end of line")?;
+        self.consume(TokenType::Semicolon, "';' at the end of line")?;
 
         Ok(ASTNode::VariableDeclaration {
             is_const,
@@ -74,15 +80,15 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_function(&mut self) -> Result<ASTNode<'a>, String> {
-        let name = self.consume(TokenType::Identifier("".to_string()), "error: expected function name")?.clone();
-        self.consume(TokenType::LeftParen, "error: expected '(' after function name")?;
+    fn parse_function(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let name = self.consume(TokenType::Identifier("".to_string()), "function name")?.clone();
+        self.consume(TokenType::LeftParen, "'(' after function name")?;
 
         let mut parameters = Vec::new();
         if !self.check(TokenType::RightParen) {
             loop {
-                let param_name = self.consume(TokenType::Identifier("".to_string()), "error: expected parameter name")?.clone();
-                self.consume(TokenType::Colon, "error: expected ':' after parameter name")?;
+                let param_name = self.consume(TokenType::Identifier("".to_string()), "parameter name")?.clone();
+                self.consume(TokenType::Colon, "':' after parameter name")?;
 
                 let param_type = self.parse_type()?;
                 parameters.push((param_name.clone(), param_type.clone()));
@@ -92,17 +98,17 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        self.consume(TokenType::RightParen, "error: expected ')' after parameters")?;
-        self.consume(TokenType::Arrow, "error: expected '->' after ')'")?;
+        self.consume(TokenType::RightParen, "')' after parameters")?;
+        self.consume(TokenType::Arrow, "'->' after ')'")?;
 
         let return_type = self.parse_type()?.clone();
-        self.consume(TokenType::LeftBrace, "error: expected '{' to open function body")?;
+        self.consume(TokenType::LeftBrace, "'{' to open function body")?;
 
         let mut body = Vec::new();
         while !self.check(TokenType::RightBrace) {
             body.push(self.parse_declaration()?);
         }
-        self.consume(TokenType::RightBrace, "error: expected '}' to close function body")?;
+        self.consume(TokenType::RightBrace, "'}' to close function body")?;
 
         Ok(ASTNode::FunctionDeclaration {
             name: name.clone(),
@@ -112,69 +118,110 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_return(&mut self) -> Result<ASTNode<'a>, String> {
+    fn parse_return(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         let value = self.parse_expression()?;
-        self.consume(TokenType::Semicolon, "error: expected ';' after return value")?;
+        self.consume(TokenType::Semicolon, "';' after return value")?;
 
         Ok(ASTNode::ReturnStatement {
             value: Box::new(value),
         })
     }
 
-    fn parse_statement(&mut self) -> Result<ASTNode<'a>, String> {
+    fn parse_statement(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         let expr = self.parse_expression()?;
-        self.consume(TokenType::Semicolon, "error: expected ';' after expression")?;
+        self.consume(TokenType::Semicolon, "';' after expression")?;
 
         Ok(expr)
     }
 
-    fn parse_expression(&mut self) -> Result<ASTNode<'a>, String> {
-        let mut expr = self.parse_primary()?;
-        if self.match_token(TokenType::LeftParen) {
-            let name_token = match &expr {
-                ASTNode::VariableExpression { name } => name.clone(),
-                _ => return Err("error: expected function name before '('".to_string()),
+    fn parse_expression(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        self.parse_additive()
+    }
+
+    fn parse_additive(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let mut node = self.parse_call()?;
+
+        loop {
+            let operator = if self.match_token(TokenType::Plus) ||
+                        self.match_token(TokenType::Minus) {
+                Some(self.previous().clone())
+            } else {
+                None
             };
 
-            expr = self.finish_parse_fn_call(name_token)?;
+            if let Some(op) = operator {
+                let right = self.parse_call()?;
+
+                node = ASTNode::BinaryExpression {
+                    left: Box::new(node),
+                    operator: op,
+                    right: Box::new(right)
+                };
+            } else {
+                break;
+            }
         }
-        
+
+        Ok(node)
+    }
+
+    fn parse_call(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let mut expr = self.parse_primary()?;
+
+        if self.match_token(TokenType::LeftParen) {
+            let token_name = match &expr {
+                ASTNode::VariableExpression { name } => name.clone(),
+
+                _ => {
+                    return Err(ParserError::Generic { 
+                        message: "expected function name before '('".to_string(), 
+                        token: self.previous().clone(),
+                    })
+                }
+            };
+            
+            expr = self.finish_parse_fn_call(token_name)?;
+        }
+
         Ok(expr)
     }
 
-    fn parse_primary(&mut self) -> Result<ASTNode<'a>, String> {
-        let token_type = &self.tokens[self.current].token_type;
+    fn parse_primary(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let current_token = &self.tokens[self.current];
 
         use TokenType::*;
-        match token_type {
-            IntLiteral(_) | FloatLiteral(_) | StringLiteral(_) | CharLiteral(_) | BoolLiteral(_) => {
+        match &current_token.token_type {
+            IntLiteral(_) | FloatLiteral(_) | StringLiteral(_) | CharLiteral(_)
+            | BoolLiteral(_) => 
+            {
                 self.advance();
-
-                Ok(ASTNode::Expression { token: self.previous().clone() })
+                Ok(ASTNode::Expression {
+                    token: self.previous().clone(),
+                })
             }
 
             Identifier(_) => {
                 self.advance();
-
-                Ok(ASTNode::VariableExpression { name: self.previous().clone() })
+                Ok(ASTNode::VariableExpression {
+                    name: self.previous().clone(),
+                })
             }
 
             LeftParen => {
                 self.advance();
-
-                let expr = self.parse_expression()?;
-                self.consume(TokenType::RightParen, "error: expected ')' after expression");
-
+                let expr = self.parse_expression()?; // Recurse to handle grouped expressions
+                self.consume(TokenType::RightParen, "')' after expression")?;
                 Ok(expr)
             }
 
-            _ => {
-                Err("error: expected primary expression".to_string())
-            }
+            _ => Err(ParserError::Generic {
+                message: "expected primary expression".to_string(),
+                token: current_token.clone(),
+            }),
         }
     }
 
-    fn finish_parse_fn_call(&mut self, name: Token<'a>) -> Result<ASTNode<'a>, String> {
+    fn finish_parse_fn_call(&mut self, name: Token<'a>) -> Result<ASTNode<'a>, ParserError<'a>> {
         let mut args = Vec::new();
 
         if !self.check(TokenType::RightParen) {
@@ -186,12 +233,12 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        self.consume(TokenType::RightParen, "error: expected ')' to close function body");
+        self.consume(TokenType::RightParen, "')' to close function body")?;
 
         Ok(ASTNode::FunctionCallExpression { name, arguments: args })
     }
 
-    fn main_function_exists(&self, ast: &[ASTNode<'a>]) -> Result<(), String> {
+    fn main_function_exists(&self, ast: &[ASTNode<'a>]) -> Result<(), ParserError<'a>> {
         let main_found = ast.iter().any(|node| {
             if let ASTNode::FunctionDeclaration { name, parameters, return_type, .. } = node {
                 name.lexeme == "main" && parameters.is_empty() && return_type.lexeme == "void"
@@ -203,9 +250,7 @@ impl<'a> Parser<'a> {
         if main_found {
             Ok(())
         } else {
-            Err("error: no 'main' function found\n
-                help: your program must have an entry declared as\n\tfn main() -> void"
-            .to_string())
+            Err(ParserError::NoMainFunction)
         }
     }
 
@@ -219,11 +264,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn consume(&mut self, token: TokenType, msg: &str) -> Result<&Token<'a>, String> {
+    fn consume(&mut self, token: TokenType, expected: &str) -> Result<&Token<'a>, ParserError<'a>> {
         if self.check(token) {
             Ok(self.advance())
         } else {
-            Err(msg.to_string())
+            Err(ParserError::ExpectedToken {
+                expected: expected.to_string(),
+                found: self.tokens[self.current].clone(),
+            })
         }
     }
 
