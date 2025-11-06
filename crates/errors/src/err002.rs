@@ -13,6 +13,7 @@ impl<'a> CompilerError for FormattedError<'a> {
             code: self.code,
             message: &self.message,
             token: self.token.clone(),
+            help: None
         };
 
         error_to_report.report(source, filename);

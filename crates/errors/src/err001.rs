@@ -32,6 +32,7 @@ pub fn no_main<'a>() -> impl CompilerError + Hint + 'a {
                 line: 1,
                 column: 1
             },
+            help: None,
         },
     }
 }
