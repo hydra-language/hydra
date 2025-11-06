@@ -91,6 +91,9 @@ impl<'ctx> CodeGen<'ctx> {
             ASTNode::VariableExpression { name } => {
                 self.generate_variable_load(name)
             }
+            ASTNode::AssignmentExpression { target, operator, value } => {
+                self.generate_assignment(target, operator, value)
+            }
             ASTNode::FunctionCallExpression { name, arguments } => {
                 self.generate_function_call(name, arguments)
             }
@@ -98,6 +101,30 @@ impl<'ctx> CodeGen<'ctx> {
                 self.generate_binary_expression(left, operator, right)
             }
             _ => Err("error: unsupported AST node for codegen".to_string()),
+        }
+    }
+
+    fn generate_assignment(&mut self, target: &ASTNode, operator: &Token, value: &ASTNode) -> 
+                           Result<Option<BasicValueEnum<'ctx>>, String> 
+    {
+        let var_name = match target {
+            ASTNode::VariableExpression { name } => name.lexeme,
+            _ => return Err("error: assignment target must be a variable".to_string())
+        };
+
+        let var_ptr = *self.named_values.get(var_name)
+            .ok_or_else(|| format!("Unknown variable in assignment: {}", var_name))?;
+
+        let new_value = self.generate_node(value)?.unwrap();
+
+        match operator.token_type {
+            TokenType::Equal => {
+                // Simple assignment (x = 5)
+                self.builder.build_store(var_ptr, new_value);
+                Ok(None)
+            },
+            // TODO: Implement compound assignments (+=, -=)
+            _ => Err(format!("error: unsupported assignment operator: {:?}", operator.token_type)),
         }
     }
 
@@ -123,6 +150,26 @@ impl<'ctx> CodeGen<'ctx> {
                     left_val.into_int_value(), 
                     right_val.into_int_value(),
                     "subtmp"
+                );
+
+                Ok(Some(result.into()))
+            },
+
+            TokenType::Star => {
+                let result = self.builder.build_int_mul(
+                    left_val.into_int_value(),
+                    right_val.into_int_value(), 
+                    "multtemp"
+                );
+
+                Ok(Some(result.into()))
+            }
+
+            TokenType::ForwardSlash => {
+                let result = self.builder.build_int_signed_div(
+                    left_val.into_int_value(),
+                    right_val.into_int_value(), 
+                    "divtmp"
                 );
 
                 Ok(Some(result.into()))
@@ -325,34 +372,103 @@ impl<'ctx> CodeGen<'ctx> {
     fn generate_println_call(&mut self, args: &[ASTNode]) -> Result<Option<BasicValueEnum<'ctx>>, String> {
         let printf = self.get_printf_declaration();
 
-        let format_str_node = args.first().ok_or("println requires a format string.")?;
+        let format_str_node = args.first().ok_or("println requires a format string")?;
         let format_str_literal = match format_str_node {
             ASTNode::Expression { token } => match &token.token_type {
                 TokenType::StringLiteral(s) => s,
-                _ => return Err("First argument to println must be a string literal.".to_string()),
+                _ => return Err("first argument must be a string literal".to_string()),
             },
-            _ => return Err("Invalid first argument to println.".to_string()),
+            _ => return Err("invalid first argument to println".to_string()),
         };
 
+        let mut c_format_str = String::new();
+        let mut printf_args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::new();
 
-        // TODO: map the hydra types to the c formatters
-        // isize, usize, i/u8-64 all map to %d
-        // f32 and f64 map to %.2f for now
-        // char maps to %c and prints the char value NOT ascii like %d
-        // bool maps to %b
-        let c_format_str = format_str_literal.replace("{}", "%d") + "\n";
+        let mut arg_iter = args.iter().skip(1);
+        let parts = format_str_literal.split("{}");
+
+        for part in parts {
+            c_format_str.push_str(part);
+
+            if let Some(arg_node) = arg_iter.next() {
+                let arg_val = self.generate_node(arg_node)?
+                    .ok_or_else(|| "println argument expression must return a value".to_string())?;
+
+                let (specifier, val) = match arg_val.get_type() {
+                    BasicTypeEnum::IntType(int_type) => {
+                        match int_type.get_bit_width() {
+                            // bool
+                            1 => {
+                                // bool is going be converted to true or false,
+                                // so its passed as "%s"
+                                let bool_val = arg_val.into_int_value();
+                                let true_str = self.builder.build_global_string_ptr("true", "bool_true");
+                                let false_str = self.builder.build_global_string_ptr("false", "bool_false");
+                                
+                                // string pointer to use
+                                let str_val = self.builder.build_select(
+                                    bool_val,
+                                    true_str.as_basic_value_enum(),
+                                    false_str.as_basic_value_enum(),
+                                    "select_bool_str"
+                                );
+
+                                // pass string pointer into printf
+                                ("%s", str_val.into())
+                            },
+
+                            // char
+                            8 => {
+                                ("%c", arg_val.into())
+                            },
+                            
+                            // i16, i32, u16, u32
+                            16 | 32 => {
+                                ("%d", arg_val.into())
+                            },
+
+                            // i64, u64, isize, usize
+                            64 => {
+                                ("%lld", arg_val.into())
+                            },
+
+                            _ => {
+                                // fallback for other sizes
+                                if int_type.get_bit_width() > 32 {
+                                    ("%lld", arg_val.into())
+                                } else {
+                                    ("%d", arg_val.into())
+                                }
+                            }
+                        }
+                    },
+                    BasicTypeEnum::FloatType(_) => {
+                        ("%.2f", arg_val.into())
+                    }
+                    _ => {
+                        return Err(format!("cannot call println on a value of type '{:?}'", arg_val.get_type()));
+                    }
+                };
+
+                c_format_str.push_str(specifier);
+                printf_args.push(val);
+            }
+        }
+
+        if arg_iter.next().is_some() {
+            return Err("too many arguments provided to println for format string".to_string());
+        }
+
+        c_format_str.push('\n');
+
         let format_str_ptr = self.builder
             .build_global_string_ptr(&c_format_str, "format_str")
             .as_pointer_value();
+        
+        let mut final_printf_args: Vec<BasicMetadataValueEnum<'ctx>> = vec![format_str_ptr.into()];
+        final_printf_args.extend(printf_args);
 
-        let mut printf_args: Vec<BasicMetadataValueEnum<'ctx>> = vec![format_str_ptr.into()];
-
-        for arg_node in args.iter().skip(1) {
-            let arg_val = self.generate_node(arg_node)?.unwrap();
-            printf_args.push(arg_val.into());
-        }
-
-        self.builder.build_call(printf, &printf_args, "printf_call");
+        self.builder.build_call(printf, &final_printf_args, "printf_call");
 
         Ok(None)
     }
