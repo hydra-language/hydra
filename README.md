@@ -1,14 +1,12 @@
 # Hydra
 
-A statically-typed programming language inspired by hatred of Java :)
+A statically-typed, data oriented systems programming language
 
 ---
 
 ## 🚀 Current Status
 
-Hydra is currently in the **language specification phase**. The core syntax and features have been designed, and the project is focused on building the foundational compiler and toolchain.
-
-The language is not yet ready for production use. The primary goal is to stabilize the specification and deliver an initial compiler implementation.
+Hydra is now compiling variables and functions that use basic arithmetic. It can print out these values as well
 
 ## 📜 Documentation
 
