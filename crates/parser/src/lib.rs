@@ -2,6 +2,7 @@ pub mod ast;
 pub mod parser;
 pub mod semantic;
 pub mod type_check;
+pub mod symbol;
 
 pub use ast::*;
 use errors::CompilerError;
@@ -16,9 +17,16 @@ pub enum ParserError<'a> {
         found: Token<'a>,
     },
 
+    TypeMismatch {
+        token: Token<'a>,
+        expected: String,
+        found: Token<'a>
+    },
+
     Generic{
         message: String, 
-        token: Token<'a>
+        token: Token<'a>,
+        help: Option<String>
     }
 }
 
@@ -33,14 +41,19 @@ impl<'a> CompilerError for ParserError<'a> {
                 errors::err002::expected_found(expected, found.clone()).report(source, filename);
             },
 
-            ParserError::Generic { message, token } => {
+            ParserError::Generic { message, token, help } => {
                 let error = errors::Error {
                     code: "E003",
                     message,
-                    token: token.clone()
+                    token: token.clone(),
+                    help: help.clone()
                 };
 
                 error.report(source, filename);
+            },
+            
+            ParserError::TypeMismatch { token, expected, found } => {
+                errors::err003::type_mismatch(token.clone(), &expected, found.clone()).report(source, filename);
             }
         }
     }
