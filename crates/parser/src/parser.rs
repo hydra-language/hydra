@@ -53,7 +53,8 @@ impl<'a> Parser<'a> {
 
             _ => Err(ParserError::Generic { 
                 message: "expected a type name".to_string(),
-                token: current_token.clone()
+                token: current_token.clone(),
+                help: Some(format!("consider adding a type annotation"))
             })
         }
     }
@@ -135,15 +136,50 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expression(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
-        self.parse_additive()
+        self.parse_assignment()
+    }
+
+    fn parse_assignment(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        // start with expresison that can be an assignment target
+        let target = self.parse_additive()?; 
+
+        if self.match_token(TokenType::Equal) ||
+            self.match_token(TokenType::PlusEqual) ||
+            self.match_token(TokenType::MinusEqual) ||
+            self.match_token(TokenType::StarEqual) ||
+            self.match_token(TokenType::ModuloEqual) ||
+            self.match_token(TokenType::ForwardSlashEqual)
+        {
+            let operator = self.previous().clone();
+            let value = self.parse_assignment()?;
+
+            // target of assignment must be a variable expression (l-value)
+            if let ASTNode::VariableExpression { name: _ } = &target {
+                return Ok(ASTNode::AssignmentExpression {
+                    target: Box::new(target),
+                    operator,
+                    value: Box::new(value)
+                });
+            } else {
+                return Err(ParserError::Generic {
+                    message: "invalid assignment target".to_string(),
+                    token: self.previous().clone(),
+                    help: None
+                });
+            }
+        }
+
+        // no assignment operator, return as is
+        Ok(target)
     }
 
     fn parse_additive(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
-        let mut node = self.parse_call()?;
+        let mut node = self.parse_multiplicative()?;
 
         loop {
             let operator = if self.match_token(TokenType::Plus) ||
-                        self.match_token(TokenType::Minus) {
+                        self.match_token(TokenType::Minus) 
+            {
                 Some(self.previous().clone())
             } else {
                 None
@@ -165,6 +201,35 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
+    fn parse_multiplicative(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let mut node = self.parse_call()?;
+
+        loop {
+            let operator = if self.match_token(TokenType::Star) || 
+                        self.match_token(TokenType::ForwardSlash) || 
+                        self.match_token(TokenType::Modulo) 
+            {
+                Some(self.previous().clone())    
+            } else {
+                None
+            };
+
+            if let Some(op) = operator {
+                let right = self.parse_call()?;
+
+                node = ASTNode::BinaryExpression {
+                    left: Box::new(node),
+                    operator: op,
+                    right: Box::new(right),
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(node)
+    }
+
     fn parse_call(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         let mut expr = self.parse_primary()?;
 
@@ -176,6 +241,7 @@ impl<'a> Parser<'a> {
                     return Err(ParserError::Generic { 
                         message: "expected function name before '('".to_string(), 
                         token: self.previous().clone(),
+                        help: Some(format!("consider naming the function"))
                     })
                 }
             };
@@ -217,6 +283,7 @@ impl<'a> Parser<'a> {
             _ => Err(ParserError::Generic {
                 message: "expected primary expression".to_string(),
                 token: current_token.clone(),
+                help: Some(format!("consider adding a primary expression"))
             }),
         }
     }
