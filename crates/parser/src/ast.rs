@@ -35,6 +35,12 @@ pub enum ASTNode<'a> {
         right: Box<ASTNode<'a>>
     },
 
+    AssignmentExpression {
+        target: Box<ASTNode<'a>>,
+        operator: Token<'a>,
+        value: Box<ASTNode<'a>>
+    },
+
     Primtive {
         token: Token<'a>,
     },
