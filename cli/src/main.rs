@@ -111,7 +111,7 @@ fn main() {
 
     let mut type_checker = TypeChecker::new();
     if let Err(e) = type_checker.check(&ast) {
-        eprintln!("error: {}", e);
+        e.report(&contents, &input);
         process::exit(1);
     }
 
