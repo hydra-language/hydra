@@ -1,19 +1,19 @@
-use lexer::TokenType;
+use lexer::{ Token, TokenType };
 
-use crate::ASTNode;
+use crate::{ ASTNode, symbol::{ SymbolTable, VariableInfo }, ParserError};
 
 pub struct TypeChecker<'a> {
-    _phantom: std::marker::PhantomData<&'a ()>,
+    symbol_table: SymbolTable<'a>
 }
 
 impl<'a> TypeChecker<'a> {
     pub fn new() -> Self {
         TypeChecker {
-            _phantom: std::marker::PhantomData,
+            symbol_table: SymbolTable::new()
         }
     }
 
-    pub fn check(&mut self, ast: &Vec<ASTNode<'a>>) -> Result<(), String> {
+    pub fn check(&mut self, ast: &Vec<ASTNode<'a>>) -> Result<(), ParserError<'a>> {
         for node in ast {
             self.check_node(node)?;
         }
@@ -21,29 +21,82 @@ impl<'a> TypeChecker<'a> {
         Ok(())
     }
 
-    fn check_node(&mut self, node: &ASTNode<'a>) -> Result<(), String> {
+    fn check_node(&mut self, node: &ASTNode<'a>) -> Result<(), ParserError<'a>> {
         match node {
             ASTNode::FunctionDeclaration { name: _, parameters, return_type, body } => {
-                self.validate_type(&return_type.lexeme)?;
+                self.validate_type(&return_type.lexeme, return_type.clone())?;
+
+                self.symbol_table.enter_scope();
 
                 for (_param_name, param_type) in parameters {
-                    self.validate_type(&param_type.lexeme)?;
+                    self.validate_type(&param_type.lexeme, param_type.clone())?;
+
+                    let var_info = VariableInfo {
+                        type_name: param_type.lexeme.to_string(),
+                        is_mutable: false,
+                        _phantom: std::marker::PhantomData
+                    };
+                    self.symbol_table.define_variable(_param_name.lexeme, var_info, _param_name.clone());
                 }
 
                 for stmt in body {
                     self.check_node(stmt)?;
                 }
+
+                self.symbol_table.exit_scope();
             }
 
-            ASTNode::VariableDeclaration { is_const: _, name, type_annotation, initializer } => {
-                if let Some(type_tok) = type_annotation {
-                    self.validate_type(&type_tok.lexeme)?;
+            ASTNode::VariableDeclaration { is_const, name, type_annotation, initializer } => {
+                self.check_node(initializer)?;
+
+                let inferred = if let Some(type_tok) = type_annotation {
+                    self.validate_type(&type_tok.lexeme, type_tok.clone())?;
                     self.check_type_compatibility(initializer, &type_tok.lexeme)?;
+                    type_tok.lexeme.to_string()
                 } else {
-                    let _inferred = self.infer_type(initializer);
+                    self.infer_type(initializer)?
+                };
+
+                let is_mutable = !is_const;
+                let var_info = VariableInfo {
+                    type_name: inferred,
+                    is_mutable,
+                    _phantom: std::marker::PhantomData
+                };
+
+                self.symbol_table.define_variable(name.lexeme, var_info, name.clone())?;
+            }
+
+            ASTNode::AssignmentExpression { target, operator, value } => {
+                let (var_name, var_token) = match **target {
+                    ASTNode::VariableExpression { ref name } => (name.lexeme, name.clone()),
+                    _ => return Err(ParserError::Generic {
+                        message: "assignment target must be a variable".to_string(),
+                        token: operator.clone(),
+                        help: None
+                    })
+                };
+
+                let var_info = self.symbol_table.get_variable(var_name)
+                    .ok_or_else(|| ParserError::Generic {
+                        message: format!("unknown variable: '{}'", var_name),
+                        token: var_token.clone(),
+                        help: None
+                    })?;
+
+                if !var_info.is_mutable {
+                    return Err(ParserError::Generic {
+                        message: format!(
+                            "cannot reassign '{}'. binding is const",
+                            var_name
+                        ),
+                        token: var_token.clone(),
+                        help: None
+                    });
                 }
 
-                self.check_node(initializer)?
+                self.check_type_compatibility(value, &var_info.type_name)?;
+                self.check_node(value)?;
             }
 
             ASTNode::ReturnStatement { value } => {
@@ -64,7 +117,14 @@ impl<'a> TypeChecker<'a> {
             ASTNode::Expression { token: _ } => {
             }
 
-            ASTNode::VariableExpression { name: _ } => {
+            ASTNode::VariableExpression { name } => {
+                if self.symbol_table.get_variable(name.lexeme).is_none() {
+                    return Err(ParserError::Generic {
+                        message: format!("unknown variable '{}'", name.lexeme),
+                        token: name.clone(),
+                        help: None
+                    });
+                }
             }
 
             ASTNode::Primtive { token: _ } => {
@@ -74,7 +134,7 @@ impl<'a> TypeChecker<'a> {
         Ok(())
     }
 
-    fn infer_type(&self, node: &ASTNode<'a>) -> Result<String, String> {
+    fn infer_type(&self, node: &ASTNode<'a>) -> Result<String, ParserError<'a>> {
         match node {
             ASTNode::Expression { token } => {
                 match &token.token_type {
@@ -83,19 +143,27 @@ impl<'a> TypeChecker<'a> {
                     TokenType::FloatLiteral(_) => Ok("f64".to_string()),
                     TokenType::IntLiteral(_) => Ok("i32".to_string()),
 
-                    _ => Err(format!("error: cannot infer type from token: {:?}", token.token_type))
+                    _ => Err(ParserError::Generic {
+                        message: format!("cannot infer type from token: {:?}", token.token_type),
+                        token: token.clone(),
+                        help: Some(format!("consider annotation the variable"))
+                    })                
                 }
             }
 
-            ASTNode::BinaryExpression { left, operator: _, right } => {
+            ASTNode::BinaryExpression { left, operator, right } => {
                 let left_type = self.infer_type(left)?;
                 let right_type = self.infer_type(right)?;
 
                 if left_type != right_type {
-                    return Err(format!(
-                        "type mismatch in binary expression: '{}' and '{}'",
-                        left_type, right_type
-                    ));
+                    return Err(ParserError::Generic {
+                        message: format!(
+                            "type mismatch in binary expression: '{}' and '{}'",
+                            left_type, right_type
+                        ),
+                        token: operator.clone(),
+                        help: None
+                    }); 
                 }
 
                 Ok(left_type)
@@ -119,58 +187,119 @@ impl<'a> TypeChecker<'a> {
                 // the type of sum is an signed integer value that fits into 32 bits
                 // if something like 10 which can be represented with only 8 bits,
                 // its just promoted to an i32
-                Err(format!("cannot infer type of function call '{}'", name.lexeme))
+                Err(ParserError::Generic {
+                    message: format!("cannot infer type of function call '{}'", name.lexeme),
+                    token: name.clone(),
+                    help: None
+                })
             }
             ASTNode::VariableExpression { name } => {
-                Err(format!("cannot infer type of variable '{}'", name.lexeme))
+                let var_info = self.symbol_table.get_variable(name.lexeme)
+                    .ok_or_else(|| ParserError::Generic {
+                        message: format!("unknown variable '{}'", name.lexeme),
+                        token: name.clone(),
+                        help: None
+                    })?;
+
+                Ok(var_info.type_name.clone())
             }
 
-            _ => Err("cannot infer type from this expression".to_string())
+            _ => Err(ParserError::Generic {
+                message: "cannot infer type from this expression".to_string(),
+                token: Token { 
+                    token_type: TokenType::EOF,
+                    lexeme: "",
+                    line: 1,
+                    column: 1
+                },
+                help: None
+            })        
         }
     }
 
-    fn validate_type(&self, type_name: &str) -> Result<(), String> {
+    fn validate_type(&self, type_name: &str, token: Token<'a>) -> Result<(), ParserError<'a>> {
         if self.is_primitive(type_name) {
             Ok(())
         } else {
             // TODO: this will be updated when structs come into play
-            Err(format!("error: unknown type '{}'", type_name))
+            Err(ParserError::Generic {
+                message: format!("unknown type '{}'", type_name),
+                token,
+                help: None
+            })        
         }
     }
 
-    // TODO: move return type to Result<(), ParserError>
-    fn check_type_compatibility(&self, node: &ASTNode<'a>, expected: &str) -> Result<(), String> {
+    fn check_type_compatibility(&self, node: &ASTNode<'a>, expected: &str) -> Result<(), ParserError<'a>> {
         match node {
             ASTNode::Expression { token } => {
                 match &token.token_type {
                     TokenType::BoolLiteral(_) => {
                         if expected != "bool" {
-                            return Err(format!("type mismatch: expected '{}', found 'bool'", expected));
+                            return Err(ParserError::TypeMismatch { 
+                                token: token.clone(),
+                                expected: expected.to_string(),
+                                found: token.clone()
+                            });
                         }
                     }
 
                     TokenType::IntLiteral(value) => {
-                        if !self.is_integer(expected) {
-                            return Err(format!("type mismatch: expected '{}', found integer literal", expected))
-                        }
-
-                        if let Err(e) = self.check_integer_bounds(*value, expected) {
-                            return Err(e)?;
+                        if self.is_integer(expected) {
+                            self.check_integer_bounds(*value, expected, token.clone())?;
+                        } else if self.is_float(expected) {
+                            let inferred = self.infer_type(node)?;
+                            // return as error for now
+                            // when mature enough we'll implicitly convert int to float
+                            // at that stage it should only return an error when the 
+                            // annotation is an integer and the value is a float
+                            return Err(ParserError::Generic {
+                                message: format!(
+                                    "mismatched types: expected type '{}', found integer literal",
+                                    expected
+                                ),
+                                token: token.clone(),
+                                help: Some(format!(
+                                    "consider changing the type annotation to '{}'",
+                                    inferred
+                                ))
+                            });
                         }
                     }
 
                     TokenType::FloatLiteral(_) => {
-                        if expected != "f32" && expected != "f64" {
-                            return Err(format!(
-                                "type mismatch: expected '{}', found float literal",
-                                expected
-                            ));
+                        if self.is_float(expected) {
+                            // TODO: float checking bounds
+                        } else if self.is_integer(expected) {
+                            let inferred = self.infer_type(node)?;
+
+                            return Err(ParserError::Generic {
+                                message: format!(
+                                    "mismatched types: expected type '{}', found float literal",
+                                    expected 
+                                ),
+                                token: token.clone(),
+                                help: Some(format!(
+                                    "consider changing the type annotation to '{}'",
+                                    inferred
+                                ))
+                            });
+                        } else {
+                            return Err(ParserError::TypeMismatch {
+                                token: token.clone(),
+                                expected: expected.to_string(),
+                                found: token.clone()
+                            });
                         }
                     }
 
                     TokenType::CharLiteral(_) => {
                         if expected != "char" {
-                            return Err(format!("type mismatch: expected '{}', found 'char'", expected));
+                            return Err(ParserError::TypeMismatch {
+                                token: token.clone(),
+                                expected: expected.to_string(),
+                                found: token.clone()
+                            });
                         }
                     }
 
@@ -206,6 +335,12 @@ impl<'a> TypeChecker<'a> {
         )
     }
 
+    fn is_float(&self, type_name: &str) -> bool {
+        matches!(type_name,
+            "f32" | "f64"
+        )
+    }
+
     fn get_type_bounds(&self, type_name: &str) -> (String, String) {
         match type_name {
             "isize" => (isize::MIN.to_string(), isize::MAX.to_string()),
@@ -223,7 +358,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_integer_bounds(&self, value: i64, type_name: &str) -> Result<(), String> {
+    fn check_integer_bounds(&self, value: i64, type_name: &str, token: Token<'a>) -> Result<(), ParserError<'a>> {
         let bounds = match type_name {
             "isize" => value >= isize::MIN as i64 && value <= isize::MAX as i64,
             "i8" => value >= i8::MIN as i64 && value <= i8::MAX as i64,
@@ -240,10 +375,14 @@ impl<'a> TypeChecker<'a> {
 
         if !bounds {
             let (min, max) = self.get_type_bounds(type_name);
-            Err(format!(
-                "integer literal '{}' is out of bounds for type '{}' (range: {}-{})",
-                value, type_name, min, max
-            ))
+            Err(ParserError::Generic {
+                message: format!(
+                    "integer literal '{}' is out of bound for type '{}' (range: {} to {})",
+                    value, type_name, min, max
+                ),
+                token,
+                help: None
+            })
         } else {
             Ok(())
         }
