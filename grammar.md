@@ -22,7 +22,8 @@ Comments are used for annotating code and are ignored by the compiler. Hydra use
 2\. Variable Declarations
 -------------------------
 
-Variables are declared using the **`let`** keyword for mutable variables and **`const`** for immutable constants. Type annotations are not mandatory for stack allocated variables.
+Variables are declared using the **`let`** keyword for mutable variables and **`const`** for immutable variables. \
+Type annotations are not mandatory for stack allocated variables.
 
 **Syntax**:
 
@@ -81,9 +82,9 @@ const d: [const char, 2] = { 'x', 'y' };
 4\. Memory
 -----------
 
-Memory works in a little bit of a complicated way.
-The idea is RAII for stack allocated items (Resource Aqcuistion Is Initialization)
-and ARC (Automatic Reference Counting) for heap allocated items.
+Memory would workin in a little bit of a complicated way. \
+The idea is RAII for stack allocated items (Resource Aqcuistion Is Initialization) 
+and ARC (Automatic Reference Counting) for heap allocated items. \
 
 The idea behind this is to eliminate the need for a super strict borrow checker
 like Rust has, whilst having memory safety without a garbage collector.
@@ -100,8 +101,9 @@ fn main() -> void {
 ---
 
 ### Heap
-Reference types or non primitive types are a bit different.
-These are allocated on the heap by wrapping them in pipes (`|`).
+Custom user defined types are a bit different.
+
+These are allocated on the heap by wrapping them in pipes (`|`). \
 These give a reference to the stack managed by ARC.
 
 ```rust
@@ -115,7 +117,7 @@ fn main() -> void {
 }
 ```
 
-Suppose you wanted to make your own String representation.
+Suppose you wanted to make your own String representation. \
 It could look like this, for example:
 ```rust
 struct String {
@@ -142,7 +144,7 @@ struct String {
 5\. Structs and Extensions
 --------------------------
 
-Structs are user-defined types that group related data and functions.
+Structs are user-defined types that group related data and functions. \
 Extensions are a way to override `trait` functions for user defined types
 
 **Syntax**:
@@ -164,11 +166,11 @@ Extensions are a way to override `trait` functions for user defined types
 **Example**:
 ```rust
 struct Vec3 {
-    e: [f64, 3],
+    vector: [f64, 3],
         
     fn new(x: f64, y: f64, z: f64) -> Vec3 {
         return Vec3 {
-            e = { x, y, z };
+            vector = { x, y, z };
         };
     }
 }
@@ -180,8 +182,10 @@ extension Copy on Vec3 {
 }
     
 // Instantiation and use
-let vector: Vec3 = Vec3::new(15.0, 12.0, 18.0);
-println("{}", vector.e[0]); // Accessing a field
+fn main() -> void {
+    let vector: Vec3 = Vec3::new(15.0, 12.0, 18.0);
+    println("{}", vector.e[0]); // Accessing a field
+}
 ```
 * * *
 
@@ -218,7 +222,7 @@ Cast the value in the return statement or cast the parameter when the function i
 The return type, in this instance, needs to match the bigger type.
 ```rust
 fn add(a: i32, b: i64) -> i64 {
-    return a as i64 + b; // cast in return statement
+    return (a + b) as i64; // cast in return statement
 }
 
 fn subtract(a: i32, b: i64) -> i64 {
@@ -254,7 +258,6 @@ fn print_sum(numbers: [i32, anysize]) -> void {
 However, keep in mind, this does NOT mean your array can be dynamically resized. \
 Once the compiler finds the size of the array, all other references to it will also be of the same size. \
 If the compiler detects an attempt to resize the array, your program will not compile
----
 
 ### Anytype
 The `anytype` generic allows a function to accept a value of any type
@@ -272,7 +275,24 @@ fn main() -> void {
 ```
 * * *
 
-7\. Control Flow
+7\. Modules
+-----------
+### Include
+The `include` keyword allows you to import external files \
+To separate namespaces, use `module::submodule` and if you would like to import everything use `module::*`
+```rust
+// brings in Vec from the standard library
+include std::Vec;
+
+fn main() -> void {
+    let vec: Vec<i32> = Vec::new();
+    vec::push(1);
+    
+    println("{}", vec::get(1));
+}
+```
+
+8\. Control Flow
 ----------------
 
 ### For Loops
@@ -332,39 +352,44 @@ The **`while`** loop executes repeatedly as long as its condition remains `true`
 ```rust
 let i: i32 = 0;
 while (i < 5) {
-    i += 1;
+    i++;
 }
 ```
 ### Loop Control
 
 *   **`break`**: Exits the current loop entirely.
-*   **`break if (<condition>)`: Exits the loop if the condition evaluates to true
+*   **`break if (condition)`**: Exits the loop if the condition evaluates to true
 *   **`continue if (condition)`**: Skips the remainder of the current iteration and continues to the next one if condition is true
 
-This skips the traditional wrapping of `continue` or `break` in an `if` statement
-You may also run a block before the control action, see below
+This skips the traditional wrapping of `continue` or `break` in an `if` statement \
+You may also optionally run a block in the control action. This block will execute based on the condition provided
 
 ```rust
 // prints i and skips even numbers
 for (i in 0..10) {
     continue if (i % 2 == 0) {
-        println("{}", i);
+        println("{}", i); // print the odd numbers
     };
+    
+    println("{}", i): // print the even numbers
 }
 
 for (i in 0..20) {
-    break if (i % 7 == 0 && i != 0) {
-        println("{}", i);
+    break if (i % 5 == 0 && i != 0) {
+        // prints all numbers that are not divisible by 5 
+        // and not equal to 0 until the condition evaluates 
+        // to true
+        println("{}", i); 
     };
 }
 ```
 
 * * *
 
-8\. Pattern Matching
+9\. Pattern Matching
 --------------------
 
-The **`match`** keyword provides powerful pattern matching. It can be used as an expression to return a value.
+The **`match`** keyword provides pattern matching. It can be used as an expression to return a value.
 
 **Syntax**:
 
@@ -382,4 +407,3 @@ let check: string = match (x % 2) {
     1 => "odd"
 };
 ```
-
