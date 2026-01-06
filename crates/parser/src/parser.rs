@@ -40,22 +40,46 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_type(&mut self) -> Result<Token<'a>, ParserError<'a>> {
-        let current_token = &self.tokens[self.current];
+    fn parse_type(&mut self) -> Result<Box<ASTNode<'a>>, ParserError<'a>> {
+        // this is an array if true
+        if self.match_token(TokenType::LeftBracket) {
+            let start_token = self.previous().clone();
 
-        use TokenType::*;
-        match &current_token.token_type {
-            Identifier(_) => Ok(self.advance().clone()),
+            let element_type = self.parse_type()?;
 
-            ISize | I8 | I16 | I32 | I64 | 
-            USize | U8 | U16 | U32 | U64 |
-            F32 | F64 | Char | Bool => Ok(self.advance().clone()),
+            self.consume(TokenType::Comma,"',' to separate type and array size")?;
 
-            _ => Err(ParserError::Generic { 
-                message: "expected a type name".to_string(),
-                token: current_token.clone(),
-                help: Some(format!("consider adding a type annotation"))
-            })
+            // simple expression for now
+            // TODO: use parse_expression so computed lengths (ie. arr::length() * 2)
+            // are able to go in the size
+            let size_expr = self.parse_primary()?;
+            self.consume(TokenType::RightBracket, "']' to close the array")?;
+
+            Ok(Box::new(ASTNode::ArrayType {
+                element_type,
+                size: Box::new(size_expr),
+                token: start_token,
+            }))
+        } else {
+            // this is a simple variable assignment
+            let current_token = &self.tokens[self.current];
+
+            use TokenType::*;
+            match &current_token.token_type {
+                Identifier(_) |
+                ISize | I8 | I16 | I32 | I64 | 
+                USize | U8 | U16 | U32 | U64 |
+                F32 | F64 | Char | Bool => {
+                    let type_token = self.advance().clone();
+                    Ok(Box::new(ASTNode::TypeIdentifier { type_token }))
+                },
+
+                _ => Err(ParserError::Generic { 
+                    message: "expected a type name or array type".to_string(),
+                    token: current_token.clone(),
+                    help: Some(format!("consider adding a type annotation"))
+                })
+            }
         }
     }
 
@@ -280,12 +304,37 @@ impl<'a> Parser<'a> {
                 Ok(expr)
             }
 
+            LeftBrace => {
+                self.parse_array_initializer()
+            }
+
             _ => Err(ParserError::Generic {
                 message: "expected primary expression".to_string(),
                 token: current_token.clone(),
                 help: Some(format!("consider adding a primary expression"))
             }),
         }
+    }
+
+    fn parse_array_initializer(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let start_token = self.consume(TokenType::LeftBrace, "'{' to start array initializer")?.clone();
+        let mut elements = Vec::new();
+
+        if !self.check(TokenType::RightBrace) {
+            loop {
+                elements.push(self.parse_expression()?);
+
+                if !self.match_token(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+        self.consume(TokenType::RightBrace, "'}' to close array initializer");
+
+        Ok(ASTNode::ArrayInitializer {
+            elements,
+            token: start_token
+        })
     }
 
     fn finish_parse_fn_call(&mut self, name: Token<'a>) -> Result<ASTNode<'a>, ParserError<'a>> {
@@ -308,7 +357,12 @@ impl<'a> Parser<'a> {
     fn main_function_exists(&self, ast: &[ASTNode<'a>]) -> Result<(), ParserError<'a>> {
         let main_found = ast.iter().any(|node| {
             if let ASTNode::FunctionDeclaration { name, parameters, return_type, .. } = node {
-                name.lexeme == "main" && parameters.is_empty() && return_type.lexeme == "void"
+                let is_void_return = if let ASTNode::TypeIdentifier { type_token } = &**return_type {
+                    type_token.lexeme == "void"
+                } else {
+                    false
+                };
+                name.lexeme == "main" && parameters.is_empty() && is_void_return
             } else {
                 false
             }

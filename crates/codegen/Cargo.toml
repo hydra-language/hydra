@@ -10,4 +10,4 @@ lexer = { path = "../lexer" }
 
 [lib]
 name = "codegen"
-path = "src/lib.rs"
+path = "src/mod.rs"

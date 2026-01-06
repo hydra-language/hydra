@@ -1,6 +1,7 @@
 use lexer::{ Token, TokenType };
 
-use crate::{ ASTNode, symbol::{ SymbolTable, VariableInfo }, ParserError};
+use crate::{ symbol::{ FunctionInfo, SymbolTable, VariableInfo }, ASTNode, ParserError};
+
 
 pub struct TypeChecker<'a> {
     symbol_table: SymbolTable<'a>
@@ -15,24 +16,48 @@ impl<'a> TypeChecker<'a> {
 
     pub fn check(&mut self, ast: &Vec<ASTNode<'a>>) -> Result<(), ParserError<'a>> {
         for node in ast {
+            if let ASTNode::FunctionDeclaration { name, parameters, return_type, .. } = node {
+                self.register_function(name, parameters, return_type)?;
+            }
+        }
+
+        for node in ast {
             self.check_node(node)?;
         }
 
         Ok(())
     }
 
+    fn register_function(&mut self, name: &Token<'a>, parameters: &[(Token<'a>, Box<ASTNode<'a>>)],
+                        return_type: &Box<ASTNode<'a>>) -> Result<(), ParserError<'a>> 
+    {
+        let mut param_types = Vec::new();
+        for (_, param_t_node) in parameters {
+            self.validate_type(param_t_node)?;
+            param_types.push(self.get_type_name(param_t_node)?);
+        }
+
+        self.validate_type(return_type)?;
+        let return_type_name = self.get_type_name(return_type)?;
+
+        let info = FunctionInfo {
+            param_types,
+            return_type: return_type_name,
+            _phantom: std::marker::PhantomData
+        };
+
+        self.symbol_table.define_function(name.lexeme, info, name.clone())
+    }
+
     fn check_node(&mut self, node: &ASTNode<'a>) -> Result<(), ParserError<'a>> {
         match node {
             ASTNode::FunctionDeclaration { name: _, parameters, return_type, body } => {
-                self.validate_type(&return_type.lexeme, return_type.clone())?;
-
                 self.symbol_table.enter_scope();
 
                 for (_param_name, param_type) in parameters {
-                    self.validate_type(&param_type.lexeme, param_type.clone())?;
-
+                    let type_name = self.get_type_name(param_type)?;
                     let var_info = VariableInfo {
-                        type_name: param_type.lexeme.to_string(),
+                        type_name, 
                         is_mutable: false,
                         _phantom: std::marker::PhantomData
                     };
@@ -49,10 +74,44 @@ impl<'a> TypeChecker<'a> {
             ASTNode::VariableDeclaration { is_const, name, type_annotation, initializer } => {
                 self.check_node(initializer)?;
 
-                let inferred = if let Some(type_tok) = type_annotation {
-                    self.validate_type(&type_tok.lexeme, type_tok.clone())?;
-                    self.check_type_compatibility(initializer, &type_tok.lexeme)?;
-                    type_tok.lexeme.to_string()
+                let inferred = if let Some(type_node) = type_annotation {
+                    self.validate_type(type_node)?;
+                    let type_name = self.get_type_name(type_node)?;
+
+                    if let (ASTNode::ArrayType { element_type, size, .. }, 
+                            ASTNode::ArrayInitializer { elements, token }) = (&**type_node, &**initializer) 
+                    {
+                        let expected_size = match **size {
+                            ASTNode::Expression {
+                                token: Token {
+                                    token_type: TokenType::IntLiteral(val),
+                                    ..
+                                }
+                            } => val as usize,
+                            _ => return Err(ParserError::Generic {
+                                message: "array size must be a const integer".to_string(),
+                                token: token.clone(),
+                                help: None
+                            })
+                        };
+
+                        if elements.len() != expected_size {
+                            return Err(ParserError::Generic {
+                                message: format!("expected {} elements in array initializer, found {}", expected_size, elements.len()),
+                                token: token.clone(),
+                                help: None
+                            });
+                        }
+
+                        let element_type = self.get_type_name(element_type)?;
+                        for elem in elements {
+                            self.check_type_compatibility(elem, &element_type)?;
+                        }
+                    } else {
+                        self.check_type_compatibility(initializer, &type_name);
+                    }
+
+                    type_name
                 } else {
                     self.infer_type(initializer)?
                 };
@@ -95,6 +154,14 @@ impl<'a> TypeChecker<'a> {
                     });
                 }
 
+                if let (true, ASTNode::ArrayInitializer { token, .. }) = (var_info.type_name.starts_with('['), &**value) {
+                    return Err(ParserError::Generic {
+                        message: "cannot assign to array, assignment to array elements not yet supported".to_string(),
+                        token: token.clone(),
+                        help: Some("array assignment will be supported via indexing".to_string())
+                    });
+                }
+
                 self.check_type_compatibility(value, &var_info.type_name)?;
                 self.check_node(value)?;
             }
@@ -103,9 +170,60 @@ impl<'a> TypeChecker<'a> {
                 self.check_node(value)?;
             }
 
-            ASTNode::FunctionCallExpression { name: _, arguments } => {
-                for arg in arguments {
-                    self.check_node(arg)?;
+            ASTNode::FunctionCallExpression { name, arguments } => {
+                if name.lexeme == "println" {
+                    for arg in arguments {
+                        self.check_node(arg)?;
+                    }
+                    
+                    return Ok(());
+                }
+
+                let func_info = self.symbol_table.get_function(name.lexeme)
+                    .ok_or_else(|| ParserError::Generic {
+                        message: format!("call to undefined function '{}'", name.lexeme),
+                        token: name.clone(),
+                        help: None,
+                    })?;
+
+                if arguments.len() != func_info.param_types.len() {
+                    return Err(ParserError::Generic {
+                        message: format!(
+                            "function '{}' expected {} arguments, got {}",
+                            name.lexeme,
+                            func_info.param_types.len(),
+                            arguments.len()
+                        ),
+                        token: name.clone(),
+                        help: None
+                    })
+                }
+
+                let expected_types: Vec<String> = func_info.param_types.clone();
+
+                for (arg_node, expected) in arguments.iter().zip(expected_types.iter()) {
+                    self.check_node(arg_node)?;
+                    let inferred = self.infer_type(arg_node)?;
+
+                    if &inferred != expected {
+                        let (token, found) = match arg_node {
+                            ASTNode::VariableExpression { name } => (name.clone(), name.lexeme),
+                            ASTNode::Expression { token } => (token.clone(), token.lexeme),
+                            ASTNode::ArrayInitializer { token, .. } => (token.clone(), "{...}"),
+
+                            _ => (name.clone(), "expression")
+                        };
+
+                        return Err(ParserError::TypeMismatch {
+                            token: token.clone(),
+                            expected: expected.to_string(),
+                            found: Token {
+                                token_type: TokenType::Identifier(inferred.clone()),
+                                lexeme: found,
+                                ..token
+                            }
+                        });
+                    }
                 }
             }
 
@@ -120,18 +238,69 @@ impl<'a> TypeChecker<'a> {
             ASTNode::VariableExpression { name } => {
                 if self.symbol_table.get_variable(name.lexeme).is_none() {
                     return Err(ParserError::Generic {
-                        message: format!("unknown variable '{}'", name.lexeme),
+                        message: format!("unknown variable '{}'", name.lexeme).to_string(),
                         token: name.clone(),
                         help: None
                     });
                 }
             }
 
+            ASTNode::ArrayInitializer { elements, token } => {
+                if elements.is_empty() {
+                    return Err(ParserError::Generic {
+                        message: "cannot infer type of empty array initializer".to_string(),
+                        token: token.clone(),
+                        help: Some("provide an explicit type annotation\nie. [i32, 5]".to_string())
+                    });
+                }
+
+                let first_elem_type = self.infer_type(&elements[0])?;
+
+                for elem in elements.iter().skip(1) {
+                    let elem_type = self.infer_type(elem)?;
+                    if elem_type != first_elem_type {
+                        return Err(ParserError::Generic { 
+                            message: format!("expected '{}', found '{}'", first_elem_type, elem_type),
+                            token: token.clone(),
+                            help: Some("all elements must be the same type".to_string())
+                        });
+                    }
+                }
+                
+                return Ok(())
+            }
+
             ASTNode::Primtive { token: _ } => {
             }
+
+            _ => {}
         }
 
         Ok(())
+    }
+
+    fn get_type_name(&self, t_node: &ASTNode<'a>) -> Result<String, ParserError<'a>> {
+        match t_node {
+            ASTNode::TypeIdentifier { type_token } => Ok(type_token.lexeme.to_string()),
+            ASTNode::ArrayType { element_type, size, .. } => {
+                let elem_name = self.get_type_name(element_type)?;
+                let size_str = match &**size {
+                    ASTNode::Expression { token: Token { token_type: TokenType::IntLiteral(val), .. } } => val.to_string(),
+                    _ => "?".to_string()
+                };
+                Ok(format!("[{}, {}]", elem_name, size_str))
+            }
+            _ => Err(ParserError::Generic {
+                message: "internal error: expected a type node".to_string(),
+                token: Token {
+                    token_type: TokenType::EOF,
+                    lexeme: "",
+                    line: 1,
+                    column: 1
+                },
+                help: None
+            })
+        }
     }
 
     fn infer_type(&self, node: &ASTNode<'a>) -> Result<String, ParserError<'a>> {
@@ -146,7 +315,7 @@ impl<'a> TypeChecker<'a> {
                     _ => Err(ParserError::Generic {
                         message: format!("cannot infer type from token: {:?}", token.token_type),
                         token: token.clone(),
-                        help: Some(format!("consider annotation the variable"))
+                        help: Some(format!("consider annotating the variable"))
                     })                
                 }
             }
@@ -217,16 +386,61 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn validate_type(&self, type_name: &str, token: Token<'a>) -> Result<(), ParserError<'a>> {
-        if self.is_primitive(type_name) {
-            Ok(())
-        } else {
-            // TODO: this will be updated when structs come into play
-            Err(ParserError::Generic {
-                message: format!("unknown type '{}'", type_name),
-                token,
+    fn validate_type(&self, t_node: &ASTNode<'a>) -> Result<(), ParserError<'a>> {
+        match t_node {
+            ASTNode::TypeIdentifier { type_token } => {
+                if self.is_primitive(type_token.lexeme) {
+                    Ok(())
+                } else {
+                    // TODO: this will be updated when structs come into play
+                    Err(ParserError::Generic {
+                        message: format!("unknown type '{}'", type_token.lexeme),
+                        token: type_token.clone(),
+                        help: None
+                    })
+                }
+            }
+            ASTNode::ArrayType { element_type, size, token } => {
+                self.validate_type(element_type)?;
+
+                match &**size {
+                    ASTNode::Expression { token: size_token } => {
+                        if let TokenType::IntLiteral(val) = size_token.token_type {
+                            if val < 0 {
+                                return Err(ParserError::Generic {
+                                    message: "array size cannot be negative".to_string(),
+                                    token: size_token.clone(),
+                                    help: None
+                                });
+                            }
+                        } else {
+                            return Err(ParserError::Generic {
+                                message: "array size must be an integer literal".to_string(),
+                                token: size_token.clone(),
+                                help: None
+                            });
+                        }
+                    }
+                    _ => {
+                        return Err(ParserError::Generic {
+                            message: "array size must be a constant expression".to_string(), 
+                            token: token.clone(), 
+                            help: Some("only integer literals supported for now".to_string())
+                        });
+                    }
+                }
+                Ok(())
+            }
+            _ => Err(ParserError::Generic {
+                message: "internal error: invalid node passed to validate_type".to_string(),
+                token: Token { 
+                    token_type: TokenType::EOF, 
+                    lexeme: "", 
+                    line: 1, 
+                    column: 1 
+                },
                 help: None
-            })        
+            })
         }
     }
 
@@ -311,6 +525,20 @@ impl<'a> TypeChecker<'a> {
             ASTNode::BinaryExpression { left, operator: _, right } => {
                 self.check_type_compatibility(left, expected)?;
                 self.check_type_compatibility(right, expected)?;
+
+                Ok(())
+            }
+
+            ASTNode::ArrayInitializer { token, .. } => {
+                // if this is reached, its either a simple {1, 2}
+                // or a mismatch like, let x: i32 = {1, 2}
+                if !expected.starts_with('[') {
+                    return Err(ParserError::TypeMismatch { 
+                        token: token.clone(), 
+                        expected: expected.to_string(), 
+                        found: token.clone()
+                    });
+                }
 
                 Ok(())
             }
