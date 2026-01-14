@@ -1,6 +1,3 @@
-// TODO:
-//      modularize for generating nodes (ie. separate files for function nodes, variable nodes, etc)
-
 use lexer::{Token, TokenType};
 use crate::{ParserError, ast::ASTNode};
 
@@ -10,6 +7,7 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+
     pub fn new(tokens: Vec<Token<'a>>) -> Self {
         Self {
             tokens, current: 0
@@ -35,9 +33,117 @@ impl<'a> Parser<'a> {
             self.parse_function()
         } else if self.match_token(TokenType::Return) {
             self.parse_return()
+        } else if self.match_token(TokenType::If) {
+            self.parse_if()
+        } else if self.match_token(TokenType::For) {
+            self.parse_for()
+        } else if self.match_token(TokenType::While) {
+            self.parse_while()
         } else {
             self.parse_statement()
         }
+    }
+
+    fn parse_if(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        self.consume(TokenType::LeftParen, "'(' after 'if'")?;
+        let condition = self.parse_expression()?;
+        self.consume(TokenType::RightParen, "')' after condition")?;
+
+        // will update to check if its a single then
+        // no parantheses needed for a single then expression
+        self.consume(TokenType::LeftBrace, "'{' to start block")?;
+
+        let mut then_branch = Vec::new();
+        while !self.check(TokenType::RightBrace) {
+            then_branch.push(self.parse_declaration()?);
+        }
+
+        self.consume(TokenType::RightBrace, "'}' to end block")?;
+
+        let else_branch = if self.match_token(TokenType::Else) {
+            if self.match_token(TokenType::If) {
+                let nested_if = self.parse_if()?;
+
+                Some(vec![nested_if])
+            } else {
+                self.consume(TokenType::LeftBrace, "'{' to start block")?;
+                
+                let mut else_stmts = Vec::new();
+                while !self.check(TokenType::RightBrace) {
+                    else_stmts.push(self.parse_declaration()?);
+                }
+                self.consume(TokenType::RightBrace, "'}' to end block")?;
+
+                Some(else_stmts)
+            }
+        } else {
+            None
+        };
+
+        Ok(ASTNode::IfStatement {
+            condition: Box::new(condition),
+            then_branch,
+            else_branch
+        })
+    }
+
+    fn parse_for(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        self.consume(TokenType::LeftParen, "'(' after for")?;
+
+        let variable = self.consume(TokenType::Identifier("".to_string()), "loop variable name")?.clone();
+
+        self.consume(TokenType::In, "'in' after loop variable")?;
+
+        let start = self.parse_expression()?;
+        let is_inclusive = if self.match_token(TokenType::DoubleDotEqual) {
+            true
+        } else if self.match_token(TokenType::DoubleDot) {
+            false
+        } else {
+            return Err(ParserError::ExpectedToken {
+                expected: ".. or ..=".to_string(),
+                found: self.tokens[self.current].clone()
+            });
+        };
+        let end = self.parse_expression()?;
+
+        self.consume(TokenType::RightParen, "')' after range")?;
+
+        self.consume(TokenType::LeftBrace, "'{' to start loop body")?;
+
+        let mut body = Vec::new();
+        while !self.check(TokenType::RightBrace) {
+            body.push(self.parse_declaration()?);
+        }
+
+        self.consume(TokenType::RightBrace, "'}' to close loop body")?;
+
+        Ok(ASTNode::ForLoop {
+            variable,
+            start: Box::new(start),
+            end: Box::new(end),
+            is_inclusive,
+            body
+        })
+    }
+
+    fn parse_while(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        self.consume(TokenType::LeftParen, "'(' after 'while'")?;
+        let condition = self.parse_expression()?;
+        self.consume(TokenType::RightParen, "')' after condition")?;
+
+        self.consume(TokenType::LeftBrace, "'{' to start loop body")?;
+
+        let mut body = Vec::new();
+        while !self.check(TokenType::RightBrace) {
+            body.push(self.parse_declaration()?);
+        }
+        self.consume(TokenType::RightBrace, "'}' to close loop body")?;
+
+        Ok(ASTNode::WhileLoop {
+            condition: Box::new(condition),
+            body
+        })
     }
 
     fn parse_type(&mut self) -> Result<Box<ASTNode<'a>>, ParserError<'a>> {
@@ -165,14 +271,14 @@ impl<'a> Parser<'a> {
 
     fn parse_assignment(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         // start with expresison that can be an assignment target
-        let target = self.parse_additive()?; 
+        let target = self.parse_logical_or()?; 
 
         if self.match_token(TokenType::Equal) ||
             self.match_token(TokenType::PlusEqual) ||
             self.match_token(TokenType::MinusEqual) ||
             self.match_token(TokenType::StarEqual) ||
-            self.match_token(TokenType::ModuloEqual) ||
-            self.match_token(TokenType::ForwardSlashEqual)
+            self.match_token(TokenType::ForwardSlashEqual) ||
+            self.match_token(TokenType::ModuloEqual)
         {
             let operator = self.previous().clone();
             let value = self.parse_assignment()?;
@@ -195,6 +301,76 @@ impl<'a> Parser<'a> {
 
         // no assignment operator, return as is
         Ok(target)
+    }
+
+    fn parse_logical_or(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let mut node = self.parse_logical_and()?;
+
+        while self.match_token(TokenType::DoublePipe) {
+            let operator = self.previous().clone();
+            let right = self.parse_logical_and()?;
+
+            node = ASTNode::BinaryExpression {
+                left: Box::new(node),
+                operator,
+                right: Box::new(right),
+            };
+        }
+
+        Ok(node)
+    }
+
+    fn parse_logical_and(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let mut node = self.parse_equality()?;
+
+        while self.match_token(TokenType::DoubleAmpersand) {
+            let operator = self.previous().clone();
+            let right = self.parse_equality()?;
+
+            node = ASTNode::BinaryExpression {
+                left: Box::new(node),
+                operator,
+                right: Box::new(right),
+            };
+        }
+
+        Ok(node)
+    }
+
+    fn parse_equality(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let mut node = self.parse_comparison()?;
+
+        while self.match_token(TokenType::DoubleEqual) || self.match_token(TokenType::ExclamEqual) {
+            let operator = self.previous().clone();
+            let right = self.parse_comparison()?;
+
+            node = ASTNode::BinaryExpression {
+                left: Box::new(node),
+                operator,
+                right: Box::new(right),
+            };
+        }
+
+        Ok(node)
+    }
+
+    fn parse_comparison(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let mut node = self.parse_additive()?;
+
+        while self.match_token(TokenType::LeftAngle) || self.match_token(TokenType::LessEqual) ||
+            self.match_token(TokenType::RightAngle) || self.match_token(TokenType::GreaterEqual)
+        {
+            let operator = self.previous().clone();
+            let right = self.parse_additive()?;
+
+            node = ASTNode::BinaryExpression { 
+                left: Box::new(node),
+                operator,
+                right: Box::new(right)
+            };
+        }
+
+        Ok(node)
     }
 
     fn parse_additive(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
@@ -226,7 +402,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_multiplicative(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
-        let mut node = self.parse_call()?;
+        let mut node = self.parse_unary()?;
 
         loop {
             let operator = if self.match_token(TokenType::Star) || 
@@ -239,7 +415,7 @@ impl<'a> Parser<'a> {
             };
 
             if let Some(op) = operator {
-                let right = self.parse_call()?;
+                let right = self.parse_unary()?;
 
                 node = ASTNode::BinaryExpression {
                     left: Box::new(node),
@@ -254,23 +430,48 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
+    fn parse_unary(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        if self.match_token(TokenType::ExclamationMark) || self.match_token(TokenType::Minus) {
+            let operator = self.previous().clone();
+            let right = self.parse_unary()?;
+
+            return Ok(ASTNode::UnaryExpression {
+                operator,
+                right: Box::new(right),
+            });
+        }
+
+        self.parse_call()
+    }
+
     fn parse_call(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         let mut expr = self.parse_primary()?;
 
-        if self.match_token(TokenType::LeftParen) {
-            let token_name = match &expr {
-                ASTNode::VariableExpression { name } => name.clone(),
+        loop {
+            if self.match_token(TokenType::LeftParen) {
+                let token_name = match &expr {
+                    ASTNode::VariableExpression { name } => name.clone(),
 
-                _ => {
-                    return Err(ParserError::Generic { 
-                        message: "expected function name before '('".to_string(), 
-                        token: self.previous().clone(),
-                        help: Some(format!("consider naming the function"))
-                    })
-                }
-            };
+                    _ => {
+                        return Err(ParserError::Generic { 
+                            message: "expected function name before '('".to_string(), 
+                            token: self.previous().clone(),
+                            help: None
+                        })
+                    }
+                };
             
-            expr = self.finish_parse_fn_call(token_name)?;
+                expr = self.finish_parse_fn_call(token_name)?;
+            } else if self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) {
+                let operator = self.previous().clone();
+                
+                expr = ASTNode::PostfixUnaryExpression {
+                    operator,
+                    left: Box::new(expr),
+                };
+            } else {
+                break;
+            }
         }
 
         Ok(expr)
