@@ -66,7 +66,7 @@ Arrays have a fixed size and can have mutable or immutable elements, independent
 // A mutable array with mutable elements.
 let a: [i32, 3] = { 1, 2, 3 };
 a[0] = 100; // OK
-    
+
 // A mutable array with immutable elements.
 let b: [const char, 5] = { 'h', 'e', 'l', 'l', 'o' };
 b[0] = 'j'; // ERROR: elements are const.
