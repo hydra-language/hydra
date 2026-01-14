@@ -1,7 +1,7 @@
 use super::CodeGen;
 
 use inkwell::values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, PointerValue};
-use inkwell::types::BasicType;
+use inkwell::types::{BasicType, BasicMetadataTypeEnum};
 
 use lexer::Token;
 use parser::ast::ASTNode;
@@ -15,7 +15,7 @@ impl<'ctx> CodeGen<'ctx> {
     {
         let fn_name = name.lexeme;
 
-        let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> = params.iter()
+        let param_types: Vec<BasicMetadataTypeEnum> = params.iter()
             .map(|(_, param_type)| self.get_type_from_node(param_type).unwrap().into())
             .collect();
 
@@ -32,14 +32,16 @@ impl<'ctx> CodeGen<'ctx> {
 
         self.builder.position_at_end(entry);
         self.current_function = Some(function);
-        self.named_values.clear();
+
+        self.symbol_table.enter_scope();
 
         for (i, param) in function.get_param_iter().enumerate() {
             let param_name = params[i].0.lexeme;
             let param_type = self.get_type_from_node(&params[i].1)?;
             let alloca = self.create_entry_block_alloca(param_name, param_type);
             self.builder.build_store(alloca, param);
-            self.named_values.insert(param_name.to_string(), alloca);
+
+            self.symbol_table.insert(param_name.to_string(), alloca);
         }
 
         for node in body {
@@ -51,6 +53,8 @@ impl<'ctx> CodeGen<'ctx> {
         {
             self.builder.build_return(None);
         }
+
+        self.symbol_table.exit_scope();
 
         Ok(Some(function.as_global_value().as_basic_value_enum()))
     }
