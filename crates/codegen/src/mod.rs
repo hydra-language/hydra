@@ -4,6 +4,9 @@ pub mod expressions;
 pub mod arrays;
 pub mod builtins;
 pub mod types;
+pub mod conditionals;
+pub mod loops;
+pub mod scope;
 
 use std::collections::HashMap;
 
@@ -15,14 +18,16 @@ use inkwell::module::Module;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 
 use parser::ast::ASTNode;
+use crate::scope::ScopeTable;
 
 pub struct CodeGen<'ctx> {
-    context: &'ctx Context,
-    builder: Builder<'ctx>,
-    module: Module<'ctx>,
-    named_values: HashMap<String, PointerValue<'ctx>>,
-    current_function: Option<FunctionValue<'ctx>>,
-    target_data: TargetData
+    pub context: &'ctx Context,
+    pub builder: Builder<'ctx>,
+    pub module: Module<'ctx>,
+    pub symbol_table: ScopeTable<'ctx>,
+    pub current_function: Option<FunctionValue<'ctx>>,
+    pub string_constants: HashMap<String, PointerValue<'ctx>>,
+    pub target_data: TargetData
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -52,8 +57,9 @@ impl<'ctx> CodeGen<'ctx> {
             context,
             builder,
             module,
-            named_values: HashMap::new(),
+            symbol_table: ScopeTable::new(),
             current_function: None,
+            string_constants: HashMap::new(),
             target_data
         }
     }
@@ -93,11 +99,41 @@ impl<'ctx> CodeGen<'ctx> {
             BinaryExpression { left, operator, right } => {
                 self.generate_binary_expression(left, operator, right)
             }
+            PostfixUnaryExpression { operator, left } => {
+                self.generate_postfix_expression(operator, left)
+            },
+            UnaryExpression { operator, right } => {
+                self.generate_unary_expression(operator, right)
+            },
             ArrayInitializer { elements, .. } => {
                 self.generate_array_initializer(elements)
             }
+            IfStatement { condition, then_branch, else_branch } => {
+                self.generate_if_statement(condition, then_branch, else_branch)
+            }
+            ForLoop { variable, start, end, is_inclusive, body } => {
+                self.generate_for_loop(variable, start, end, *is_inclusive, body)
+            }
+            WhileLoop { condition, body } => {
+                self.generate_while_loop(condition, body)
+            }
             _ => Err(format!("unsupported AST node: {:?}", node)),
         }
+    }
+
+    pub fn get_global_string_ptr(&mut self, value: &str) -> PointerValue<'ctx> {
+        // if string exists return it immediately
+        if let Some(ptr) = self.string_constants.get(value) {
+            return *ptr;
+        }
+
+        // otherwise create it
+        let ptr = self.builder.build_global_string_ptr(value, "str").as_pointer_value();
+
+        // save and cache it
+        self.string_constants.insert(value.to_string(), ptr);
+
+        ptr
     }
 
     pub fn ir_to_string(&self) -> String {
