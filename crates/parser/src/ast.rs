@@ -45,6 +45,16 @@ pub enum ASTNode<'a> {
         value: Box<ASTNode<'a>>
     },
 
+    UnaryExpression {
+        operator: Token<'a>,
+        right: Box<ASTNode<'a>>,
+    },
+
+    PostfixUnaryExpression {
+        operator: Token<'a>,
+        left: Box<ASTNode<'a>>,
+    },
+
     ArrayType {
         element_type: Box<ASTNode<'a>>,
         size: Box<ASTNode<'a>>,
@@ -62,5 +72,24 @@ pub enum ASTNode<'a> {
 
     Expression {
         token: Token<'a>,
+    },
+
+    IfStatement {
+        condition: Box<ASTNode<'a>>,
+        then_branch: Vec<ASTNode<'a>>,
+        else_branch: Option<Vec<ASTNode<'a>>>,
+    },
+
+    ForLoop {
+        variable: Token<'a>,
+        start: Box<ASTNode<'a>>,
+        end: Box<ASTNode<'a>>,
+        is_inclusive: bool,
+        body: Vec<ASTNode<'a>>,
+    },
+
+    WhileLoop {
+        condition: Box<ASTNode<'a>>,
+        body: Vec<ASTNode<'a>>
     },
 }
