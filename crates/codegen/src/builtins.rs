@@ -7,8 +7,8 @@ use inkwell::types::BasicTypeEnum;
 use parser::ast::ASTNode;
 use lexer::TokenType;
 
-impl<'ctx> CodeGen<'ctx> 
-{
+impl<'ctx> CodeGen<'ctx> {
+
     pub fn get_printf_declaration(&mut self) -> FunctionValue<'ctx> {
         if let Some(function) = self.module.get_function("printf") {
             return function;
@@ -36,7 +36,7 @@ impl<'ctx> CodeGen<'ctx>
         };
 
         let mut arg_iter = args.iter().skip(1);
-        let parts: Vec<&str>= fmt_literal.split("{}").collect();
+        let parts: Vec<&str> = fmt_literal.split("{}").collect();
 
         for (i, part) in parts.iter().enumerate() {
             if !part.is_empty() {
@@ -102,7 +102,7 @@ impl<'ctx> CodeGen<'ctx>
     }
 
         
-    fn generate_print_value(&self, value: BasicValueEnum<'ctx>) -> Result<(), String> {
+    fn generate_print_value(&mut self, value: BasicValueEnum<'ctx>) -> Result<(), String> {
         let _ = self.module.get_function("printf").unwrap();
 
         match value.get_type() {
@@ -110,8 +110,10 @@ impl<'ctx> CodeGen<'ctx>
                 match int.get_bit_width() {
                     1 => {
                         let bool_val = value.into_int_value();
-                        let true_str = self.builder.build_global_string_ptr("true", "str_true");
-                        let false_str = self.builder.build_global_string_ptr("false", "str_false");
+
+                        let true_str = self.get_global_string_ptr("true");
+                        let false_str = self.get_global_string_ptr("false");
+
                         let str_val = self.builder.build_select(
                             bool_val, 
                             true_str.as_basic_value_enum(), 
@@ -136,10 +138,10 @@ impl<'ctx> CodeGen<'ctx>
         Ok(())
     }
 
-    fn call_printf(&self, fmt: &str, args: &[BasicMetadataValueEnum<'ctx>]) {
+    fn call_printf(&mut self, fmt: &str, args: &[BasicMetadataValueEnum<'ctx>]) {
         let printf = self.module.get_function("printf").expect("printf must be declared");
 
-        let fmt_str = self.builder.build_global_string_ptr(fmt, "fmt");
+        let fmt_str = self.get_global_string_ptr(fmt);
 
         let mut final_args = vec![fmt_str.as_basic_value_enum().into()];
         final_args.extend_from_slice(args);
