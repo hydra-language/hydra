@@ -39,6 +39,10 @@ impl<'a> Parser<'a> {
             self.parse_for()
         } else if self.match_token(TokenType::While) {
             self.parse_while()
+        } else if self.match_token(TokenType::Break) {
+            self.parse_break()
+        } else if self.match_token(TokenType::Continue) {
+            self.parse_continue()
         } else {
             self.parse_statement()
         }
@@ -85,6 +89,34 @@ impl<'a> Parser<'a> {
             then_branch,
             else_branch
         })
+    }
+
+    fn parse_break(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let mut condition = None;
+
+        if self.match_token(TokenType::If) {
+            self.consume(TokenType::LeftParen, "'(' after 'break if'")?;
+            condition = Some(Box::new(self.parse_expression()?));
+            self.consume(TokenType::RightParen, "')' after condition")?;
+        }
+
+        self.consume(TokenType::Semicolon, "';' after break")?;
+
+        Ok(ASTNode::Break { condition })
+    }
+
+    fn parse_continue(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let mut condition = None;
+
+        if self.match_token(TokenType::If) {
+            self.consume(TokenType::LeftParen, "'(' after 'continue if'")?;
+            condition = Some(Box::new(self.parse_expression()?));
+            self.consume(TokenType::RightParen, "')' after condition")?;
+        }
+
+        self.consume(TokenType::Semicolon, "';' after continue")?;
+
+        Ok(ASTNode::Continue { condition })
     }
 
     fn parse_for(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
@@ -469,6 +501,17 @@ impl<'a> Parser<'a> {
                     operator,
                     left: Box::new(expr),
                 };
+            } else if self.match_token(TokenType::LeftBracket) {
+                let token = self.previous().clone();
+                let index = self.parse_expression()?;
+                
+                self.consume(TokenType::RightBracket, "']' after array index")?;
+
+                expr = ASTNode::ArrayAccess {
+                    array: Box::new(expr),
+                    index: Box::new(index),
+                    token,
+                };
             } else {
                 break;
             }
@@ -530,7 +573,7 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        self.consume(TokenType::RightBrace, "'}' to close array initializer");
+        self.consume(TokenType::RightBrace, "'}' to close array initializer")?;
 
         Ok(ASTNode::ArrayInitializer {
             elements,
