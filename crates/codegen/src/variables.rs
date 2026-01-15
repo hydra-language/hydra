@@ -1,6 +1,6 @@
 use super::CodeGen;
 
-use inkwell::values::{BasicValue, BasicValueEnum};
+use inkwell::{IntPredicate, values::{BasicValue, BasicValueEnum, IntValue, PointerMathValue, PointerValue}};
 
 use lexer::{Token, TokenType};
 use parser::ast::ASTNode;
@@ -81,13 +81,7 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn generate_assignment(&mut self, target: &ASTNode, operator: &Token, value: &ASTNode) -> 
                         Result<Option<BasicValueEnum<'ctx>>, String> 
     {
-        let var_name = match target {
-            ASTNode::VariableExpression { name } => name.lexeme,
-            _ => return Err("error: assignment target must be a variable".to_string())
-        };
-
-        let var_ptr = self.symbol_table.lookup(var_name)
-            .ok_or_else(|| format!("Unknown variable in assignment: {}", var_name))?;
+        let var_ptr = self.generate_lvalue(target)?;
 
         let rhs_val = self.generate_node(value)?.unwrap();
 
@@ -120,5 +114,73 @@ impl<'ctx> CodeGen<'ctx> {
 
             _ => Err(format!("error: unsupported assignment operator: {:?}", operator.token_type)),
         }
+    }
+
+    pub fn generate_lvalue(&mut self, node: &ASTNode) -> Result<PointerValue<'ctx>, String> {
+        match node {
+            ASTNode::VariableExpression { name } => {
+                self.symbol_table.lookup(name.lexeme)
+                    .ok_or_else(|| format!("unknown variable: {}", name.lexeme))
+            },
+
+            ASTNode::ArrayAccess { array, index, .. } => {
+                let array_val = self.generate_node(array)?.unwrap();
+
+                if !array_val.is_pointer_value() {
+                    return Err("array access can only be performed on arrays".to_string());
+                }
+                
+                let array_ptr = array_val.into_pointer_value();
+                let index_val = self.generate_node(index)?.unwrap().into_int_value();
+                
+                // Perform runtime bounds check
+                let ptr_type = array_ptr.get_type().get_element_type();
+                if ptr_type.is_array_type() {
+                    let array_len = ptr_type.into_array_type().len();
+                    self.generate_bounds_check(index_val, array_len)?;
+                }
+                
+                let i32_type = self.context.i32_type();
+                let zero = i32_type.const_int(0, false);
+                
+                unsafe {
+                    Ok(self.builder.build_in_bounds_gep(array_ptr, &[zero, index_val], "elem_ptr"))
+                }
+            },
+
+            _ => Err("expression is not assignable".to_string())
+        }
+    }
+
+    fn generate_bounds_check(&mut self, index: IntValue<'ctx>, size: u32) -> Result<(), String> {
+        let parent_fn = self.current_function.unwrap();
+        let size_val = index.get_type().const_int(size as u64, false);
+        
+        // Check 0 <= index < size (ULT handles negative check implicitly)
+        let in_bounds = self.builder.build_int_compare(IntPredicate::ULT, index, size_val, "bounds_check");
+        
+        let ok_bb = self.context.append_basic_block(parent_fn, "bounds_ok");
+        let err_bb = self.context.append_basic_block(parent_fn, "bounds_err");
+        
+        self.builder.build_conditional_branch(in_bounds, ok_bb, err_bb);
+        
+        // --- Error Block ---
+        self.builder.position_at_end(err_bb);
+        self.call_printf("panic: array index is out of bounds\n", &[]);
+        
+        // Call exit(1)
+        let exit_fn = self.module.get_function("exit").unwrap_or_else(|| {
+             let ft = self.context.void_type().fn_type(&[self.context.i32_type().into()], false);
+
+             self.module.add_function("exit", ft, None)
+        });
+
+        self.builder.build_call(exit_fn, &[self.context.i32_type().const_int(1, false).into()], "");
+        self.builder.build_unreachable();
+        
+        // --- Ok Block ---
+        self.builder.position_at_end(ok_bb);
+        
+        Ok(())
     }
 }
