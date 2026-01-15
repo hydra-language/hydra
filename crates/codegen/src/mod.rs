@@ -10,6 +10,7 @@ pub mod scope;
 
 use std::collections::HashMap;
 
+use inkwell::basic_block::BasicBlock;
 use inkwell::targets::{InitializationConfig, Target, TargetData, TargetMachine};
 use inkwell::OptimizationLevel;
 use inkwell::builder::Builder;
@@ -27,6 +28,7 @@ pub struct CodeGen<'ctx> {
     pub symbol_table: ScopeTable<'ctx>,
     pub current_function: Option<FunctionValue<'ctx>>,
     pub string_constants: HashMap<String, PointerValue<'ctx>>,
+    pub loop_stack: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>)>,
     pub target_data: TargetData
 }
 
@@ -60,6 +62,7 @@ impl<'ctx> CodeGen<'ctx> {
             symbol_table: ScopeTable::new(),
             current_function: None,
             string_constants: HashMap::new(),
+            loop_stack: Vec::new(),
             target_data
         }
     }
@@ -74,6 +77,7 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn generate_node(&mut self, node: &ASTNode) -> Result<Option<BasicValueEnum<'ctx>>, String> {
         use ASTNode::*;
+
         match node {
             FunctionDeclaration { name, parameters, return_type, body } => {
                 self.generate_function_declaration(name, parameters, return_type, body)
@@ -108,6 +112,9 @@ impl<'ctx> CodeGen<'ctx> {
             ArrayInitializer { elements, .. } => {
                 self.generate_array_initializer(elements)
             }
+            ArrayAccess { .. } => {
+                self.generate_array_access(node)
+            }
             IfStatement { condition, then_branch, else_branch } => {
                 self.generate_if_statement(condition, then_branch, else_branch)
             }
@@ -117,6 +124,13 @@ impl<'ctx> CodeGen<'ctx> {
             WhileLoop { condition, body } => {
                 self.generate_while_loop(condition, body)
             }
+            Break { condition } => {
+                self.generate_break(condition)
+            }
+            Continue { condition } => {
+                self.generate_continue(condition)
+            }
+
             _ => Err(format!("unsupported AST node: {:?}", node)),
         }
     }
