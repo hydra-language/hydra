@@ -1,7 +1,7 @@
 use super::CodeGen;
 
 use parser::ast::ASTNode;
-use inkwell::values::BasicValueEnum;
+use inkwell::{basic_block::BasicBlock, values::BasicValueEnum};
 
 impl<'ctx> CodeGen<'ctx> {
 
@@ -57,6 +57,43 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         self.builder.position_at_end(merge_bb);
+
+        Ok(None)
+    }
+
+    pub fn generate_break(&mut self, condition: &Option<Box<ASTNode>>)
+                -> Result<Option<BasicValueEnum<'ctx>>, String>
+    {
+        let (break_dest, _) = *self.loop_stack.last().ok_or("break statement outside of loop")?;
+
+        self.generate_control_flow(break_dest, condition)
+    }
+
+    pub fn generate_continue(&mut self, condition: &Option<Box<ASTNode>>) 
+                -> Result<Option<BasicValueEnum<'ctx>>, String> 
+    {
+        let (_, continue_dest) = *self.loop_stack.last().ok_or("continue statement outside of loop")?;
+
+        self.generate_control_flow(continue_dest, condition)
+    }
+
+    fn generate_control_flow(&mut self, dest_bb: BasicBlock<'ctx>, condition: &Option<Box<ASTNode>>) 
+                -> Result<Option<BasicValueEnum<'ctx>>, String> 
+    {
+        if let Some(cond_node) = condition {
+            let cond_val = self.generate_node(cond_node)?.ok_or("condition must return value")?.into_int_value();
+            let parent = self.current_function.unwrap();
+            let continue_flow_bb = self.context.append_basic_block(parent, "control_skip");
+            
+            self.builder.build_conditional_branch(cond_val, dest_bb, continue_flow_bb);
+            self.builder.position_at_end(continue_flow_bb);
+        } else {
+            self.builder.build_unconditional_branch(dest_bb);
+
+            // Append dead block to keep LLVM builder valid
+            let dead_bb = self.context.append_basic_block(self.current_function.unwrap(), "dead");
+            self.builder.position_at_end(dead_bb);
+        }
 
         Ok(None)
     }
