@@ -32,6 +32,8 @@ impl<'ctx> CodeGen<'ctx> {
         let update_bb = self.context.append_basic_block(parent_fn, "loop_update");
         let after_bb = self.context.append_basic_block(parent_fn, "after_loop");
 
+        self.loop_stack.push((after_bb, update_bb));
+
         self.builder.build_unconditional_branch(cond_bb);
 
         self.builder.position_at_end(cond_bb);
@@ -76,6 +78,8 @@ impl<'ctx> CodeGen<'ctx> {
 
         self.symbol_table.exit_scope();
 
+        self.loop_stack.pop();
+
         Ok(None)
     }
 
@@ -87,6 +91,8 @@ impl<'ctx> CodeGen<'ctx> {
         let cond_bb = self.context.append_basic_block(parent_fn, "while_cond");
         let body_bb = self.context.append_basic_block(parent_fn, "while_body");
         let after_bb = self.context.append_basic_block(parent_fn, "after_while");
+
+        self.loop_stack.push((after_bb, cond_bb));
 
         self.builder.build_unconditional_branch(cond_bb);
         self.builder.position_at_end(cond_bb);
@@ -109,6 +115,8 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         self.builder.position_at_end(after_bb);
+
+        self.loop_stack.pop();
 
         Ok(None)
     }
