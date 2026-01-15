@@ -66,6 +66,12 @@ pub enum ASTNode<'a> {
         token: Token<'a>
     },
 
+    ArrayAccess {
+        array: Box<ASTNode<'a>>,
+        index: Box<ASTNode<'a>>,
+        token: Token<'a>
+    },
+
     Primtive {
         token: Token<'a>,
     },
@@ -78,6 +84,14 @@ pub enum ASTNode<'a> {
         condition: Box<ASTNode<'a>>,
         then_branch: Vec<ASTNode<'a>>,
         else_branch: Option<Vec<ASTNode<'a>>>,
+    },
+
+    Break {
+        condition: Option<Box<ASTNode<'a>>>,
+    },
+
+    Continue {
+        condition: Option<Box<ASTNode<'a>>>,
     },
 
     ForLoop {
