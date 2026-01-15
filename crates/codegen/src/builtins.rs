@@ -138,7 +138,7 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(())
     }
 
-    fn call_printf(&mut self, fmt: &str, args: &[BasicMetadataValueEnum<'ctx>]) {
+    pub fn call_printf(&mut self, fmt: &str, args: &[BasicMetadataValueEnum<'ctx>]) {
         let printf = self.module.get_function("printf").expect("printf must be declared");
 
         let fmt_str = self.get_global_string_ptr(fmt);
