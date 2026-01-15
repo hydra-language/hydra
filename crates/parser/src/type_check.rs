@@ -4,13 +4,16 @@ use crate::{ symbol::{ FunctionInfo, SymbolTable, VariableInfo }, ASTNode, Parse
 
 
 pub struct TypeChecker<'a> {
-    symbol_table: SymbolTable<'a>
+    symbol_table: SymbolTable<'a>,
+    in_loop: bool
 }
 
 impl<'a> TypeChecker<'a> {
+
     pub fn new() -> Self {
         TypeChecker {
-            symbol_table: SymbolTable::new()
+            symbol_table: SymbolTable::new(),
+            in_loop: false
         }
     }
 
@@ -61,7 +64,7 @@ impl<'a> TypeChecker<'a> {
                         is_mutable: false,
                         _phantom: std::marker::PhantomData
                     };
-                    self.symbol_table.define_variable(_param_name.lexeme, var_info, _param_name.clone());
+                    self.symbol_table.define_variable(_param_name.lexeme, var_info, _param_name.clone())?;
                 }
 
                 for stmt in body {
@@ -108,7 +111,7 @@ impl<'a> TypeChecker<'a> {
                             self.check_type_compatibility(elem, &element_type)?;
                         }
                     } else {
-                        self.check_type_compatibility(initializer, &type_name);
+                        self.check_type_compatibility(initializer, &type_name)?;
                     }
 
                     type_name
@@ -245,6 +248,70 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
+            ASTNode::ForLoop { variable, start, end, is_inclusive: _, body } => {
+                self.check_type_compatibility(start, "i32")?;
+                self.check_type_compatibility(end, "i32")?;
+                self.check_node(start)?;
+                self.check_node(end)?;
+
+                self.symbol_table.enter_scope();
+
+                let var_info = VariableInfo {
+                    type_name: "i32".to_string(),
+                    is_mutable: true,
+                    _phantom: std::marker::PhantomData
+                };
+
+                self.symbol_table.define_variable(variable.lexeme, var_info, variable.clone())?;
+
+                let prev_in_loop = self.in_loop;
+                self.in_loop = true;
+
+                for stmt in body {
+                    self.check_node(stmt)?;
+                }
+
+                self.in_loop = prev_in_loop;
+                self.symbol_table.exit_scope();
+            }
+
+            ASTNode::WhileLoop { condition, body } => {
+                self.check_type_compatibility(condition, "bool")?;
+                self.check_node(condition)?;
+
+                self.symbol_table.enter_scope();
+
+                let prev_in_loop = self.in_loop;
+                self.in_loop = true;
+
+                for stmt in body {
+                    self.check_node(stmt)?;
+                }
+
+                self.in_loop = prev_in_loop;
+                self.symbol_table.exit_scope();
+            }
+
+            ASTNode::Break { condition } | ASTNode::Continue { condition } => {
+                if !self.in_loop {
+                    return Err(ParserError::Generic {
+                        message: "control flow statement used outside of a loop".to_string(),
+                        token: Token { 
+                            token_type: TokenType::Break, 
+                            lexeme: "break/continue", 
+                            line: 0, 
+                            column: 0 
+                        },
+                        help: None
+                    });
+                }
+
+                if let Some(cond) = condition {
+                    self.check_type_compatibility(cond, "bool")?;
+                    self.check_node(cond)?;
+                }
+            }
+
             ASTNode::ArrayInitializer { elements, token } => {
                 if elements.is_empty() {
                     return Err(ParserError::Generic {
@@ -268,6 +335,48 @@ impl<'a> TypeChecker<'a> {
                 }
                 
                 return Ok(())
+            }
+
+            ASTNode::ArrayAccess { array, index, token } => {
+                self.check_node(array)?;
+                self.check_node(index)?;
+
+                let array_type = self.infer_type(array)?;
+                if !array_type.starts_with('[') {
+                    return Err(ParserError::Generic { 
+                        message: format!("type '{}' cannot be indexed", array_type),
+                        token: token.clone(),
+                        help: None
+                    });
+                }
+
+                let index_type = self.infer_type(index)?;
+                if !self.is_integer(&index_type) {
+                     return Err(ParserError::Generic {
+                        message: format!("array index must be an integer, found '{}'", index_type),
+                        token: token.clone(),
+                        help: None
+                     });
+                }
+                
+                // Compile-time bounds checking for literals
+                if let ASTNode::Expression { token: index_token } = &**index {
+                    if let TokenType::IntLiteral(val) = index_token.token_type {
+                         let parts: Vec<&str> = array_type.trim_matches(|c| c == '[' || c == ']').split(',').collect();
+
+                         if parts.len() == 2 {
+                             if let Ok(size) = parts[1].trim().parse::<i64>() {
+                                 if val < 0 || val >= size {
+                                     return Err(ParserError::Generic {
+                                         message: format!("index out of bounds: the len is {} but the index is {}", size, val),
+                                         token: index_token.clone(),
+                                         help: None
+                                     });
+                                 }
+                             }
+                         }
+                    }
+                }            
             }
 
             ASTNode::Primtive { token: _ } => {
@@ -339,29 +448,13 @@ impl<'a> TypeChecker<'a> {
             }
 
             ASTNode::FunctionCallExpression { name, arguments: _ } => {
-                // wont necessarily need type inference for function calls
-                // in the sense of computing it since the return type is 
-                // always specified when declaring a function, its more
-                // so looking the return type up
-                // 
-                // example:
-                //      fn add(a: i32, b: i32) -> i32 {
-                //          return a + b;
-                //      }
-                //
-                //      fn main() -> void {
-                //          const sum = add(1, 2);
-                //      }
-                //
-                // the type of sum is an signed integer value that fits into 32 bits
-                // if something like 10 which can be represented with only 8 bits,
-                // its just promoted to an i32
                 Err(ParserError::Generic {
                     message: format!("cannot infer type of function call '{}'", name.lexeme),
                     token: name.clone(),
                     help: None
                 })
             }
+
             ASTNode::VariableExpression { name } => {
                 let var_info = self.symbol_table.get_variable(name.lexeme)
                     .ok_or_else(|| ParserError::Generic {
@@ -371,6 +464,29 @@ impl<'a> TypeChecker<'a> {
                     })?;
 
                 Ok(var_info.type_name.clone())
+            }
+
+            ASTNode::ArrayAccess { array, .. } => {
+                let array_type = self.infer_type(array)?;
+
+                // Extract "i32" from "[i32, 5]"
+                let parts: Vec<&str> = array_type.split(',').collect();
+
+                if parts.len() >= 2 {
+                    let type_part = parts[0].trim_start_matches('[');
+                    Ok(type_part.to_string())
+                } else {
+                     Err(ParserError::Generic {
+                         message: "cannot infer element type".to_string(),
+                         token: Token { 
+                            token_type: TokenType::EOF, 
+                            lexeme: "", 
+                            line: 1, 
+                            column: 1
+                        },
+                         help: None
+                     })
+                }
             }
 
             _ => Err(ParserError::Generic {
