@@ -14,7 +14,6 @@ impl<'ctx> CodeGen<'ctx> {
             return Err("array initializer cannot be empty".to_string());
         }
 
-        // 
         let first_val = self.generate_node(&elements[0])?.unwrap();
         let element_type = first_val.get_type();
 
@@ -35,6 +34,22 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         Ok(Some(arr_ptr.into()))
+    }
+
+    pub fn generate_array_access(&mut self, node: &ASTNode) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+        // reuse the lvalue logic which handles the GEP and bounds check
+        let elem_ptr = self.generate_lvalue(node)?;
+
+        // If the element we found is ITSELF an array (e.g. matrix[i]), 
+        // return the pointer to it, do not load the whole array by value.
+        let elem_type = elem_ptr.get_type().get_element_type();
+        if elem_type.is_array_type() {
+             return Ok(Some(elem_ptr.into()));
+        }
+
+        let val = self.builder.build_load(elem_ptr, "elem_val");
+
+        Ok(Some(val))
     }
 
     fn store_element(&self, ptr: PointerValue<'ctx>, index: u64, val: BasicValueEnum<'ctx>) ->
