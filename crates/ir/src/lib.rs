@@ -1,0 +1,40 @@
+pub mod types;
+pub mod expr;
+pub mod stmt;
+
+use std::fmt;
+use types::Type;
+use stmt::Block;
+
+#[derive(Debug, Clone)]
+pub struct Function {
+    pub name: String,
+    pub params: Vec<(String, Type)>,
+    pub return_type: Type,
+    pub body: Block,
+}
+
+#[derive(Debug, Clone)]
+pub struct Program {
+    pub functions: Vec<Function>,
+}
+
+impl fmt::Display for Function {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let params_str = self.params.iter()
+            .map(|(n, t)| format!("{}: {}", n, t))
+            .collect::<Vec<_>>()
+            .join(", ");
+            
+        write!(f, "fn {}({}) -> {} {}", self.name, params_str, self.return_type, self.body)
+    }
+}
+
+impl fmt::Display for Program {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for func in &self.functions {
+            writeln!(f, "{}", func)?;
+        }
+        Ok(())
+    }
+}

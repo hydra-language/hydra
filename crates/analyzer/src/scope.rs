@@ -1,0 +1,64 @@
+use std::collections::HashMap;
+use ir::types::Type;
+
+#[derive(Debug, Clone)]
+pub enum Symbol {
+    Variable {
+        ty: Type,
+        is_mutable: bool,
+    },
+
+    Function {
+        params: Vec<Type>,
+        return_type: Type,
+    },
+}
+
+pub struct Scope {
+    symbols: HashMap<String, Symbol>,
+    parent: Option<Box<Scope>>,
+}
+
+impl Scope {
+    
+    pub fn new() -> Self {
+        Self {
+            symbols: HashMap::new(),
+            parent: None
+        }
+    }
+
+    pub fn new_child(parent: Scope) -> Self {
+        Self {
+            symbols: HashMap::new(),
+            parent: Some(Box::new(parent)),
+        }
+    }
+
+    pub fn define(&mut self, name: String, symbol: Symbol) -> Result<(), String> {
+        if self.symbols.contains_key(&name) {
+            return Err(format!("symbol '{}' is already defined in this scope", name));
+        }
+
+        self.symbols.insert(name.clone(), symbol);
+
+        Ok(())
+    }
+
+    pub fn resolve(&self, name: &str) -> Option<&Symbol> {
+        if let Some(s) = self.symbols.get(name) {
+            return Some(s);
+        }
+
+        if let Some(parent) = &self.parent {
+            return parent.resolve(name);
+        }
+
+        None
+    }
+
+    // return to parent scope when leaving a child scope
+    pub fn parent(self) -> Option<Scope> {
+        self.parent.map(|b| *b)
+    }
+}

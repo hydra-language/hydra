@@ -1,0 +1,10 @@
+[package]
+name = "analyzer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+parser = { path = "../parser" }
+ir = { path = "../ir" }
+lexer = { path = "../lexer" }   # For tokens/operators
+errors = { path = "../errors" } # For reporting semantic errors

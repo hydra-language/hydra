@@ -1,109 +1,48 @@
-use super::CodeGen;
+use crate::CodeGen;
+use ir::{Function, types::Type};
+use crate::types::compile_type;
+use inkwell::types::BasicType;
 
-use inkwell::values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, PointerValue};
-use inkwell::types::{BasicType, BasicMetadataTypeEnum};
+impl<'c> CodeGen<'c> {
 
-use lexer::Token;
-use parser::ast::ASTNode;
-
-
-impl<'ctx> CodeGen<'ctx> {
-    
-    pub fn generate_function_declaration(&mut self, name: &Token, params: &[(Token, Box<ASTNode>)],
-                                    return_type: &Box<ASTNode>, body: &[ASTNode]) -> 
-                                    Result<Option<BasicValueEnum<'ctx>>, String> 
-    {
-        let fn_name = name.lexeme;
-
-        let param_types: Vec<BasicMetadataTypeEnum> = params.iter()
-            .map(|(_, param_type)| self.get_type_from_node(param_type).unwrap().into())
-            .collect();
-
-        let function = if self.get_type_name(return_type)? == "void" {
-            let fn_type = self.context.void_type().fn_type(&param_types, false);
-            self.module.add_function(fn_name, fn_type, None)
+    pub fn generate_function_prototype(&self, function: &Function) {
+        let return_type = if function.return_type == Type::VOID {
+            self.context.void_type().fn_type(&[], false)
         } else {
-            let ret_type = self.get_type_from_node(return_type)?;
-            let fn_type = ret_type.fn_type(&param_types, false);
-            self.module.add_function(fn_name, fn_type, None)
+            let basic_return = compile_type(self.context, &self.target_data, &function.return_type);
+            basic_return.fn_type(&[], false)
         };
+        
+        // Note: We aren't adding params to the prototype yet for simplicity
+        // You can add them here by mapping func.params -> BasicMetadataTypeEnum
+        
+        self.module.add_function(&function.name, return_type, None);
+    }
 
-        let entry = self.context.append_basic_block(function, "entry");
+    pub fn generate_function_body(&mut self, function: &Function) -> Result<(), String> {
+        let func = self.module.get_function(&function.name).unwrap();
+        let entry = self.context.append_basic_block(func, "entry");
 
         self.builder.position_at_end(entry);
-        self.current_function = Some(function);
+        self.current_fn = Some(func);
 
-        self.symbol_table.enter_scope();
+        // Clear variables from previous function
+        self.variables.clear();
 
-        for (i, param) in function.get_param_iter().enumerate() {
-            let param_name = params[i].0.lexeme;
-            let param_type = self.get_type_from_node(&params[i].1)?;
-            let alloca = self.create_entry_block_alloca(param_name, param_type);
-            self.builder.build_store(alloca, param);
-
-            self.symbol_table.insert(param_name.to_string(), alloca);
+        // Compile statements
+        for stmt in &function.body.stmts {
+            self.compile_stmt(stmt)?;
         }
 
-        for node in body {
-            self.generate_node(node)?;
+        let current_block = self.builder.get_insert_block().unwrap();
+        if current_block.get_terminator().is_none() {
+            if function.return_type == Type::VOID {
+                self.builder.build_return(None);
+            } else {
+                self.builder.build_unreachable();
+            }
         }
 
-        if self.get_type_name(return_type)? == "void" && 
-        self.builder.get_insert_block().and_then(|b| b.get_terminator()).is_none() 
-        {
-            self.builder.build_return(None);
-        }
-
-        self.symbol_table.exit_scope();
-
-        Ok(Some(function.as_global_value().as_basic_value_enum()))
-    }
-
-    pub fn generate_function_call(&mut self, name: &Token, args: &[ASTNode]) -> 
-                            Result<Option<BasicValueEnum<'ctx>>, String> 
-    {
-        if name.lexeme == "println" {
-            return self.generate_println_call(args);
-        }
-
-        // Look up the function in the module
-        let function = self
-            .module
-            .get_function(name.lexeme)
-            .ok_or_else(|| format!("Unknown function call: {}", name.lexeme))?;
-
-        // Generate code for each argument
-        let mut compiled_args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::new();
-        for arg in args {
-            let arg_val = self.generate_node(arg)?.unwrap();
-            compiled_args.push(arg_val.into());
-        }
-
-        // Build the call instruction
-        let call_value = self
-            .builder
-            .build_call(function, &compiled_args, "calltmp");
-
-        // Return the result of the function call (if it's not void)
-        Ok(call_value.try_as_basic_value().left())
-    }
-    
-    pub fn generate_return(&mut self, value: &ASTNode) -> Result<Option<BasicValueEnum<'ctx>>, String> {
-        let return_value = self.generate_node(value)?.unwrap();
-        self.builder.build_return(Some(&return_value));
-        Ok(None)
-    }
-
-    pub fn create_entry_block_alloca<T: inkwell::types::BasicType<'ctx>>(&self, name: &str, ty: T) -> PointerValue<'ctx> {
-        let builder = self.context.create_builder();
-        let entry = self.current_function.unwrap().get_first_basic_block().unwrap();
-
-        match entry.get_first_instruction() {
-            Some(first_instr) => builder.position_before(&first_instr),
-            None => builder.position_at_end(entry),
-        }
-
-        builder.build_alloca(ty, name)
+        Ok(())
     }
 }
-

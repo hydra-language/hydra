@@ -5,9 +5,8 @@ use inkwell::context::Context;
 
 use lexer::Lexer;
 use parser::parser::Parser;
-use parser::type_check::TypeChecker;
+use analyzer::Analyzer;
 use codegen::CodeGen;
-use errors::*;
 
 #[derive(ClapParser, Debug)]
 #[command(name = "hydrac", version = env!("CARGO_PKG_VERSION"))]
@@ -20,6 +19,9 @@ struct Cli {
 
     #[arg(long, action = ArgAction::SetTrue, help = "emit ast nodes to a .nodes file")]
     ast: bool,
+
+    #[arg(long, action = ArgAction::SetTrue, help = "emit typed ir to a .hir file")]
+    hir: bool,
 
     #[arg(long, action = ArgAction::SetTrue, help = "emit llvm ir to a .ll file")]
     ir: bool,
@@ -88,8 +90,11 @@ fn main() {
     let mut parser = Parser::new(tokens);
     let ast = match parser.parse() {
         Ok(ast) => ast,
-        Err(e) => {
-            e.report(&contents, &input);
+        Err(errors) => {
+            for error in errors {
+                error.report(&contents, &input);
+            }
+
             process::exit(1);
         }
     };
@@ -109,16 +114,38 @@ fn main() {
         println!("info: ast nodes written to: {}", ast_filename);
     }
 
-    let mut type_checker = TypeChecker::new();
-    if let Err(e) = type_checker.check(&ast) {
-        e.report(&contents, &input);
-        process::exit(1);
+    let mut analyzer = Analyzer::new();
+    let ir = match analyzer.analyze(ast) {
+        Ok(ir) => ir,
+        Err(errors) => {
+            for error in errors {
+                error.report(&contents, &input);
+            }
+
+            process::exit(1);
+        }
+    };
+
+    if cli.hir {
+        let ir_output = ir.functions.iter()
+            .map(|func| format!("{}", func)) // Changed 'stmt' to 'func' for clarity
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let filename = input_path.with_extension("hir").to_string_lossy().into_owned();
+
+        if let Err(e) = fs::write(&filename, ir_output) {
+            eprintln!("error: writing ir to file '{}' failed: {}", filename, e);
+            process::exit(1);
+        }
+
+        println!("info: hydra ir written to: {}", filename);
     }
 
     let context = Context::create();
     let mut codegen = CodeGen::new(&context, &module_name);
 
-    if let Err(e) = codegen.generate(&ast) {
+    if let Err(e) = codegen.generate(&ir) {
         eprintln!("codegen error: {}", e);
         process::exit(1);
     }

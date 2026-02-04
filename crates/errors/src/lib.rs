@@ -1,7 +1,7 @@
-pub mod err001;
-pub mod err002;
-pub mod err003;
-pub mod err004;
+pub mod no_main;
+pub mod expected_found;
+pub mod type_mismatch;
+pub mod generic;
 
 use lexer::Token;
 
@@ -13,6 +13,26 @@ pub trait CompilerError {
     fn report(&self, source: &str, filename: &str);
 }
 
+#[derive(Debug, Clone)]
+pub enum HydraError<'a> {
+    NO_MAIN(Box<no_main::NoMainError<'a>>),
+    EXPECTED_FOUND(Box<expected_found::ExpectedFoundError<'a>>),
+    TYPE_MISMATCH(Box<type_mismatch::TypeMismatch<'a>>),
+    GENERIC(Box<generic::GenericError<'a>>),
+}
+
+impl<'a> HydraError<'a> {
+    pub fn report(&self, source: &str, filename: &str) {
+        match self {
+            HydraError::NO_MAIN(e) => e.report(source, filename),
+            HydraError::EXPECTED_FOUND(e) => e.report(source, filename),
+            HydraError::TYPE_MISMATCH(e) => e.report(source, filename),
+            HydraError::GENERIC(e) => e.report(source, filename),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Error<'a> {
     pub code: &'a str,
     pub message: &'a str,

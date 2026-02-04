@@ -1,7 +1,8 @@
 use crate::{CompilerError, Error, Hint};
 use lexer::Token;
 
-struct NoMainError<'a> {
+#[derive(Debug, Clone)]
+pub struct NoMainError<'a> {
     error: Error<'a>
 }
 

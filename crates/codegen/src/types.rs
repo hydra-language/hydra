@@ -1,75 +1,37 @@
-use super::CodeGen;
+use inkwell::targets::TargetData;
+use inkwell::types::{BasicType, BasicTypeEnum};
+use inkwell::context::Context;
 
-use inkwell::types::{BasicTypeEnum, BasicType};
+use ir::types::Type;
 
-use parser::ast::ASTNode;
-use lexer::TokenType;
+pub fn compile_type<'c>(context: &'c Context, target_data: &TargetData, ty: &Type) -> BasicTypeEnum<'c> {
+    match ty {
+        Type::I8  | Type::U8  => context.i8_type().as_basic_type_enum(),
+        Type::I16 | Type::U16 => context.i16_type().as_basic_type_enum(),
+        Type::I32 | Type::U32 => context.i32_type().as_basic_type_enum(),
+        Type::I64 | Type::U64 => context.i64_type().as_basic_type_enum(),
 
-impl<'ctx> CodeGen<'ctx> {
+        Type::F32 => context.f32_type().as_basic_type_enum(),
+        Type::F64 => context.f64_type().as_basic_type_enum(),
 
-    fn get_type(&self, type_str: &str) -> BasicTypeEnum<'ctx> {
-        match type_str {
-            "isize" | "usize" => self.context.ptr_sized_int_type(&self.target_data, None).into(),
-            "i8" | "u8" | "char" => self.context.i8_type().into(),
-            "i16" | "u16" => self.context.i16_type().into(),
-            "i32" | "u32" => self.context.i32_type().into(),
-            "i64" | "u64"=> self.context.i64_type().into(),
-            "f32" => self.context.f32_type().into(),
-            "f64" => self.context.f64_type().into(),
-            "bool" => self.context.bool_type().into(),
-            _ => panic!("error: unsupported type {}", type_str),
-        }
+        // --- Pointer Sized Integers (isize / usize) ---
+        // automatically maps to i64 on 64-bit, i32 on 32-bit
+        Type::ISIZE | Type::USIZE => {
+            context.ptr_sized_int_type(target_data, None).as_basic_type_enum()
+        },
+
+        Type::BOOL => context.bool_type().as_basic_type_enum(), // i1
+        Type::CHAR => context.i32_type().as_basic_type_enum(),
+
+        Type::VOID => panic!("cannot create a variable or value of type 'void'"),
+
+        Type::ARRAY(inner, size) => {
+            let inner_type = compile_type(context, target_data, inner);
+            inner_type.array_type(*size as u32).as_basic_type_enum()
+        },
+
+        // TODO: structs
+        _ => panic!("codegen not yet implemented for type {:?}", ty),
+
     }
-
-    pub fn get_type_name(&self, type_node: &ASTNode) -> Result<String, String> {
-        match type_node {
-            ASTNode::TypeIdentifier { type_token } => Ok(type_token.lexeme.to_string()),
-            ASTNode::ArrayType { element_type, size, .. } => {
-                let elem_name = self.get_type_name(element_type)?;
-                let size_str = match &**size {
-                    ASTNode::Expression { token } => {
-                        if let TokenType::IntLiteral(val) = token.token_type {
-                            val.to_string()
-                        } else {
-                            "?".to_string()
-                        }
-                    }
-                    _ => "?".to_string()
-                };
-                Ok(format!("[{}, {}]", elem_name, size_str))
-            }
-            _ => Err("error: expected a type node".to_string())
-        }  
-    }
-
-    pub fn get_type_from_node(&self, type_node: &ASTNode) -> Result<BasicTypeEnum<'ctx>, String> {
-        match type_node {
-            ASTNode::TypeIdentifier { type_token } => {
-                Ok(self.get_type(type_token.lexeme))
-            }
-            ASTNode::ArrayType { element_type, size, .. } => {
-                let elem_type = self.get_type_from_node(element_type)?;
-
-                // Extract size from the size expression
-                let size_value = match &**size {
-                    ASTNode::Expression { token } => {
-                        match &token.token_type {
-                            TokenType::IntLiteral(n) => {
-                                if *n < 0 {
-                                    return Err("Array size must be non-negative".to_string());
-                                }
-                                *n as u32
-                            }
-                            _ => return Err("Array size must be an integer literal".to_string())
-                        }
-                    }
-                    _ => return Err("Array size must be a constant expression".to_string())
-                };
-
-                Ok(BasicTypeEnum::ArrayType(elem_type.array_type(size_value)))
-            }
-            _ => Err("Invalid type annotation".to_string())
-        }
-    }
-
 }

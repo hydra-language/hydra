@@ -1,15 +1,13 @@
-use super::CodeGen;
-
 use inkwell::AddressSpace;
-use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, BasicValue};
+use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, BasicValue, FunctionValue, PointerValue};
 use inkwell::types::BasicTypeEnum;
 
-use parser::ast::ASTNode;
-use lexer::TokenType;
+use ir::expr::{Expr, ExprKind};
+use crate::CodeGen;
 
-impl<'ctx> CodeGen<'ctx> {
+impl<'c> CodeGen<'c> {
 
-    pub fn get_printf_declaration(&mut self) -> FunctionValue<'ctx> {
+    pub fn get_printf_declaration(&self) -> FunctionValue<'c> {
         if let Some(function) = self.module.get_function("printf") {
             return function;
         }
@@ -21,18 +19,15 @@ impl<'ctx> CodeGen<'ctx> {
         self.module.add_function("printf", printf_type, None)
     }
 
-    pub fn generate_println_call(&mut self, args: &[ASTNode]) -> Result<Option<BasicValueEnum<'ctx>>, String> 
+    pub fn compile_println(&mut self, args: &[Expr]) -> Result<BasicValueEnum<'c>, String> 
     {
         let _ = self.get_printf_declaration();
 
-        let fmt_node = args.first().ok_or("println requires a fmt string")?;
-        let fmt_literal = match fmt_node {
-            ASTNode::Expression { token } => match &token.token_type {
-                TokenType::StringLiteral(s) => s,
-                _ => return Err("first arg must be a string literal".to_string())
-            },
-
-            _ => return Err("invalid first argument to println".to_string())
+        let fmt_expr = args.first().ok_or("println requires a fmt string")?;
+        
+        let fmt_literal = match &fmt_expr.kind {
+            ExprKind::STRING_LITERAL(s) => s,
+            _ => return Err("first arg to println must be a string literal".to_string())
         };
 
         let mut arg_iter = args.iter().skip(1);
@@ -44,10 +39,10 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             if i < parts.len() - 1 {
-                let arg_node = arg_iter.next()
+                let arg_expr = arg_iter.next()
                     .ok_or("too few arguments for fmt string")?;
 
-                let val = self.generate_node(arg_node)?.unwrap();
+                let val = self.compile_expr(arg_expr)?;
 
                 let mut is_array = false;
 
@@ -58,7 +53,6 @@ impl<'ctx> CodeGen<'ctx> {
                     if ptr_type.is_array_type() {
                         let arr_type = ptr_type.into_array_type();
                         let len = arr_type.len();
-
 
                         self.call_printf("[", &[]);
 
@@ -80,37 +74,31 @@ impl<'ctx> CodeGen<'ctx> {
                             };
 
                             let elem_val = self.builder.build_load(elem_ptr, "elem_val");
-
-                            self.generate_print_value(elem_val)?;
+                            self.compile_print_value(elem_val)?;
                         }
 
                         self.call_printf("]", &[]);
-
                         is_array = true;
                     }
                 }
 
                 if !is_array {
-                    self.generate_print_value(val)?;
+                    self.compile_print_value(val)?;
                 }
             }
         }
         
         self.call_printf("\n", &[]);
 
-        Ok(None)
+        Ok(self.context.i32_type().const_zero().into())
     }
 
-        
-    fn generate_print_value(&mut self, value: BasicValueEnum<'ctx>) -> Result<(), String> {
-        let _ = self.module.get_function("printf").unwrap();
-
+    fn compile_print_value(&mut self, value: BasicValueEnum<'c>) -> Result<(), String> {
         match value.get_type() {
             BasicTypeEnum::IntType(int) => {
                 match int.get_bit_width() {
                     1 => {
                         let bool_val = value.into_int_value();
-
                         let true_str = self.get_global_string_ptr("true");
                         let false_str = self.get_global_string_ptr("false");
 
@@ -123,14 +111,13 @@ impl<'ctx> CodeGen<'ctx> {
 
                         self.call_printf("%s", &[str_val.into()]);
                     },
-
                     8 => self.call_printf("%c", &[value.into()]),
                     64 => self.call_printf("%lld", &[value.into()]),
                     _ => self.call_printf("%d", &[value.into()]),
                 }
             },
 
-        BasicTypeEnum::FloatType(_) => self.call_printf("%.2f", &[value.into()]),
+            BasicTypeEnum::FloatType(_) => self.call_printf("%.2f", &[value.into()]),
 
             _ => return Err(format!("unknown type for printing: {:?}", value.get_type()))
         }
@@ -138,14 +125,23 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(())
     }
 
-    pub fn call_printf(&mut self, fmt: &str, args: &[BasicMetadataValueEnum<'ctx>]) {
+    pub fn call_printf(&mut self, fmt: &str, args: &[BasicMetadataValueEnum<'c>]) {
         let printf = self.module.get_function("printf").expect("printf must be declared");
-
         let fmt_str = self.get_global_string_ptr(fmt);
 
         let mut final_args = vec![fmt_str.as_basic_value_enum().into()];
         final_args.extend_from_slice(args);
 
         self.builder.build_call(printf, &final_args, "printf_call");
+    }
+
+    pub fn get_global_string_ptr(&mut self, value: &str) -> PointerValue<'c> {
+        if let Some(ptr) = self.string_constants.get(value) {
+            return *ptr;
+        }
+
+        let ptr = self.builder.build_global_string_ptr(value, "str").as_pointer_value();
+        self.string_constants.insert(value.to_string(), ptr);
+        ptr
     }
 }

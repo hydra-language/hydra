@@ -329,7 +329,7 @@ impl<'a> Lexer<'a> {
             "trait" => TokenType::Trait,
             "anysize" => TokenType::AnySize,
             "anytype" => TokenType::AnyType,
-            "None" => TokenType::None,
+            "None" => TokenType::NONE,
             "true" => TokenType::BoolLiteral(true),
             "false" => TokenType::BoolLiteral(false),
             _ => TokenType::Identifier(text.to_string()),

@@ -1,45 +1,47 @@
-pub mod functions;
-pub mod variables;
-pub mod expressions;
 pub mod arrays;
 pub mod builtins;
-pub mod types;
 pub mod conditionals;
+pub mod expressions;
+pub mod functions;
 pub mod loops;
 pub mod scope;
+pub mod stmts;
+pub mod types;
+pub mod variables;
 
 use std::collections::HashMap;
 
-use inkwell::basic_block::BasicBlock;
-use inkwell::targets::{InitializationConfig, Target, TargetData, TargetMachine};
 use inkwell::OptimizationLevel;
-use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::builder::Builder;
+use inkwell::values::{FunctionValue, PointerValue};
+use inkwell::targets::{InitializationConfig, Target, TargetData, TargetMachine};
 
-use parser::ast::ASTNode;
-use crate::scope::ScopeTable;
+use ir::Program;
+use ir::types::Type;
+use crate::types::compile_type;
 
-pub struct CodeGen<'ctx> {
-    pub context: &'ctx Context,
-    pub builder: Builder<'ctx>,
-    pub module: Module<'ctx>,
-    pub symbol_table: ScopeTable<'ctx>,
-    pub current_function: Option<FunctionValue<'ctx>>,
-    pub string_constants: HashMap<String, PointerValue<'ctx>>,
-    pub loop_stack: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>)>,
-    pub target_data: TargetData
+pub struct CodeGen<'c> {
+    pub context: &'c Context,
+    pub module: Module<'c>,
+    pub builder: Builder<'c>,
+    pub variables: HashMap<String, PointerValue<'c>>,
+    pub string_constants: HashMap<String, PointerValue<'c>>,
+    pub current_fn: Option<FunctionValue<'c>>,
+    pub target_data: TargetData,
+    pub machine: TargetMachine,
 }
 
-impl<'ctx> CodeGen<'ctx> {
+impl<'c> CodeGen<'c> {
 
-    pub fn new(context: &'ctx Context, module_name: &str) -> Self {
+    pub fn new(context: &'c Context, module_name: &str) -> Self {
         Target::initialize_native(&InitializationConfig::default()).unwrap();
 
+        // 2. Setup Target Machine (Default to host for now)
         let triple = TargetMachine::get_default_triple();
         let target = Target::from_triple(&triple).unwrap();
-        let target_machine = target.create_target_machine(
+        let machine = target.create_target_machine(
             &triple,
             "generic",
             "",
@@ -48,109 +50,75 @@ impl<'ctx> CodeGen<'ctx> {
             inkwell::targets::CodeModel::Default
         ).unwrap();
 
-        let target_data = target_machine.get_target_data();
-        let builder = context.create_builder();
+        // 3. Get Data Layout from the machine
+        let target_data = machine.get_target_data();
+        
         let module = context.create_module(module_name);
-
-        module.set_triple(&triple);
         module.set_data_layout(&target_data.get_data_layout());
+        module.set_triple(&triple);
+
+        let builder = context.create_builder();
 
         Self {
             context,
-            builder,
             module,
-            symbol_table: ScopeTable::new(),
-            current_function: None,
+            builder,
+            variables: HashMap::new(),
             string_constants: HashMap::new(),
-            loop_stack: Vec::new(),
-            target_data
+            current_fn: None,
+            target_data,
+            machine,
         }
     }
 
-    pub fn generate(&mut self, ast: &[ASTNode]) -> Result<(), String> {
-        for node in ast {
-            self.generate_node(node)?;
+    pub fn generate(&mut self, program: &Program) -> Result<(), String> {
+        
+        for function in &program.functions {
+            self.generate_function_prototype(function);
+        }
+
+        for function in &program.functions {
+            self.generate_function_body(function)?;
         }
 
         Ok(())
     }
 
-    pub fn generate_node(&mut self, node: &ASTNode) -> Result<Option<BasicValueEnum<'ctx>>, String> {
-        use ASTNode::*;
+    pub fn ir_to_string(&self) -> String {
+        self.module.print_to_string().to_string()
+    }
 
-        match node {
-            FunctionDeclaration { name, parameters, return_type, body } => {
-                self.generate_function_declaration(name, parameters, return_type, body)
-            }
-            VariableDeclaration { name, type_annotation, initializer, .. } => {
-                self.generate_variable_declaration(name, type_annotation, initializer)
-            }
-            ReturnStatement { value } => {
-                self.generate_return(value)
-            }
-            Expression { token } => {
-                self.generate_expression_literal(token)
-            }
-            VariableExpression { name } => {
-                self.generate_variable_load(name)
-            }
-            AssignmentExpression { target, operator, value } => {
-                self.generate_assignment(target, operator, value)
-            }
-            FunctionCallExpression { name, arguments } => {
-                self.generate_function_call(name, arguments)
-            }
-            BinaryExpression { left, operator, right } => {
-                self.generate_binary_expression(left, operator, right)
-            }
-            PostfixUnaryExpression { operator, left } => {
-                self.generate_postfix_expression(operator, left)
-            },
-            UnaryExpression { operator, right } => {
-                self.generate_unary_expression(operator, right)
-            },
-            ArrayInitializer { elements, .. } => {
-                self.generate_array_initializer(elements)
-            }
-            ArrayAccess { .. } => {
-                self.generate_array_access(node)
-            }
-            IfStatement { condition, then_branch, else_branch } => {
-                self.generate_if_statement(condition, then_branch, else_branch)
-            }
-            ForLoop { variable, start, end, is_inclusive, body } => {
-                self.generate_for_loop(variable, start, end, *is_inclusive, body)
-            }
-            WhileLoop { condition, body } => {
-                self.generate_while_loop(condition, body)
-            }
-            Break { condition } => {
-                self.generate_break(condition)
-            }
-            Continue { condition } => {
-                self.generate_continue(condition)
-            }
-
-            _ => Err(format!("unsupported AST node: {:?}", node)),
+    fn declare_printf(&self) {
+        let i32_type = self.context.i32_type();
+        let str_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+        let printf_type = i32_type.fn_type(&[str_type.into()], true);
+        
+        if self.module.get_function("printf").is_none() {
+            self.module.add_function("printf", printf_type, None);
         }
     }
 
-    pub fn get_global_string_ptr(&mut self, value: &str) -> PointerValue<'ctx> {
-        // if string exists return it immediately
-        if let Some(ptr) = self.string_constants.get(value) {
+    fn create_entry_block_alloca(&self, name: &str, ty: &Type) -> PointerValue<'c> {
+        let builder = self.context.create_builder();
+        let entry = self.current_fn.unwrap().get_first_basic_block().unwrap();
+
+        match entry.get_first_instruction() {
+            Some(first) => builder.position_before(&first),
+            None => builder.position_at_end(entry),
+        }
+
+        let llvm_type = compile_type(self.context, &self.target_data, ty);
+
+        builder.build_alloca(llvm_type, name)
+    }
+
+    pub fn get_or_create_string_literal(&mut self, s: &str) -> PointerValue<'c> {
+        if let Some(ptr) = self.string_constants.get(s) {
             return *ptr;
         }
 
-        // otherwise create it
-        let ptr = self.builder.build_global_string_ptr(value, "str").as_pointer_value();
-
-        // save and cache it
-        self.string_constants.insert(value.to_string(), ptr);
-
+        let ptr = self.builder.build_global_string_ptr(s, "str_lit").as_pointer_value();
+        self.string_constants.insert(s.to_string(), ptr);
         ptr
-    }
-
-    pub fn ir_to_string(&self) -> String {
-        self.module.print_to_string().to_string()
     }
 }

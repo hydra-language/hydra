@@ -57,7 +57,7 @@ pub enum TokenType {
     Trait,
     AnySize,                // comptime generic used in function parameters of arrays
     AnyType,                // comptime generic used in function parameters, return types and struct fields
-    None,
+    NONE,
 
     // -----------------------------------------------------------------------
     // Operators

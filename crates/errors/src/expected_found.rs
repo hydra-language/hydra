@@ -1,13 +1,14 @@
 use crate::{CompilerError, Error};
 use lexer::Token;
 
-pub struct FormattedError<'a> {
-    code: &'a str,
-    message: String,
-    token: Token<'a>,
+#[derive(Debug, Clone)]
+pub struct ExpectedFoundError<'a> {
+    pub code: &'a str,
+    pub message: String,
+    pub token: Token<'a>,
 }
 
-impl<'a> CompilerError for FormattedError<'a> {
+impl<'a> CompilerError for ExpectedFoundError<'a> {
     fn report(&self, source: &str, filename: &str) {
         let error_to_report = Error {
             code: self.code,
@@ -21,7 +22,7 @@ impl<'a> CompilerError for FormattedError<'a> {
 }
 
 pub fn expected_found<'a>(expected: &str, found: Token<'a>) -> impl CompilerError + 'a {
-    FormattedError {
+    ExpectedFoundError {
         code: "E002",
         message: format!("expected {}, but found `{}`", expected, found.lexeme),
         token: found,

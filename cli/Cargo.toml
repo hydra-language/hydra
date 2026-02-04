@@ -9,6 +9,8 @@ clap = { version = "4.3", features = ["derive"] }
 
 lexer = { path = "../crates/lexer" }
 parser = { path = "../crates/parser/" }
+ir = { path = "../crates/ir" }
+analyzer = { path = "../crates/analyzer" }
 codegen = { path = "../crates/codegen/" }
 errors = { path = "../crates/errors/" }
 

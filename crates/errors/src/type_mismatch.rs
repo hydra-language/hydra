@@ -1,6 +1,7 @@
 use crate::{CompilerError, Error, Hint};
 use lexer::Token;
 
+#[derive(Debug, Clone)]
 pub struct TypeMismatch<'a> {
     code: &'a str,
     message: String,
