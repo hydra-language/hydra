@@ -15,7 +15,7 @@ use inkwell::OptimizationLevel;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::builder::Builder;
-use inkwell::values::{FunctionValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::targets::{InitializationConfig, Target, TargetData, TargetMachine};
 
 use ir::Program;
@@ -88,16 +88,6 @@ impl<'c> CodeGen<'c> {
         self.module.print_to_string().to_string()
     }
 
-    fn declare_printf(&self) {
-        let i32_type = self.context.i32_type();
-        let str_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-        let printf_type = i32_type.fn_type(&[str_type.into()], true);
-        
-        if self.module.get_function("printf").is_none() {
-            self.module.add_function("printf", printf_type, None);
-        }
-    }
-
     fn create_entry_block_alloca(&self, name: &str, ty: &Type) -> PointerValue<'c> {
         let builder = self.context.create_builder();
         let entry = self.current_fn.unwrap().get_first_basic_block().unwrap();
@@ -121,4 +111,16 @@ impl<'c> CodeGen<'c> {
         self.string_constants.insert(s.to_string(), ptr);
         ptr
     }
+
+    pub fn is_val_const(&self, val: &BasicValueEnum<'c>) -> bool {
+        match val {
+            BasicValueEnum::IntValue(v) => v.is_const(),
+            BasicValueEnum::FloatValue(v) => v.is_const(),
+            BasicValueEnum::PointerValue(v) => v.is_const(),
+            BasicValueEnum::ArrayValue(v) => v.is_const(),
+
+            _ => unreachable!()
+        }
+    }
+
 }

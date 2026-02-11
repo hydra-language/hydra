@@ -55,6 +55,11 @@ pub enum ASTNode<'a> {
         left: Box<ASTNode<'a>>,
     },
 
+    MemberExpression {
+        object: Box<ASTNode<'a>>,
+        property: Token<'a>,
+    },
+
     ArrayType {
         element_type: Box<ASTNode<'a>>,
         size: Box<ASTNode<'a>>,

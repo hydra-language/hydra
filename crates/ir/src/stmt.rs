@@ -12,7 +12,7 @@ pub enum Stmt {
     },
 
     Assign {
-        name: String,
+        target: AssignmentTarget,
         value: Expr,
     },
 
@@ -36,6 +36,16 @@ pub enum Stmt {
 }
 
 #[derive(Debug, Clone)]
+pub enum AssignmentTarget {
+    Variable(String),
+    
+    ArrayAccess {
+        array: Expr,
+        index: Expr,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
 }
@@ -45,8 +55,9 @@ impl Stmt {
         let prefix = "  ".repeat(indent);
         
         match self {
-            Stmt::Var { name, ty, init, .. } => {
-                format!("{}let {}: {} = {};", prefix, name, ty, init.pretty_print(indent))
+            Stmt::Var { name, ty, init, is_mutable } => {
+                let keyword = if *is_mutable { "let" } else { "const" };
+                format!("{}{} {}: {} = {};", prefix, keyword, name, ty, init.pretty_print(indent))
             },
             Stmt::Assign { name, value } => {
                 format!("{}{} = {};", prefix, name, value.pretty_print(indent))

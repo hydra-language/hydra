@@ -47,6 +47,11 @@ pub enum ExprKind {
     ArrayInit {
         elements: Vec<Expr>
     },
+
+    ArrayAccess {
+        array: Box<Expr>,
+        index: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,6 +90,13 @@ impl ExprKind {
             ExprKind::VariableReference { name } => name.clone(),
             ExprKind::Binary { op, lhs, rhs } => {
                 format!("{} {} {}", lhs.pretty_print(indent), op, rhs.pretty_print(indent))
+            },
+
+            ExprKind::ArrayInit { elements } => {
+                let elems: Vec<String> = elements.iter()
+                    .map(|e| e.pretty_print(indent))
+                    .collect();
+                format!("{{ {} }}", elems.join(", "))
             },
             
             ExprKind::Call { callee, args } => {

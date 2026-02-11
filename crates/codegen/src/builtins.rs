@@ -1,11 +1,118 @@
+use core::fmt;
+
 use inkwell::AddressSpace;
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, BasicValue, FunctionValue, PointerValue};
-use inkwell::types::BasicTypeEnum;
+use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 
 use ir::expr::{Expr, ExprKind};
+use ir::types::Type;
 use crate::CodeGen;
 
 impl<'c> CodeGen<'c> {
+
+
+    pub fn compile_println(&mut self, args: &[Expr]) -> Result<BasicValueEnum<'c>, String> 
+    {
+        let fmt_str_expr = args.first().ok_or("println requires format string")?;
+
+        let fmt_str = match &fmt_str_expr.kind {
+            ExprKind::STRING_LITERAL(s) => s,
+            _ => return Err("first arg must be a string literal".to_string())
+        };
+
+        let parts: Vec<&str> = fmt_str.split("{}").collect();
+        let mut arg_iter = args.iter().skip(1);
+
+        for (i, part) in parts.iter().enumerate() {
+            if !part.is_empty() {
+                let part_global = self.get_global_string_ptr(part);
+                self.call_printf("%s", &[part_global.into()]);
+            }
+
+            if i < parts.len() - 1 {
+                let arg_expr = arg_iter.next()
+                    .ok_or("too few arguments for fmt string")?;
+
+                let val = self.compile_expr(arg_expr)?;
+
+                self.compile_print_value(val, &arg_expr.ty)?;
+            }
+        }
+
+        let newline = self.get_global_string_ptr("\n");
+
+        self.call_printf("%s", &[newline.into()]);
+
+        Ok(self.context.i32_type().const_zero().into())
+    }
+
+    fn compile_print_value(&mut self, value: BasicValueEnum<'c>, ty: &Type) -> Result<(), String> {
+        match ty {
+            Type::I32 => self.call_printf("%d", &[value.into()]),
+            Type::U32 => self.call_printf("%u", &[value.into()]),
+            Type::I64 | Type::ISIZE => self.call_printf("%lld", &[value.into()]),
+            Type::U64 | Type::USIZE => self.call_printf("%llu", &[value.into()]),
+            Type::I8 => self.call_printf("%c", &[value.into()]),
+
+            Type::ARRAY(inner, size) => {
+                match **inner {
+                    Type::U8 | Type::I8 => {
+                        let ptr = if value.is_pointer_value() {
+                            value.into_pointer_value()
+                        } else {
+                            let temp_alloca = self.builder.build_alloca(value.get_type(), "tmp_print_str");
+                            self.builder.build_store(temp_alloca, value);
+
+                            temp_alloca
+                        };
+
+                        let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+                        let str_ptr = self.builder.build_bitcast(ptr, i8_ptr_type, "str_ptr");
+
+                        let len_value = self.context.i32_type().const_int(*size as u64, false);
+
+                        let args: Vec<BasicMetadataValueEnum> = vec![
+                            len_value.into(),
+                            str_ptr.into()
+                        ];
+
+                        self.call_printf("%.*s", &args);
+                    },
+
+                    _ => self.call_printf("<array>", &[]),
+                }
+            },
+
+            Type::BOOL => {
+                let bool_val = value.into_int_value();
+                let true_str = self.get_global_string_ptr("true");
+                let false_str = self.get_global_string_ptr("false");
+
+                let str_val = self.builder.build_select(
+                    bool_val, 
+                    true_str.as_basic_value_enum(), 
+                    false_str.as_basic_value_enum(),
+                    "bool_str"
+                );
+
+                self.call_printf("%s", &[str_val.into()]);
+            },
+
+            _ => self.call_printf("%d", &[value.into()]),
+        }
+
+        Ok(())
+    }
+
+    pub fn call_printf(&mut self, fmt: &str, args: &[BasicMetadataValueEnum<'c>]) {
+        let printf = self.get_printf_declaration();
+        let fmt_str = self.get_global_string_ptr(fmt);
+
+        let mut final_args = vec![fmt_str.as_basic_value_enum().into()];
+        final_args.extend_from_slice(args);
+
+        self.builder.build_call(printf, &final_args, "printf_call");
+    }
 
     pub fn get_printf_declaration(&self) -> FunctionValue<'c> {
         if let Some(function) = self.module.get_function("printf") {
@@ -17,122 +124,6 @@ impl<'c> CodeGen<'c> {
         let printf_type = i32_type.fn_type(&[i8_ptr_type.into()], true);
 
         self.module.add_function("printf", printf_type, None)
-    }
-
-    pub fn compile_println(&mut self, args: &[Expr]) -> Result<BasicValueEnum<'c>, String> 
-    {
-        let _ = self.get_printf_declaration();
-
-        let fmt_expr = args.first().ok_or("println requires a fmt string")?;
-        
-        let fmt_literal = match &fmt_expr.kind {
-            ExprKind::STRING_LITERAL(s) => s,
-            _ => return Err("first arg to println must be a string literal".to_string())
-        };
-
-        let mut arg_iter = args.iter().skip(1);
-        let parts: Vec<&str> = fmt_literal.split("{}").collect();
-
-        for (i, part) in parts.iter().enumerate() {
-            if !part.is_empty() {
-                self.call_printf(part, &[]);
-            }
-
-            if i < parts.len() - 1 {
-                let arg_expr = arg_iter.next()
-                    .ok_or("too few arguments for fmt string")?;
-
-                let val = self.compile_expr(arg_expr)?;
-
-                let mut is_array = false;
-
-                if val.is_pointer_value() {
-                    let ptr = val.into_pointer_value();
-                    let ptr_type = ptr.get_type().get_element_type();
-
-                    if ptr_type.is_array_type() {
-                        let arr_type = ptr_type.into_array_type();
-                        let len = arr_type.len();
-
-                        self.call_printf("[", &[]);
-
-                        for i in 0..len {
-                            if i > 0 {
-                                self.call_printf(", ", &[]);
-                            }
-
-                            let i32_type = self.context.i32_type();
-                            let zero = i32_type.const_int(0, false); 
-                            let index = i32_type.const_int(i as u64, false);
-
-                            let elem_ptr = unsafe {
-                                self.builder.build_in_bounds_gep(
-                                    ptr,
-                                    &[zero, index],
-                                    "elem_ptr"
-                                )
-                            };
-
-                            let elem_val = self.builder.build_load(elem_ptr, "elem_val");
-                            self.compile_print_value(elem_val)?;
-                        }
-
-                        self.call_printf("]", &[]);
-                        is_array = true;
-                    }
-                }
-
-                if !is_array {
-                    self.compile_print_value(val)?;
-                }
-            }
-        }
-        
-        self.call_printf("\n", &[]);
-
-        Ok(self.context.i32_type().const_zero().into())
-    }
-
-    fn compile_print_value(&mut self, value: BasicValueEnum<'c>) -> Result<(), String> {
-        match value.get_type() {
-            BasicTypeEnum::IntType(int) => {
-                match int.get_bit_width() {
-                    1 => {
-                        let bool_val = value.into_int_value();
-                        let true_str = self.get_global_string_ptr("true");
-                        let false_str = self.get_global_string_ptr("false");
-
-                        let str_val = self.builder.build_select(
-                            bool_val, 
-                            true_str.as_basic_value_enum(), 
-                            false_str.as_basic_value_enum(),
-                            "bool_str"
-                        );
-
-                        self.call_printf("%s", &[str_val.into()]);
-                    },
-                    8 => self.call_printf("%c", &[value.into()]),
-                    64 => self.call_printf("%lld", &[value.into()]),
-                    _ => self.call_printf("%d", &[value.into()]),
-                }
-            },
-
-            BasicTypeEnum::FloatType(_) => self.call_printf("%.2f", &[value.into()]),
-
-            _ => return Err(format!("unknown type for printing: {:?}", value.get_type()))
-        }
-
-        Ok(())
-    }
-
-    pub fn call_printf(&mut self, fmt: &str, args: &[BasicMetadataValueEnum<'c>]) {
-        let printf = self.module.get_function("printf").expect("printf must be declared");
-        let fmt_str = self.get_global_string_ptr(fmt);
-
-        let mut final_args = vec![fmt_str.as_basic_value_enum().into()];
-        final_args.extend_from_slice(args);
-
-        self.builder.build_call(printf, &final_args, "printf_call");
     }
 
     pub fn get_global_string_ptr(&mut self, value: &str) -> PointerValue<'c> {

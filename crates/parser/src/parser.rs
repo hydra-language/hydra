@@ -320,6 +320,11 @@ impl<'a> Parser<'a> {
 
             use TokenType::*;
             match &current_token.token_type {
+                Const => {
+                    self.advance();
+                    self.parse_type()
+                }
+
                 Identifier(_) |
                 ISize | I8 | I16 | I32 | I64 | 
                 USize | U8 | U16 | U32 | U64 |
@@ -546,6 +551,22 @@ impl<'a> Parser<'a> {
                     index: Box::new(index),
                     token,
                 };
+            } else if self.match_token(TokenType::Dot) {
+                let name = if let TokenType::Identifier(_) = self.peek().token_type {
+                    self.advance().clone()
+                } else {
+                    return Err(ParserError::GENERIC(Box::new(GenericError {
+                        code: "P001",
+                        message: "expected property name after '.'".to_string(),
+                        token: self.peek().clone(),
+                        help: None
+                    })));
+                };
+
+                expr = ASTNode::MemberExpression {
+                    object: Box::new(expr),
+                    property: name,
+                };
             } else {
                 break;
             }
@@ -579,6 +600,13 @@ impl<'a> Parser<'a> {
             IntLiteral(_) | FloatLiteral(_) | StringLiteral(_) |
             CharLiteral(_)| BoolLiteral(_) => 
             {
+                self.advance();
+                Ok(ASTNode::Expression {
+                    token: self.previous().clone(),
+                })
+            }
+
+            AnySize => {
                 self.advance();
                 Ok(ASTNode::Expression {
                     token: self.previous().clone(),

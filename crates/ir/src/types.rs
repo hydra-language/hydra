@@ -13,8 +13,18 @@ pub enum Type {
     CHAR,
 
     ARRAY(Box<Type>, usize),
+    INFERRED_ARRAY(Box<Type>),
 
     POINTER(Box<Type>)
+}
+
+impl Type {
+
+    pub fn is_numeric(&self) -> bool {
+        matches!(self, Type::I8 | Type::I16 | Type::I32 | Type::I64 | 
+                       Type::U8 | Type::U16 | Type::U32 | Type::U64 |
+                       Type::F32 | Type::F64 | Type::ISIZE | Type::USIZE)
+    }
 }
 
 impl fmt::Display for Type {
@@ -36,6 +46,7 @@ impl fmt::Display for Type {
             Type::BOOL => write!(f, "bool"),
             Type::CHAR => write!(f, "char"),
             Type::ARRAY(ty, size) => write!(f, "[{}, {}]", ty, size),
+            Type::INFERRED_ARRAY(ty) => write!(f, "[{}, anysize]", ty),
 
             _ => write!(f, "{:?}", self)
         }
