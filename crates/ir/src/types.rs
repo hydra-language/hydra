@@ -15,7 +15,11 @@ pub enum Type {
     ARRAY(Box<Type>, usize),
     INFERRED_ARRAY(Box<Type>),
 
-    POINTER(Box<Type>)
+    POINTER(Box<Type>),
+    REF(Box<Type>),
+    CONST_REF(Box<Type>),
+
+    STRUCT(String),
 }
 
 impl Type {
