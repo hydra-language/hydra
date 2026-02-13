@@ -12,9 +12,11 @@ pub mod variables;
 use std::collections::HashMap;
 
 use inkwell::OptimizationLevel;
+use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::builder::Builder;
+use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::targets::{InitializationConfig, Target, TargetData, TargetMachine};
 
@@ -29,6 +31,7 @@ pub struct CodeGen<'c> {
     pub variables: HashMap<String, PointerValue<'c>>,
     pub string_constants: HashMap<String, PointerValue<'c>>,
     pub current_fn: Option<FunctionValue<'c>>,
+    pub loop_stack: Vec<(BasicBlock<'c>, BasicBlock<'c>)>,
     pub target_data: TargetData,
     pub machine: TargetMachine,
 }
@@ -66,12 +69,21 @@ impl<'c> CodeGen<'c> {
             variables: HashMap::new(),
             string_constants: HashMap::new(),
             current_fn: None,
+            loop_stack: Vec::new(),
             target_data,
             machine,
         }
     }
 
     pub fn generate(&mut self, program: &Program) -> Result<(), String> {
+
+        for (name, fields) in &program.structs {
+            let struct_type = self.context.opaque_struct_type(name);
+            let field_types: Vec<BasicTypeEnum> = fields.iter()
+                .map(|(_, ty)| compile_type(self.context, &self.target_data, ty)).collect();
+
+            struct_type.set_body(&field_types, false);
+        }
         
         for function in &program.functions {
             self.generate_function_prototype(function);
@@ -123,4 +135,8 @@ impl<'c> CodeGen<'c> {
         }
     }
 
+    pub fn get_variable_pointer(&self, name: &str) -> PointerValue<'c> {
+        self.variables.get(name).copied()
+            .unwrap_or_else(|| panic!("ICE: variable could not be found")) 
+    }
 }
