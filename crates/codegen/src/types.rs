@@ -1,3 +1,4 @@
+use inkwell::AddressSpace;
 use inkwell::targets::TargetData;
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::context::Context;
@@ -30,8 +31,23 @@ pub fn compile_type<'c>(context: &'c Context, target_data: &TargetData, ty: &Typ
             inner_type.array_type(*size as u32).as_basic_type_enum()
         },
 
+        // TODO: optimzation, do not allocate the struct until its actually used
+        // let s: Struct = Struct::new(); wont actually allocate until some field is accessed
+        // or some method is called
+        Type::STRUCT(name) => {
+            context.get_struct_type(name)
+                .unwrap_or_else(|| panic!("LLVM struct type {} not found", name))
+                .into()
+        }
+
+        Type::REF(inner) | Type::CONST_REF(inner) => {
+            let llvm_inner = compile_type(context, target_data, inner);
+            let basic_inner: BasicTypeEnum = llvm_inner;
+
+            basic_inner.ptr_type(AddressSpace::default()).into()
+        }
+
         // TODO: structs
         _ => panic!("codegen not yet implemented for type {:?}", ty),
-
     }
 }
