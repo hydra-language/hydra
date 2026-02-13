@@ -4,7 +4,7 @@ use clap::{ArgAction, CommandFactory, Parser as ClapParser};
 use inkwell::context::Context;
 
 use lexer::Lexer;
-use parser::parser::Parser;
+use parser::{loader::ExternalLoader, parser::Parser};
 use analyzer::Analyzer;
 use codegen::CodeGen;
 
@@ -87,7 +87,8 @@ fn main() {
         println!("info: tokens written to: {}", token_filename);
     }
 
-    let mut parser = Parser::new(tokens);
+    let mut loader = ExternalLoader::new();
+    let mut parser = Parser::new(tokens, &mut loader);
     let ast = match parser.parse() {
         Ok(ast) => ast,
         Err(errors) => {
