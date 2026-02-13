@@ -1,6 +1,6 @@
 use crate::CodeGen;
 use inkwell::AddressSpace;
-use ir::stmt::{AssignmentTarget, Stmt};
+use ir::{stmt::{AssignmentTarget, Stmt}, types::Type};
 
 impl<'c> CodeGen<'c> {
 
@@ -37,9 +37,9 @@ impl<'c> CodeGen<'c> {
 
                 match target {
                     AssignmentTarget::Variable(name) => {
-                        let ptr = *self.variables.get(name)
-                            .ok_or(format!("ICE: variable '{}' not found in codegen")
-                        );
+                        let ptr =* self.variables.get(name)
+                            .ok_or(format!("ICE: variable '{}' not found in codegen", name)
+                        )?;
 
                         self.builder.build_store(ptr, val);
                     },
@@ -67,6 +67,17 @@ impl<'c> CodeGen<'c> {
                         };
 
                         self.builder.build_store(element_ptr, val);
+                    },
+
+                    AssignmentTarget::MemberAccess { object, index, .. } => {
+                        let obj_val = self.compile_expr(object)?;
+                        
+                        let struct_ptr = obj_val.into_pointer_value();
+
+                        let field_ptr = self.builder.build_struct_gep(struct_ptr, *index, "field_ptr")
+                                .map_err(|_| "llvm gep failed: index out of bounds".to_string())?;
+
+                        self.builder.build_store(field_ptr, val);
                     }
                 }
 
@@ -89,12 +100,79 @@ impl<'c> CodeGen<'c> {
 
                 Ok(())
             },
-            
-            // Pending implementation
-            Stmt::If { .. } | Stmt::While { .. } | 
-            Stmt::Break | Stmt::Continue => {
-                Err(format!("statement not yet implemented in codegen: {:?}", stmt))
+
+            Stmt::If { cond, then_block, else_block } => {
+                let parent_func = self.current_fn.unwrap();
+
+                let then_bb = self.context.append_basic_block(parent_func, "if_then");
+                let else_bb = self.context.append_basic_block(parent_func, "if_else");
+                let merge_bb = self.context.append_basic_block(parent_func, "if_merge");
+
+                let cond_val = self.compile_expr(cond)?.into_int_value();
+
+                if else_block.is_some() {
+                    self.builder.build_conditional_branch(cond_val, then_bb, else_bb);
+                } else {
+                    self.builder.build_conditional_branch(cond_val, then_bb, merge_bb);
+                }
+
+                self.builder.position_at_end(then_bb);
+                for stmt in &then_block.stmts {
+                    self.compile_stmt(stmt)?;
+                }
+
+                if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+                    self.builder.build_unconditional_branch(merge_bb);
+                }
+
+                // 4. Compile 'Else' Block
+                self.builder.position_at_end(else_bb);
+                if let Some(block) = else_block {
+                    for stmt in &block.stmts {
+                        self.compile_stmt(stmt)?;
+                    }
+                    if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+                        self.builder.build_unconditional_branch(merge_bb);
+                    }
+                } else {
+                    // Empty else block just jumps to merge
+                    self.builder.build_unconditional_branch(merge_bb);
+                }
+
+                // 5. Continue at Merge Block
+                self.builder.position_at_end(merge_bb);
+
+                Ok(())
+            }
+
+            Stmt::While { cond, body, kind: _} => {
+                self.compile_while(cond, body)
             },
+
+            Stmt::Block(block) => {
+                for s in &block.stmts {
+                    self.compile_stmt(s)?;
+                }
+                Ok(())
+            },
+
+            Stmt::Break => {
+                let (_, break_bb) = self.loop_stack.last()
+                    .ok_or("break statement used outside of loop")?;
+
+                self.builder.build_unconditional_branch(*break_bb);
+
+                Ok(())
+            },
+
+            Stmt::Continue => {
+                let (continue_bb, _) = self.loop_stack.last()
+                    .ok_or("continue statement used outside of loop")?;
+
+                self.builder.build_unconditional_branch(*continue_bb);
+
+                Ok(())
+            }
         }
     }
 }
