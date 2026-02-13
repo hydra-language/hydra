@@ -1,10 +1,10 @@
 pub mod scope;
 
 use std::mem;
-use errors::{HydraError, generic::GenericError, type_mismatch::{self, type_mismatch}};
+use errors::{HydraError, generic::GenericError};
 use lexer::{Token, TokenType};
 use parser::ast::ASTNode;
-use ir::{Function, Program, expr::{BinaryOp, Expr, ExprKind, UnaryOp}, stmt::{Block, Stmt}, types::Type};
+use ir::{Function, Program, expr::{BinaryOp, Expr, ExprKind, UnaryOp}, stmt::{AssignmentTarget, Block, LoopKind, Stmt}, types::Type};
 use scope::Scope;
 
 use crate::scope::Symbol;
@@ -26,11 +26,50 @@ impl Analyzer {
     pub fn analyze(&mut self, nodes: Vec<ASTNode>) -> Result<Program, Vec<HydraError<'static>>> {
         let mut functions = Vec::new();
         let mut errors = Vec::new();
-        
+        let mut structs = Vec::new();
+
+        for node in &nodes {
+            if let ASTNode::StructDeclaration { name, fields, methods, .. } = node {
+                let mut struct_fields = Vec::new();
+
+                for (field_name, field_type) in fields {
+                    match self.lower_type(*field_type.clone()) {
+                        Ok(t) => struct_fields.push((field_name.lexeme.to_string(), t)),
+                        Err(e) => errors.push(e),
+                    }
+                }
+
+                let struct_name = name.lexeme.to_string();
+                structs.push((struct_name.clone(), struct_fields.clone()));
+
+                if let Err(msg) = self.scope.define(struct_name.to_string(), Symbol::Struct { fields: struct_fields }) {
+                    errors.push(self.make_error(msg, name));
+                }
+
+                for method in methods {
+                    if let ASTNode::FunctionDeclaration { name: m_name, parameters, return_type, .. } = method {
+                        let namespaced_name = format!("{}::{}", struct_name, m_name.lexeme);
+
+                        let mut param_types = Vec::new();
+                        for (_, type_node) in parameters {
+                            param_types.push(self.lower_type(*type_node.clone()).unwrap_or(Type::VOID));
+                        }
+
+                        let rt = self.lower_type(*return_type.clone()).unwrap_or(Type::VOID);
+
+                        self.scope.define(namespaced_name, Symbol::Function {
+                            params: param_types,
+                            return_type: rt
+                        }).ok();
+                    }
+                }
+            }
+        }
+
         for node in &nodes {
             if let ASTNode::FunctionDeclaration { name, parameters, return_type, .. } = node {
                 let mut param_types = Vec::new();
-                
+
                 for (_, type_node) in parameters {
                     match self.lower_type(*type_node.clone()) {
                         Ok(t) => param_types.push(t),
@@ -42,8 +81,7 @@ impl Analyzer {
                     Ok(t) => t,
                     Err(e) => {
                         errors.push(e);
-                        Type::VOID      // just here to make sure analysis continues but the error
-                        // is collected
+                        Type::VOID
                     }
                 };
 
@@ -67,9 +105,21 @@ impl Analyzer {
                     }
                 },
 
-                ASTNode::VariableDeclaration { is_const: true, .. } => {
-                    // Globals (future)
+                ASTNode::StructDeclaration { name, methods, .. } => {
+                    let struct_name = name.lexeme;
+
+                    for method in methods {
+                        match self.lower_function(method) {
+                            Ok(mut ir_method) => {
+                                ir_method.name = format!("{}::{}", struct_name, ir_method.name);
+                                functions.push(ir_method);
+                            }
+                            Err(e) => errors.push(e), // Push the single error into the vector
+                        }
+                    }
                 },
+
+                ASTNode::VariableDeclaration { is_const: true, .. } => {},
 
                 _ => errors.push(self.make_generic_error(
                     "executable code is not allowed at the top level".to_string()
@@ -77,7 +127,7 @@ impl Analyzer {
             }
         }
 
-        let has_main = functions.iter().any(|f| f.name == "main"); // && f.ret_ty == Type::Void
+        let has_main = functions.iter().any(|f| f.name == "main");
         if !has_main && errors.is_empty() {
             errors.push(HydraError::GENERIC(Box::new(GenericError {
                 code: "E001",
@@ -90,7 +140,10 @@ impl Analyzer {
         if !errors.is_empty() {
             Err(errors)
         } else {
-            Ok(Program { functions })
+            Ok(Program { 
+                functions,
+                structs
+            })
         }
     }
 
@@ -172,10 +225,12 @@ impl Analyzer {
                     val.ty = explicit.clone();
                 }
 
-                self.scope.define(name.lexeme.to_string(), Symbol::Variable {
-                    ty: val.ty.clone(),
-                    is_mutable: !is_const
-                }).map_err(|msg| self.make_error(msg, &name))?;
+                self.scope.define(name.lexeme.to_string(), 
+                    Symbol::Variable {
+                        ty: val.ty.clone(),
+                        is_mutable: !is_const
+                    }).map_err(|msg| self.make_error(msg, &name)
+                    )?;
 
                 Ok(Stmt::Var {
                     name: name.lexeme.to_string(),
@@ -196,12 +251,10 @@ impl Analyzer {
                             .ok_or(self.make_error(
                                 format!("cannot assign to undefined variable '{}'", var_name),
                                 &name
-                            )
-                        )?;
+                            ))?;
 
                         let (expected, is_mutable) = match symbol {
                             Symbol::Variable { ty, is_mutable } => (ty.clone(), *is_mutable),
-
                             _ => return Err(self.make_error(
                                 format!("'{}' is not a variable", var_name),
                                 &name
@@ -215,21 +268,33 @@ impl Analyzer {
                             ));
                         }
 
-                        if !self.check_type_compatibility(&expected_ty, &rhs.ty) {
+                        if !self.check_type_compatibility(&expected, &rhs.ty) {
                             return Err(self.make_error(
-                                format!("type mismatch: cannot assign '{}' to variable of type '{}'", rhs.ty, expected_ty),
+                                format!("type mismatch: cannot assign '{}' to variable of type '{}'", rhs.ty, expected),
                                 &operator
                             ));
                         }
 
                         if let ExprKind::INT_LITERAL(l) = rhs.kind {
-                             if self.check_and_promote_int_literal(l, &expected_ty) {
-                                 rhs.ty = expected_ty.clone();
-                             }
+                            if self.check_and_promote_int_literal(l, &expected) {
+                                rhs.ty = expected.clone();
+                            }
+                        }
+
+                        if let Some(op) = self.get_binary_op_from_token(&operator.token_type) {
+                            let lhs = Expr {
+                                kind: ExprKind::VariableReference { name: var_name.clone() },
+                                ty: expected.clone()
+                            };
+
+                            rhs = Expr {
+                                kind: ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) },
+                                ty: expected.clone(),
+                            };
                         }
 
                         Ok(Stmt::Assign {
-                            target: ir::stmt::AssignmentTarget::Variable(var_name),
+                            target: AssignmentTarget::Variable(var_name),
                             value: rhs
                         })
                     },
@@ -238,45 +303,27 @@ impl Analyzer {
                         let arr_expr = self.lower_expression(*array)?;
                         let idx_expr = self.lower_expression(*index)?;
 
-                        match &arr_expr.ty {
+                        let inner_ty = match &arr_expr.ty {
                             Type::ARRAY(inner, size) => {
                                 if let ExprKind::INT_LITERAL(idx_val) = idx_expr.kind {
                                     if idx_val < 0 || idx_val >= (*size as i64) {
                                         return Err(self.make_error(
-                                            format!(
-                                                "index out of bounds: the len is {} but the index is {}", 
-                                                size, idx_val
-                                            ),
+                                            format!("index out of bounds: the len is {} but the index is {}", size, idx_val),
                                             &token
                                         ));
                                     }
                                 }
 
-                                Ok(Expr {
-                                    kind: ExprKind::ArrayAccess { 
-                                        array: Box::new(arr_expr), 
-                                        index: Box::new(idx_expr) 
-                                    },
-                                    ty: *inner.clone(),
-                                })
+                                inner.clone()
                             },
 
-                            Type::INFERRED_ARRAY(inner) => {
-                                // for now we can not check bounds at compile time
-                                Ok(Expr {
-                                    kind: ExprKind::ArrayAccess { 
-                                        array: Box::new(arr_expr), 
-                                        index: Box::new(idx_expr) 
-                                    },
-                                    ty: *inner.clone(),
-                                })
-                            },
+                            Type::INFERRED_ARRAY(inner) => inner.clone(),
 
                             _ => return Err(self.make_error(
                                 format!("type '{}' cannot be indexed", arr_expr.ty), 
                                 &token
                             ))
-                        }
+                        };
 
                         if !idx_expr.ty.is_numeric() {
                             return Err(self.make_error(
@@ -285,21 +332,40 @@ impl Analyzer {
                             ));
                         }
 
-                        if !self.check_type_compatibility(inner_ty, &rhs.ty) {
-                             return Err(self.make_error(
+                        if !self.check_type_compatibility(&inner_ty, &rhs.ty) {
+                            return Err(self.make_error(
                                 format!("type mismatch: expected {}, found {}", inner_ty, rhs.ty),
                                 &operator
                             ));
                         }
 
                         if let ExprKind::INT_LITERAL(l) = rhs.kind {
-                             if self.check_and_promote_int_literal(l, inner_ty) {
-                                 rhs.ty = *inner_ty.clone();
-                             }
+                            if self.check_and_promote_int_literal(l, &inner_ty) {
+                                rhs.ty = *inner_ty.clone();
+                            }
+                        }
+
+                        if let Some(op) = self.get_binary_op_from_token(&operator.token_type) {
+                            let lhs = Expr {
+                                kind: ExprKind::ArrayAccess {
+                                    array: Box::new(arr_expr.clone()),
+                                    index: Box::new(idx_expr.clone())
+                                },
+                                ty: *inner_ty.clone()
+                            };
+
+                            rhs = Expr {
+                                kind: ExprKind::Binary {
+                                    op,
+                                    lhs: Box::new(lhs),
+                                    rhs: Box::new(rhs),
+                                },
+                                ty: *inner_ty.clone(),
+                            };
                         }
 
                         Ok(Stmt::Assign {
-                            target: ir::stmt::AssignmentTarget::ArrayAccess {
+                            target: AssignmentTarget::ArrayAccess {
                                 array: arr_expr,
                                 index: idx_expr,
                             },
@@ -307,15 +373,64 @@ impl Analyzer {
                         })
                     },
 
-                    _ => return Err(self.make_generic_error(
-                        "assignment target must be a variable or array_element".to_string()
-                    ))
+                    ASTNode::MemberExpression { object, property } => {
+                        let target_expr = self.lower_expression(
+                            ASTNode::MemberExpression {
+                                object, 
+                                property: property.clone() 
+                            }
+                        )?;
+
+                        let (obj_expr, field_index) = if let ExprKind::MemberAccess { 
+                            object: ref obj, 
+                            index, 
+                            .. 
+                        } = target_expr.kind {
+                            (obj.clone(), index)
+                        } else {
+                            unreachable!("something went wrong")
+                        };
+
+                        if let Type::CONST_REF(_) = obj_expr.ty {
+                            return Err(self.make_error(
+                                format!(
+                                    "cannot assign to fiedl '{}' through an immutable reference",
+                                    property.lexeme
+                                ),
+                                &property
+                            ));
+                        }
+
+                        if let Some(op) = self.get_binary_op_from_token(&operator.token_type) {
+                            rhs = Expr {
+                                kind: ExprKind::Binary {
+                                    op,
+                                    lhs: Box::new(target_expr.clone()),
+                                    rhs: Box::new(rhs),
+                                },
+                                ty: target_expr.ty.clone(),
+                            };
+                        }
+
+                        Ok(Stmt::Assign {
+                            target: AssignmentTarget::MemberAccess {
+                                object: match target_expr.kind {
+                                    ExprKind::MemberAccess { object, .. } => object,
+                                    _ => unreachable!(),
+                                },
+                                member: property.lexeme.to_string(),
+                                index: field_index,
+                            },
+                            value: rhs,
+                        })
+                    },
+
+                    _ => Err(self.make_generic_error("assignment target must be a variable or array access".to_string()))
                 }
             },
 
             ASTNode::ReturnStatement { value } => {
                 let token = self.get_token_from_node(&value);
-
                 let mut val = self.lower_expression(*value)?;
 
                 if let Some(expected) = &self.current_return_type {
@@ -332,23 +447,129 @@ impl Analyzer {
                         ));
                     }                
                 } else {
-                    return Err(self.make_error(
-                        "return statement outside of function body".to_string(), 
-                        &token
-                    ));
+                    return Err(self.make_error("return outside function body".to_string(), &token));
                 }
 
                 Ok(Stmt::Return(Some(val)))
+            },
+
+            ASTNode::IfStatement { condition, then_branch, else_branch } => {
+                let cond = self.lower_expression(*condition)?;
+
+                if cond.ty != Type::BOOL {
+                    return Err(self.make_error(
+                        format!("if condition must be a boolean, found {}", cond.ty),
+                        &self.dummy_token()
+                    ));
+                }
+
+                self.enter_scope();
+
+                let mut then_stmts = Vec::new();
+
+                for stmt in then_branch {
+                    then_stmts.push(self.lower_statement(stmt)?);
+                }
+                self.leave_scope();
+
+                let else_block = if let Some(else_stmts_ast) = else_branch {
+                    self.enter_scope();
+
+                    let mut else_stmts = Vec::new();
+
+                    for stmt in else_stmts_ast {
+                        else_stmts.push(self.lower_statement(stmt)?);
+                    }
+                    self.leave_scope();
+
+                    Some(Block { stmts: else_stmts })
+                } else {
+                    None
+                };
+
+                Ok(Stmt::If {
+                    cond,
+                    then_block: Block {
+                        stmts: then_stmts
+                    },
+                    else_block
+                })
             }
 
-           ASTNode::FunctionCallExpression { .. } | ASTNode::BinaryExpression { .. } | 
-            ASTNode::VariableExpression { .. } | ASTNode::Expression { .. } => 
-            {
+            ASTNode::ForLoop { variable, start, end, is_inclusive, body } => {
+                self.lower_for_loop(variable, *start, *end, is_inclusive, body)
+            },
+
+            ASTNode::ForEach { item, iterable, body } => {
+                self.lower_foreach_loop(item, *iterable, body)
+            },
+
+            ASTNode::WhileLoop { condition, body } => {
+                let cond = self.lower_expression(*condition)?;
+                
+                let mut ir_body = Vec::new();
+                for stmt in body {
+                    ir_body.push(self.lower_statement(stmt)?);
+                }
+
+                Ok(Stmt::While {
+                    cond,
+                    body: Block { stmts: ir_body },
+                    kind: ir::stmt::LoopKind::While,
+                })
+            },
+
+            ASTNode::Break { condition } => {
+                let break_stmt = Stmt::Break;
+
+                if let Some(expr) = condition {
+                    let cond = self.lower_expression(*expr)?;
+
+                    if cond.ty != Type::BOOL {
+                        return Err(self.make_generic_error("break condition must be a boolean".into()));
+                    }
+
+                    Ok(Stmt::If {
+                        cond,
+                        then_block: Block {
+                            stmts: vec![break_stmt]
+                        },
+                        else_block: None,
+                    })
+                } else {
+                    Ok(break_stmt)
+                }
+            },
+
+            ASTNode::Continue { condition } => {
+                let continue_stmt = Stmt::Continue;
+
+                if let Some(expr) = condition {
+                    let cond = self.lower_expression(*expr)?;
+
+                    if cond.ty != Type::BOOL {
+                        return Err(self.make_generic_error("continue condition must be a boolean".into()));
+                    }
+
+                    Ok(Stmt::If {
+                        cond,
+                        then_block: Block {
+                            stmts: vec![continue_stmt]
+                        },
+                        else_block: None
+                    })
+                } else {
+                    Ok(continue_stmt)
+                }
+            },
+
+            ASTNode::FunctionCallExpression { .. } | ASTNode::BinaryExpression { .. } | 
+            ASTNode::VariableExpression { .. } | ASTNode::Expression { .. } => {
                 let expr = self.lower_expression(node)?;
                 Ok(Stmt::Expr(expr))
             }, 
 
-            _ => Err(self.make_generic_error(format!("statement type {:?} is not yet supported", node)))
+            _ => Err(self.make_generic_error(format!("statement type {:?} not supported", node)))
         }
     }
 
@@ -360,12 +581,8 @@ impl Analyzer {
                 match operator.token_type {
                     TokenType::Minus => {
                         if !rhs.ty.is_numeric() {
-                            return Err(self.make_error(
-                                format!("cannot apply negation to type '{}'", rhs.ty),
-                                &operator,
-                            ));
+                            return Err(self.make_error(format!("cannot negate '{}'", rhs.ty), &operator));
                         }
-
                         Ok(Expr {
                             kind: ExprKind::Unary { op: UnaryOp::NEG, operand: Box::new(rhs.clone()) },
                             ty: rhs.ty
@@ -374,22 +591,29 @@ impl Analyzer {
 
                     TokenType::ExclamationMark => {
                         if rhs.ty != Type::BOOL {
-                            return Err(self.make_error(
-                                format!("cannot apply logical not to type '{}'", rhs.ty),
-                                &operator
-                            ));
+                            return Err(self.make_error(format!("cannot logic-not '{}'", rhs.ty), &operator));
                         }
 
                         Ok(Expr {
-                            kind: ExprKind::Unary { op: UnaryOp::NOT, operand: Box::new(rhs) },
+                            kind: ExprKind::Unary { 
+                                op: UnaryOp::NOT, 
+                                operand: Box::new(rhs) 
+                            },
                             ty: Type::BOOL,
                         })
                     },
 
-                    _ => Err(self.make_error(
-                            format!("unknown unary operator: {}", operator.lexeme),
-                            &operator
-                    ))
+                    TokenType::Ampersand => {
+                        Ok(Expr {
+                            kind: ExprKind::Unary { 
+                                op: UnaryOp::ADDR_OF, 
+                                operand: Box::new(rhs.clone()) 
+                            },
+                            ty: Type::REF(Box::new(rhs.ty))
+                        })
+                    },
+
+                    _ => Err(self.make_error(format!("unknown unary op: {}", operator.lexeme), &operator))
                 }
             }
 
@@ -402,9 +626,13 @@ impl Analyzer {
                             Type::I64
                         };
 
-                        Ok(Expr {
-                            kind: ExprKind::INT_LITERAL(val),
-                            ty
+                        Ok(Expr { kind: ExprKind::INT_LITERAL(val), ty })
+                    },
+
+                    TokenType::FloatLiteral(val) => {
+                       Ok(Expr {
+                            ty: Type::F64, 
+                            kind: ExprKind::FLOAT_LITERAL(val) 
                         })
                     },
 
@@ -413,11 +641,7 @@ impl Analyzer {
                         ty: Type::ARRAY(Box::new(Type::U8), s.len())
                     }),
 
-                    TokenType::CharLiteral(c) => Ok(Expr {
-                        kind: ExprKind::CHAR_LITERAL(c),
-                        ty: Type::CHAR,
-                    }),
-
+                    TokenType::CharLiteral(c) => Ok(Expr { kind: ExprKind::CHAR_LITERAL(c), ty: Type::CHAR }),
                     TokenType::BoolLiteral(b) => Ok(Expr {
                         kind: ExprKind::INT_LITERAL(if b { 1 } else { 0 }),
                         ty: Type::BOOL,
@@ -427,17 +651,14 @@ impl Analyzer {
                 }
             },
 
-            ASTNode::ArrayInitializer { elements, token: _ } => {
+            ASTNode::ArrayInitializer { elements, .. } => {
                 let mut ir_elements = Vec::new();
+
                 for elem in &elements {
                     ir_elements.push(self.lower_expression(elem.clone())?);
                 }
 
-                let element_type = if let Some(first) = ir_elements.first() {
-                    first.ty.clone()
-                } else {
-                    Type::VOID
-                };
+                let element_type = ir_elements.first().map(|f| f.ty.clone()).unwrap_or(Type::VOID);
 
                 Ok(Expr {
                     kind: ExprKind::ArrayInit { elements: ir_elements },
@@ -447,30 +668,43 @@ impl Analyzer {
 
             ASTNode::ArrayAccess { array, index, token } => {
                 let arr = self.lower_expression(*array)?;
-                let index = self.lower_expression(*index)?;
+                let idx_expr = self.lower_expression(*index)?;
 
-                if !index.ty.is_numeric() {
-                    return Err(self.make_error(
-                        format!("array index must be an integer, found {}", index.ty),
-                        &token
-                    ));
+                if !idx_expr.ty.is_numeric() {
+                    return Err(self.make_error(format!("index must be numeric, found {}", idx_expr.ty), &token));
                 }
 
                 match &arr.ty.clone() {
-                    Type::ARRAY(inner, _) | Type::INFERRED_ARRAY(inner) => {
+                    Type::ARRAY(inner, size) => {
+                        if let ExprKind::INT_LITERAL(idx_val) = idx_expr.kind {
+                            if idx_val < 0 || idx_val >= (*size as i64) {
+                                return Err(self.make_error(
+                                    format!("index out of bounds: len is {} but index is {}", size, idx_val),
+                                    &token
+                                ));
+                            }
+                        }
+
                         Ok(Expr {
-                            kind: ExprKind::ArrayAccess {
-                                array: Box::new(arr),
-                                index: Box::new(index),
+                            kind: ExprKind::ArrayAccess { 
+                                array: Box::new(arr), 
+                                index: Box::new(idx_expr) 
                             },
                             ty: *inner.clone()
                         })
                     },
 
-                    _ => Err(self.make_error(
-                        format!("type '{}' cannot be indexed", arr.ty),
-                        &token
-                    ))
+                    Type::INFERRED_ARRAY(inner) => {
+                        Ok(Expr {
+                            kind: ExprKind::ArrayAccess { 
+                                array: Box::new(arr), 
+                                index: Box::new(idx_expr) 
+                            },
+                            ty: *inner.clone()
+                        })
+                    },
+
+                    _ => Err(self.make_error(format!("type '{}' cannot be indexed", arr.ty), &token))
                 }
             }
 
@@ -480,11 +714,13 @@ impl Analyzer {
 
                 match symbol {
                     Symbol::Variable { ty, .. } => Ok(Expr {
-                        kind: ExprKind::VariableReference { name: name.lexeme.to_string() },
+                        kind: ExprKind::VariableReference { 
+                            name: name.lexeme.to_string() 
+                        },
                         ty: ty.clone(),
                     }),
 
-                    _ => Err(self.make_error(format!("'{}' is a function, not a variable", name.lexeme), &name))
+                    _ => Err(self.make_error(format!("'{}' is not a variable", name.lexeme), &name))
                 }
             },
 
@@ -494,238 +730,487 @@ impl Analyzer {
 
                 if lhs.ty != rhs.ty {
                     return Err(self.make_error(
-                        format!("type mismatch: {} and {} have different types", lhs.ty, rhs.ty),
+                        format!("type mismatch: {} and {} differ", lhs.ty, rhs.ty),
                         &operator
                     ));
                 }
 
+                let (op, ty) = match operator.token_type {
+                    TokenType::Plus => (BinaryOp::ADD, lhs.ty.clone()),
+                    TokenType::Minus => (BinaryOp::SUB, lhs.ty.clone()),
+                    TokenType::Star => (BinaryOp::MUL, lhs.ty.clone()),
+                    TokenType::ForwardSlash => (BinaryOp::DIV, lhs.ty.clone()),
+                    TokenType::Modulo => (BinaryOp::MOD, lhs.ty.clone()),
+
+                    TokenType::LeftAngle => (BinaryOp::LT, Type::BOOL),
+                    TokenType::LessEqual => (BinaryOp::LE, Type::BOOL),
+                    TokenType::RightAngle => (BinaryOp::GT, Type::BOOL),
+                    TokenType::GreaterEqual => (BinaryOp::GE, Type::BOOL),
+                    TokenType::DoubleEqual => (BinaryOp::EQ, Type::BOOL),
+                    TokenType::ExclamEqual => (BinaryOp::NE, Type::BOOL),
+
+                    TokenType::DoubleAmpersand => (BinaryOp::AND, Type::BOOL),
+                    TokenType::DoublePipe => (BinaryOp::OR,  Type::BOOL),
+
+                    _ => return Err(self.make_error(
+                        format!("unknown binary operator: {}", operator.lexeme),
+                        &operator
+                    ))
+                };
+
                 Ok(Expr {
                     kind: ExprKind::Binary {
-                    op: match operator.token_type {
-                        TokenType::Plus => BinaryOp::ADD,
-                        TokenType::Minus => BinaryOp::SUB,
-                        TokenType::Star => BinaryOp::MUL,
-                        TokenType::ForwardSlash => BinaryOp::DIV,
-                            
-                        _ => return Err(self.make_error(format!("unknown binary operator: {}", operator.lexeme), &operator))
+                        op,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
                     },
-                    lhs: Box::new(lhs.clone()),
-                    rhs: Box::new(rhs)
-                    },
-
-                    ty: lhs.ty,
+                    ty,
                 })
             },
 
-            ASTNode::FunctionCallExpression { name, arguments } => {
-                if name.lexeme == "println" {
-                    let mut args = Vec::new();
+            ASTNode::FunctionCallExpression { name, mut arguments } => {
+                let mut call_name = name.lexeme.to_string();
 
-                    for arg in arguments {
-                        args.push(self.lower_expression(arg)?);
+                if call_name.contains("::") {
+                    let parts: Vec<&str> = name.lexeme.split("::").collect();
+                    let prefix = parts[0];     
+                    let method_name = parts[1];
+
+                    let prefix_symbol = self.scope.resolve(prefix);
+
+                    if let Some(Symbol::Variable { ty: prefix_ty, .. }) = prefix_symbol {
+                        let struct_name = match prefix_ty {
+                            Type::STRUCT(n) => Some(n.clone()),
+                            Type::REF(inner) | Type::CONST_REF(inner) => {
+                                if let Type::STRUCT(n) = inner.as_ref() {
+                                    Some(n.clone())
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+
+                        if let Some(s_name) = struct_name {
+                            let namespaced_name = format!("{}::{}", s_name, method_name);
+
+                            if let Some(Symbol::Function { params, .. }) = self.scope.resolve(&namespaced_name) {
+                                if let Some(first_param_ty) = params.first() {
+                                    if matches!(first_param_ty, Type::REF(_) | Type::CONST_REF(_)) {
+
+                                        let self_token = Token {
+                                            lexeme: prefix,
+                                            ..name.clone()
+                                        };
+                                        let self_node = ASTNode::VariableExpression { name: self_token };
+
+                                        // If the prefix variable is already a reference (like 'self' is),
+                                        // we don't wrap it in another '&' (ADDR_OF).
+                                        if matches!(prefix_ty, Type::REF(_) | Type::CONST_REF(_)) {
+                                            arguments.insert(0, self_node);
+                                        } else {
+                                            arguments.insert(0, ASTNode::UnaryExpression {
+                                                operator: Token {
+                                                    token_type: TokenType::Ampersand,
+                                                    ..name.clone()
+                                                },
+                                                right: Box::new(self_node),
+                                            });
+                                        }
+                                    }
+                                }
+
+                                call_name = namespaced_name;
+                            }
+                        }
                     }
-
-                    return Ok(Expr {
-                        kind: ExprKind::Call { callee: name.lexeme.to_string(), args },
-                        ty: Type::VOID,
-                    })
                 }
 
-                let symbol = self.scope.resolve(name.lexeme)
-                    .ok_or(self.make_error(format!("undefined function: {}", name.lexeme), &name))?;
+                self.lower_call_logic(call_name, name, arguments)
+            }
 
-                let (param_types, return_type) = match symbol {
-                    Symbol::Function { params, return_type } => (params.clone(), return_type.clone()),
+            ASTNode::StructInitializer { name, fields } => {
+                let struct_name = &name.lexeme;
+
+                let def_fields = match self.scope.resolve(struct_name) {
+                    Some(Symbol::Struct { fields }) => fields.clone(),
+
                     _ => return Err(self.make_error(
-                        format!("'{}' is a variable, not a function", name.lexeme), 
+                        format!("'{}' is not a defined struct", struct_name),
                         &name
                     )),
                 };
 
-                if arguments.len() != param_types.len() {
+                let mut lowered_values = Vec::new();
+
+                for (def_name, def_type) in &def_fields {
+                    let matching_field = fields.iter().find(|(f_token, _)| f_token.lexeme == *def_name);
+
+                    match matching_field {
+                        Some((_, value_node)) => {
+                            let mut val = self.lower_expression(*value_node.clone())?;
+
+                            if let ExprKind::INT_LITERAL(i) = val.kind {
+                                if self.check_and_promote_int_literal(i, def_type) {
+                                    val.ty = def_type.clone();
+                                }
+                            }
+
+                            if !self.check_type_compatibility(def_type, &val.ty) {
+                                return Err(self.make_error(
+                                    format!("field '{}' expected type {}, found {}", def_name, def_type, val.ty),
+                                    &name
+                                ));
+                            }
+
+                            lowered_values.push(val);
+                        }
+                        
+                        None => return Err(self.make_error(
+                            format!("missing field '{}' in initializer '{}'", def_name, struct_name),
+                            &name
+                        )),
+                    }
+                }
+
+                if fields.len() > def_fields.len() {
                     return Err(self.make_error(
-                        format!(
-                            "function '{}' expects {} args, got {}",
-                            name.lexeme, param_types.len(), arguments.len()
-                        ), 
+                        format!("too many fields provided for struct '{}'", struct_name),
                         &name
                     ));
                 }
 
-                let mut args = Vec::new();
-                for (i, node) in arguments.into_iter().enumerate() {
-                    let token = self.get_token_from_node(&node);
-
-                    let mut arg = self.lower_expression(node)?;
-                    let expected = &param_types[i];
-
-                    if let ExprKind::INT_LITERAL(l) = arg.kind {
-                        if self.check_and_promote_int_literal(l, expected) {
-                            arg.ty = expected.clone();
-                        }
-                    }
-
-                    if !self.check_type_compatibility(expected, &arg.ty) {
-                        return Err(self.make_error(
-                            format!(
-                                "type mismatch: expected {}, found {}",
-                                expected, arg.ty
-                            ),
-                            &token
-                        ))
-                    }
-                    args.push(arg);
-                }
-
                 Ok(Expr {
-                    kind: ExprKind::Call { callee: name.lexeme.to_string(), args },
-                    ty: return_type,
+                    kind: ExprKind::StructInit {
+                        name: struct_name.to_string(),
+                        values: lowered_values,
+                    },
+                    ty: Type::STRUCT(struct_name.to_string()),
                 })
-                
-            },
+            }
 
             ASTNode::MemberExpression { object, property } => {
                 let lhs = self.lower_expression(*object)?;
+                
+                let actual_type = match &lhs.ty {
+                    Type::REF(inner) | Type::CONST_REF(inner) => inner.as_ref(),
+                    _ => &lhs.ty
+                };
 
-                if property.lexeme == "len" {
-                    match &lhs.ty {
-                        Type::ARRAY(_, size) => {
-                            Ok(Expr {
-                                kind: ExprKind::INT_LITERAL(*size as i64),
-                                ty: Type::I32,
-                            })
-                        },
+                match &actual_type {
+                    Type::STRUCT(name) => {
+                        if let Some(Symbol::Struct { fields }) = self.scope.resolve(name) {
+                            if let Some(idx) = fields.iter()
+                                .position(|(field_name, _)| field_name == &property.lexeme) 
+                            {
+                                let (_, field_type) = &fields[idx];
 
-                        Type::INFERRED_ARRAY(_) => {
-                            match &lhs.kind {
-                                ExprKind::STRING_LITERAL(s) => {
-                                    Ok(Expr {
-                                        kind: ExprKind::INT_LITERAL(s.len() as i64),
-                                        ty: Type::I32
-                                    })
-                                },
-
-                                ExprKind::ArrayInit { elements } => {
-                                    Ok(Expr {
-                                        kind: ExprKind::INT_LITERAL(elements.len() as i64),
-                                        ty: Type::I32,
-                                    })
-                                },
-
-                                _ => {
-                                    // for now, we cannot resolve at comptime if something like a
-                                    // function param, but later we will have comptime execution to
-                                    // be able to resolve these if possible
-                                    Err(self.make_error(
-                                        format!("length cannot be determined at compile time for 'anysize' type '{}'", lhs.ty),
-                                        &property
-                                    ))
-                                }
+                                return Ok(Expr {
+                                    kind: ExprKind::MemberAccess {
+                                        object: Box::new(lhs),
+                                        member: property.lexeme.to_string(),
+                                        index: idx as u32,
+                                    },
+                                    ty: field_type.clone()
+                                });
                             }
-                        },
-
-                        _ => {
-                            Err(self.make_error(
-                                format!("type '{}' has no property '{}'", lhs.ty, property.lexeme),
-                                &property
-                            ))
                         }
-                    }
-                } else {
-                    Err(self.make_error(
-                        format!("property '{}' does not exist", property.lexeme), 
+
+                        Err(self.make_error(
+                            format!("struct '{}' has no field '{}'", name, property.lexeme),
+                            &property
+                        ))
+                    },
+
+                    Type::ARRAY(_, size) if property.lexeme == "len" => {
+                        Ok(Expr { 
+                            kind: ExprKind::INT_LITERAL(*size as i64), 
+                            ty: Type::I32 
+                        })
+                    },
+
+                    Type::INFERRED_ARRAY(_) => {
+                        match &lhs.kind {
+                            ExprKind::STRING_LITERAL(s) => Ok(Expr {
+                                kind: ExprKind::INT_LITERAL(s.len() as i64), 
+                                ty: Type::I32 
+                            }),
+
+                            ExprKind::ArrayInit { elements } => Ok(Expr { 
+                                kind: ExprKind::INT_LITERAL(elements.len() as i64), 
+                                ty: Type::I32 
+                            }),
+
+                            _ => Err(self.make_error("len cannot be determined at compile time".to_string(), &property))
+                        }
+                    },
+
+                    _ => Err(self.make_error(
+                        format!("'{}' has no property 'len'", lhs.ty), 
                         &property
                     ))
                 }
             },
 
-            _ => Err(self.make_generic_error(format!("expression not supported yet: {:?}", node))),
+            _ => Err(self.make_generic_error(format!("expression not supported: {:?}", node))),
         }
     }
 
     fn lower_function(&mut self, node: ASTNode) -> Result<Function, HydraError<'static>> {
         if let ASTNode::FunctionDeclaration { name, parameters, return_type: rt, body } = node {
             let return_type = self.lower_type(*rt)?;
-
             let prev_return_type = self.current_return_type.replace(return_type.clone());
 
             let mut ir_params = Vec::new();
 
             self.enter_scope();
+
             for (param_name, param_type_node) in &parameters {
                 let ty = self.lower_type(*param_type_node.clone())?;
+
                 ir_params.push((param_name.lexeme.to_string(), ty.clone()));
 
-                self.scope.define(param_name.lexeme.to_string(), Symbol::Variable {
-                    ty,
-                    is_mutable: true
-                }).map_err(|msg| self.make_generic_error(msg))?;
+                self.scope.define(param_name.lexeme.to_string(), Symbol::Variable { ty, is_mutable: true })
+                    .map_err(|msg| self.make_generic_error(msg))?;
             }
 
             let mut stmts = Vec::new();
-            for stmt_node in body {
-                stmts.push(self.lower_statement(stmt_node)?);
+            for stmt_node in body { 
+                stmts.push(self.lower_statement(stmt_node)?); 
             }
 
             self.leave_scope();
 
             self.current_return_type = prev_return_type;
 
-            Ok(Function {
-                name: name.lexeme.to_string(),
-                params: ir_params,
-                return_type,
-                body: Block { stmts },
+            Ok(Function { 
+                name: name.lexeme.to_string(), 
+                params: ir_params, 
+                return_type, 
+                body: Block { stmts } 
             })
         } else {
-            Err(self.make_generic_error("expected FunctionDeclaration".to_string()))
+            Err(self.make_generic_error("expected function".to_string()))
         }
+    }
+
+    fn lower_for_loop(&mut self, variable: Token, start: ASTNode, 
+        end: ASTNode, is_inclusive: bool, body: Vec<ASTNode>
+    ) -> Result<Stmt, HydraError<'static>> 
+    {
+        let start_expr = self.lower_expression(start)?;
+        let end_expr = self.lower_expression(end)?;
+        let var_name = variable.lexeme.to_string();
+
+        // 1. Enter Scope
+        self.enter_scope();
+        
+        let mut outer_stmts = Vec::new();
+
+        // 2. Initialize loop variable: let i = start;
+        // THIS WAS MISSING in the IR generation
+        outer_stmts.push(Stmt::Var {
+            name: var_name.clone(),
+            ty: start_expr.ty.clone(),
+            init: start_expr.clone(),
+            is_mutable: true,
+        });
+
+        // Register in Scope (so the body knows 'i' exists)
+        self.scope.define(var_name.clone(), Symbol::Variable { 
+            ty: start_expr.ty.clone(), 
+            is_mutable: true 
+        }).map_err(|msg| self.make_error(msg, &variable))?;
+
+        // 3. Lower Body
+        let mut ir_body = Vec::new();
+        for stmt in body {
+            ir_body.push(self.lower_statement(stmt)?);
+        }
+
+        // 4. Increment: i = i + 1
+        ir_body.push(Stmt::Assign {
+            target: ir::stmt::AssignmentTarget::Variable(var_name.clone()),
+            value: Expr {
+                kind: ExprKind::Binary {
+                    op: BinaryOp::ADD,
+                    lhs: Box::new(Expr { 
+                        kind: ExprKind::VariableReference { name: var_name.clone() }, 
+                        ty: start_expr.ty.clone() 
+                    }),
+                    rhs: Box::new(Expr { kind: ExprKind::INT_LITERAL(1), ty: start_expr.ty.clone() })
+                },
+                ty: start_expr.ty.clone()
+            }
+        });
+
+        // 5. While Loop: while i < end
+        let op = if is_inclusive { BinaryOp::LE } else { BinaryOp::LT };
+        outer_stmts.push(Stmt::While {
+            cond: Expr {
+                kind: ExprKind::Binary {
+                    op,
+                    lhs: Box::new(Expr { 
+                        kind: ExprKind::VariableReference { name: var_name.clone() }, 
+                        ty: start_expr.ty.clone() 
+                    }),
+                    rhs: Box::new(end_expr)
+                },
+                ty: Type::BOOL
+            },
+            body: Block { stmts: ir_body },
+            kind: LoopKind::For,
+        });
+
+        self.leave_scope();
+
+        // 6. Return as Block
+        Ok(Stmt::Block(Block { 
+            stmts: outer_stmts }
+        ))
+    }
+
+    fn lower_foreach_loop(&mut self, item: Token, iterable: ASTNode, body: Vec<ASTNode>) -> Result<Stmt, HydraError<'static>> {
+        let iter_expr = self.lower_expression(iterable)?; 
+
+        // 1. Resolve types and length
+        let (inner_ty, array_len) = match &iter_expr.ty {
+            Type::ARRAY(inner, size) => (*inner.clone(), *size as i64),
+            _ => return Err(self.make_error("foreach requires an array".to_string(), &item)),
+        };
+
+        // Create a new scope for the entire desugared structure
+        self.enter_scope(); 
+
+        let mut outer_stmts = Vec::new();
+        let idx_name = format!("_idx_{}", item.line);
+        let item_name = item.lexeme.to_string();
+
+        // 2. Initialize index variable: let _idx_X = 0;
+        outer_stmts.push(Stmt::Var {
+            name: idx_name.clone(),
+            ty: Type::I32,
+            init: Expr { kind: ExprKind::INT_LITERAL(0), ty: Type::I32 },
+            is_mutable: true,
+        });
+        self.scope.define(idx_name.clone(), Symbol::Variable { ty: Type::I32, is_mutable: true }).unwrap();
+
+        let mut loop_body_stmts = Vec::new();
+
+        // 3. Loop Body Item Binding: const item = arr[_idx];
+        self.scope.define(item_name.clone(), Symbol::Variable { ty: inner_ty.clone(), is_mutable: false }).unwrap();
+        loop_body_stmts.push(Stmt::Var {
+            name: item_name.clone(),
+            ty: inner_ty.clone(),
+            is_mutable: false,
+            init: Expr {
+                kind: ExprKind::ArrayAccess {
+                    array: Box::new(iter_expr.clone()),
+                    index: Box::new(Expr { 
+                        kind: ExprKind::VariableReference { name: idx_name.clone() }, 
+                        ty: Type::I32 
+                    })
+                },
+                ty: inner_ty
+            }
+        });
+
+        // 4. Lower the user's provided body statements
+        for stmt in body {
+            loop_body_stmts.push(self.lower_statement(stmt)?);
+        }
+
+        // 5. Increment: _idx = _idx + 1;
+        loop_body_stmts.push(Stmt::Assign {
+            target: ir::stmt::AssignmentTarget::Variable(idx_name.clone()),
+            value: Expr {
+                kind: ExprKind::Binary {
+                    op: BinaryOp::ADD,
+                    lhs: Box::new(Expr { kind: ExprKind::VariableReference { name: idx_name.clone() }, ty: Type::I32 }),
+                    rhs: Box::new(Expr { kind: ExprKind::INT_LITERAL(1), ty: Type::I32 })
+                },
+                ty: Type::I32
+            }
+        });
+
+        // 6. Build the While Loop
+        let while_loop = Stmt::While {
+            cond: Expr {
+                kind: ExprKind::Binary {
+                    op: BinaryOp::LT,
+                    lhs: Box::new(Expr { kind: ExprKind::VariableReference { name: idx_name }, ty: Type::I32 }),
+                    rhs: Box::new(Expr { kind: ExprKind::INT_LITERAL(array_len), ty: Type::I32 }),
+                },
+                ty: Type::BOOL,
+            },
+            body: Block { stmts: loop_body_stmts },
+            kind: LoopKind::ForEach,
+        };
+        outer_stmts.push(while_loop);
+
+        self.leave_scope(); 
+
+        // Wrap the initialization and the loop in a single Block
+        Ok(Stmt::Block(Block { stmts: outer_stmts }))
     }
 
     fn lower_type(&mut self, node: ASTNode) -> Result<Type, HydraError<'static>> {
         match node {
+            ASTNode::Reference { inner } => {
+                let inner_type = self.lower_type(*inner)?;
+                Ok(Type::REF(Box::new(inner_type)))
+            }
+
+            ASTNode::ConstReference { inner } => {
+                let inner_type = self.lower_type(*inner)?;
+                Ok(Type::CONST_REF(Box::new(inner_type)))
+            }
+
             ASTNode::TypeIdentifier { type_token } => {
                 match type_token.lexeme {
-                    "i8" => Ok(Type::I8),
-                    "i16" => Ok(Type::I16),
-                    "i32" => Ok(Type::I32),
+                    "i8" => Ok(Type::I8), 
+                    "i16" => Ok(Type::I16), 
+                    "i32" => Ok(Type::I32), 
                     "i64" => Ok(Type::I64),
-                    "isize" => Ok(Type::ISIZE),
-                    "u8" => Ok(Type::U8),
-                    "u16" => Ok(Type::U16),
+                    "isize" => Ok(Type::ISIZE), 
+                    "u8" => Ok(Type::U8), 
+                    "u16" => Ok(Type::U16), 
                     "u32" => Ok(Type::U32),
-                    "u64" => Ok(Type::U64),
-                    "usize" => Ok(Type::USIZE),
-                    "f32" => Ok(Type::F32),
+                    "u64" => Ok(Type::U64), 
+                    "usize" => Ok(Type::USIZE), 
+                    "f32" => Ok(Type::F32), 
                     "f64" => Ok(Type::F64),
-                    "char" => Ok(Type::CHAR),
-                    "bool" => Ok(Type::BOOL),
-                    "void" => Ok(Type::VOID), 
+                    "char" => Ok(Type::CHAR), 
+                    "bool" => Ok(Type::BOOL), 
+                    "void" => Ok(Type::VOID),
 
-                    _ => Err(self.make_error(
-                        format!("unknown type: {}", type_token.lexeme), 
-                        &type_token
-                    )),
+                    name => {
+                        if let Some(Symbol::Struct { .. }) = self.scope.resolve(name) {
+                            Ok(Type::STRUCT(name.to_string()))
+                        } else {
+                            Err(self.make_error(
+                                format!("unknown type: {}", name),
+                                &type_token,
+                            ))
+                        }
+                    }
                 }
             },
 
             ASTNode::ArrayType { element_type, size, .. } => {
                 let inner = self.lower_type(*element_type)?;
-                
+
                 let size_token = self.get_token_from_node(&size);
-                
                 match size_token.token_type {
                     TokenType::IntLiteral(n) => Ok(Type::ARRAY(Box::new(inner), n as usize)),
+
                     TokenType::AnySize => Ok(Type::INFERRED_ARRAY(Box::new(inner))),
 
-                    _ => Err(self.make_error(
-                        "array size must be an integer literal or 'anysize'".to_string(), 
-                        &size_token
-                    ))
+                    _ => Err(self.make_error("array size must be int or 'anysize'".to_string(), &size_token))
                 }
             },
 
-            _ => Err(self.make_generic_error(format!("invalid type syntax: {:?}", node))),
+            _ => Err(self.make_generic_error(format!("invalid type: {:?}", node))),
         }
     }
 
@@ -736,39 +1221,40 @@ impl Analyzer {
 
     fn leave_scope(&mut self) {
         let current_scope = mem::replace(&mut self.scope, Scope::new());
-        let parent = current_scope.parent().expect("compiler bug: popped global scope");
+        let parent = current_scope.parent().expect("popped global scope");
+
         self.scope = parent;
     }
 
     fn dummy_token(&self) -> Token<'static> {
-        Token {
-            token_type: TokenType::EOF,
-            lexeme: "",
-            line: 0,
-            column: 0,
+        Token { 
+            token_type: TokenType::EOF, 
+            lexeme: "", 
+            line: 0, 
+            column: 0 
         }
     }
 
     fn make_error(&self, msg: String, token: &Token) -> HydraError<'static> {
         HydraError::GENERIC(Box::new(GenericError {
-            code: "E000",
-            message: msg,
-            token: Token {
+            code: "E000", 
+            message: msg, 
+            help: None,
+            token: Token { 
                 token_type: token.token_type.clone(), 
-                lexeme: "",
-                line: token.line,
-                column: token.column
-            }, 
-            help: None
+                lexeme: "", 
+                line: token.line, 
+                column: token.column 
+            }
         }))
     }
 
     fn make_generic_error(&self, msg: String) -> HydraError<'static> {
-        HydraError::GENERIC(Box::new(GenericError {
-            code: "E000",
-            message: msg,
-            token: self.dummy_token(),
-            help: None
+        HydraError::GENERIC(Box::new(GenericError { 
+            code: "E000", 
+            message: msg, 
+            token: self.dummy_token(), 
+            help: None 
         }))
     }
 
@@ -780,28 +1266,23 @@ impl Analyzer {
             Type::U16 => lit_val >= 0 && lit_val <= (u16::MAX as i64),
             Type::I32 => true,
             Type::U32 => lit_val >= 0,
-            
-            // i32 fits in i64/isize naturally
             Type::I64 | Type::ISIZE => true,
-            // i32 fits in u64/usize only if positive
             Type::U64 | Type::USIZE => lit_val >= 0,
-
             Type::BOOL => lit_val == 0 || lit_val == 1,
-            
-            // Cannot implicit cast int literal to float, etc
+
             _ => false, 
         }
     }
 
     fn check_type_compatibility(&self, target: &Type, source: &Type) -> bool {
-        if target == source {
-            return true;
+        if target == source { 
+            return true; 
         }
 
         match (target, source) {
-            (Type::INFERRED_ARRAY(target_inner), Type::ARRAY(source_inner, _)) => {
-                target_inner == source_inner
-            }
+            (Type::INFERRED_ARRAY(target_inner), Type::ARRAY(source_inner, _)) => target_inner == source_inner,
+            (Type::REF(t_inner), Type::REF(s_inner)) if t_inner == s_inner => true,
+            (Type::CONST_REF(t_inner), Type::REF(s_inner)) if t_inner == s_inner => true,
 
             _ => false,
         }
@@ -819,10 +1300,82 @@ impl Analyzer {
             ASTNode::UnaryExpression { operator, .. } => operator.clone(),
             ASTNode::PostfixUnaryExpression { operator, .. } => operator.clone(),
             ASTNode::TypeIdentifier { type_token } => type_token.clone(),
-            
             ASTNode::ReturnStatement { value } => self.get_token_from_node(value),
-            
+
             _ => self.dummy_token(),
         }
+    }
+
+    fn get_binary_op_from_token(&self, token: &TokenType) -> Option<BinaryOp> {
+        match token {
+            TokenType::PlusEqual => Some(BinaryOp::ADD),
+            TokenType::MinusEqual => Some(BinaryOp::SUB),
+            TokenType::StarEqual => Some(BinaryOp::MUL),
+            TokenType::ForwardSlashEqual => Some(BinaryOp::DIV),
+            TokenType::ModuloEqual => Some(BinaryOp::MOD),
+
+            _ => None
+        }
+    }
+
+    fn lower_call_logic(&mut self, call_name: String, token: Token, arguments: Vec<ASTNode>) -> Result<Expr, HydraError<'static>> {
+        if call_name == "println" {
+            let mut args = Vec::new();
+            for arg in arguments {
+                // Recursively lower the arguments (like 'area')
+                args.push(self.lower_expression(arg)?);
+            }
+            
+            return Ok(Expr {
+                kind: ExprKind::Call { 
+                    callee: "println".to_string(), 
+                    args 
+                },
+                ty: Type::VOID // println always returns void
+            });
+        }
+
+        let symbol = self.scope.resolve(&call_name)
+            .ok_or(self.make_error(format!("undefined function: {}", call_name), &token))?;
+
+        let (param_types, return_type) = match symbol {
+            Symbol::Function { params, return_type } => (params.clone(), return_type.clone()),
+            _ => return Err(self.make_error(format!("'{}' is not a function", call_name), &token)),
+        };
+
+        if arguments.len() != param_types.len() {
+            return Err(self.make_error(
+                format!("expected {} args, got {}", param_types.len(), arguments.len()),
+                &token
+            ));
+        }
+
+        let mut args = Vec::new();
+        for (i, node) in arguments.into_iter().enumerate() {
+            let arg_token = self.get_token_from_node(&node);
+            let mut arg = self.lower_expression(node)?;
+            let expected = &param_types[i];
+
+            // Auto-promote integer literals if needed
+            if let ExprKind::INT_LITERAL(l) = arg.kind {
+                if self.check_and_promote_int_literal(l, expected) {
+                    arg.ty = expected.clone();
+                }
+            }
+
+            if !self.check_type_compatibility(expected, &arg.ty) {
+                return Err(self.make_error(
+                    format!("type mismatch: expected {}, found {}", expected, arg.ty),
+                    &arg_token
+                ));
+            }
+
+            args.push(arg);
+        }
+
+        Ok(Expr {
+            kind: ExprKind::Call { callee: call_name, args },
+            ty: return_type
+        })
     }
 }
