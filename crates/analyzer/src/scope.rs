@@ -12,6 +12,10 @@ pub enum Symbol {
         params: Vec<Type>,
         return_type: Type,
     },
+
+    Struct {
+        fields: Vec<(String, Type)>,
+    },
 }
 
 pub struct Scope {
