@@ -17,6 +17,7 @@ pub struct Function {
 #[derive(Debug, Clone)]
 pub struct Program {
     pub functions: Vec<Function>,
+    pub structs: Vec<(String, Vec<(String, Type)>)>,
 }
 
 impl fmt::Display for Function {
