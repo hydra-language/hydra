@@ -42,4 +42,3 @@ pub fn type_mismatch<'a>(token: Token<'a>, expected: &'a str, found: Token<'a>) 
         found
     }
 }
-
