@@ -1,3 +1,4 @@
+use ir::types::Type;
 use lexer::Token;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,8 +108,36 @@ pub enum ASTNode<'a> {
         body: Vec<ASTNode<'a>>,
     },
 
+    ForEach {
+        item: Token<'a>,
+        iterable: Box<ASTNode<'a>>,
+        body: Vec<ASTNode<'a>>,
+    },
+
     WhileLoop {
         condition: Box<ASTNode<'a>>,
         body: Vec<ASTNode<'a>>
     },
+
+    StructDeclaration {
+        name: Token<'a>,
+        constants: Vec<ASTNode<'a>>,
+        fields: Vec<(Token<'a>, Box<ASTNode<'a>>)>,
+        methods: Vec<ASTNode<'a>>,
+    },
+
+    StructInitializer {
+        name: Token<'a>,
+        fields: Vec<(Token<'a>, Box<ASTNode<'a>>)>,
+    },
+
+    MethodCallExpression {
+        object: Box<ASTNode<'a>>,
+        method: Token<'a>,
+        arguments: Vec<ASTNode<'a>>,
+    },
+
+    Reference { inner: Box<ASTNode<'a>> },
+
+    ConstReference { inner: Box<ASTNode<'a>> },
 }
