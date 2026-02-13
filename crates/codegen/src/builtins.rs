@@ -1,8 +1,5 @@
-use core::fmt;
-
 use inkwell::AddressSpace;
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, BasicValue, FunctionValue, PointerValue};
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 
 use ir::expr::{Expr, ExprKind};
 use ir::types::Type;
@@ -50,9 +47,10 @@ impl<'c> CodeGen<'c> {
         match ty {
             Type::I32 => self.call_printf("%d", &[value.into()]),
             Type::U32 => self.call_printf("%u", &[value.into()]),
+            Type::F32 | Type::F64 => self.call_printf("%f", &[value.into()]),
             Type::I64 | Type::ISIZE => self.call_printf("%lld", &[value.into()]),
             Type::U64 | Type::USIZE => self.call_printf("%llu", &[value.into()]),
-            Type::I8 => self.call_printf("%c", &[value.into()]),
+            Type::I8 | Type::U8 | Type::CHAR => self.call_printf("%c", &[value.into()]),
 
             Type::ARRAY(inner, size) => {
                 match **inner {
