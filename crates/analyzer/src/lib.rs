@@ -24,31 +24,70 @@ impl Analyzer {
     }
 
     pub fn analyze(&mut self, nodes: Vec<ASTNode>) -> Result<Program, Vec<HydraError<'static>>> {
-        let mut functions = Vec::new();
+        let mut functions: Vec<Function> = Vec::new();
         let mut errors = Vec::new();
         let mut structs = Vec::new();
+        let mut globals = Vec::new();
 
         for node in &nodes {
-            if let ASTNode::StructDeclaration { name, fields, methods, .. } = node {
+            if let ASTNode::StructDeclaration { name, .. } = node {
+                let struct_name = name.lexeme.to_string();
+                self.scope.define(struct_name.to_string(), Symbol::Struct { fields: Vec::new() }).ok();
+            }
+        }
+
+        for node in &nodes {
+            if let ASTNode::StructDeclaration { name, fields, methods, constants } = node {
+                let struct_name = name.lexeme.to_string();
+
+                if let Some(Symbol::Struct { fields: existing }) = self.scope.resolve(&struct_name) {
+                    if !existing.is_empty() { continue; }
+                }
+
                 let mut struct_fields = Vec::new();
 
                 for (field_name, field_type) in fields {
                     match self.lower_type(*field_type.clone()) {
-                        Ok(t) => struct_fields.push((field_name.lexeme.to_string(), t)),
+                        Ok(t) => struct_fields.push((field_name.lexeme.to_string(), t, false)),
                         Err(e) => errors.push(e),
                     }
                 }
 
-                let struct_name = name.lexeme.to_string();
-                structs.push((struct_name.clone(), struct_fields.clone()));
+                for constant in constants {
+                    if let ASTNode::VariableDeclaration { name: c_name, type_annotation, .. } = constant {
+                        let ty = type_annotation.as_ref()
+                            .and_then(|ann| self.lower_type(*ann.clone()).ok())
+                            .unwrap_or(Type::VOID);
 
-                if let Err(msg) = self.scope.define(struct_name.to_string(), Symbol::Struct { fields: struct_fields }) {
-                    errors.push(self.make_error(msg, name));
+                        struct_fields.push((c_name.lexeme.to_string(), ty.clone(), true)); 
+
+                        let const_name = format!("{}.{}", struct_name, c_name.lexeme);
+                        self.scope.define(const_name, Symbol::Variable {
+                            ty,
+                            is_mutable: false,
+                        }).ok();
+                    }
                 }
+
+                self.scope.define_or_update(
+                    struct_name.clone(), 
+                    Symbol::Struct {
+                        fields: struct_fields.clone() 
+                    }
+                );
+
+                let ir_fields: Vec<(String, Type)> = struct_fields.iter()
+                    .filter(|(_, _, is_const)| !*is_const)
+                    .map(|(n, t, _)| (n.clone(), t.clone()))
+                    .collect();
+
+                structs.push((struct_name.clone(), ir_fields));
 
                 for method in methods {
                     if let ASTNode::FunctionDeclaration { name: m_name, parameters, return_type, .. } = method {
                         let namespaced_name = format!("{}::{}", struct_name, m_name.lexeme);
+
+                        if self.scope.resolve(&namespaced_name).is_some() { continue; }
 
                         let mut param_types = Vec::new();
                         for (_, type_node) in parameters {
@@ -68,8 +107,9 @@ impl Analyzer {
 
         for node in &nodes {
             if let ASTNode::FunctionDeclaration { name, parameters, return_type, .. } = node {
-                let mut param_types = Vec::new();
+                if self.scope.resolve(name.lexeme).is_some() { continue; }
 
+                let mut param_types = Vec::new();
                 for (_, type_node) in parameters {
                     match self.lower_type(*type_node.clone()) {
                         Ok(t) => param_types.push(t),
@@ -98,23 +138,46 @@ impl Analyzer {
 
         for node in nodes {
             match node {
-                ASTNode::FunctionDeclaration { .. } => {
+                ASTNode::FunctionDeclaration { ref name, .. } => {
+                    if functions.iter().any(|f| f.name == name.lexeme) { continue; }
+
                     match self.lower_function(node) {
                         Ok(function) => functions.push(function),
                         Err(e) => errors.push(e),
                     }
                 },
 
-                ASTNode::StructDeclaration { name, methods, .. } => {
+                ASTNode::StructDeclaration { name, methods, constants, .. } => {
                     let struct_name = name.lexeme;
 
-                    for method in methods {
-                        match self.lower_function(method) {
-                            Ok(mut ir_method) => {
-                                ir_method.name = format!("{}::{}", struct_name, ir_method.name);
-                                functions.push(ir_method);
+                    for constant in constants {
+                        if let ASTNode::VariableDeclaration { name: c_name, initializer, .. } = constant {
+                            let full_name = format!("{}.{}", struct_name, c_name.lexeme);
+                            if globals.iter().any(|(n, _, _)| n == &full_name) { continue; }
+
+                            match self.lower_expression(*initializer.clone()) {
+                                Ok(init_expr) => globals.push((full_name, init_expr.ty.clone(), init_expr)),
+                                Err(e) => errors.push(e),
                             }
-                            Err(e) => errors.push(e), // Push the single error into the vector
+                        }
+                    }
+                            
+                    for method in methods {
+                        let m_name = if let ASTNode::FunctionDeclaration { 
+                            name: ref n, .. 
+                        } = method { n.lexeme } else { "" };
+
+                        let full_name = format!("{}::{}", struct_name, m_name);
+
+                        if functions.iter().any(|f| f.name == full_name) { continue; }
+
+                        match self.lower_function(method) {
+                            Ok(mut ir) => {
+                                ir.name = full_name;
+                                functions.push(ir);
+                            }
+
+                            Err(e) => errors.push(e),
                         }
                     }
                 },
@@ -142,7 +205,8 @@ impl Analyzer {
         } else {
             Ok(Program { 
                 functions,
-                structs
+                structs,
+                globals,
             })
         }
     }
@@ -190,6 +254,13 @@ impl Analyzer {
                         }
 
                         val.ty = explicit.clone();
+                    }
+
+                    if !self.check_type_compatibility(&explicit, &val.ty) {
+                        return Err(self.make_error(
+                            format!("type mismatch: expected {}, found {}", explicit, val.ty),
+                            &name
+                        ));
                     }
 
                     if let ExprKind::ArrayInit { elements } = &mut val.kind {
@@ -376,7 +447,7 @@ impl Analyzer {
                     ASTNode::MemberExpression { object, property } => {
                         let target_expr = self.lower_expression(
                             ASTNode::MemberExpression {
-                                object, 
+                                object: object.clone(), 
                                 property: property.clone() 
                             }
                         )?;
@@ -391,14 +462,22 @@ impl Analyzer {
                             unreachable!("something went wrong")
                         };
 
-                        if let Type::CONST_REF(_) = obj_expr.ty {
-                            return Err(self.make_error(
-                                format!(
-                                    "cannot assign to fiedl '{}' through an immutable reference",
-                                    property.lexeme
-                                ),
-                                &property
-                            ));
+                        let actual_type = match &obj_expr.ty {
+                            Type::REF(inner) | Type::CONST_REF(inner) => inner.as_ref(),
+                            _ => &obj_expr.ty
+                        };
+
+                        if let Type::STRUCT(ref struct_name) = actual_type {
+                            if let Some(Symbol::Struct { fields }) = self.scope.resolve(struct_name) {
+                                if let Some((_, _, is_const)) = fields.iter().find(|(n, _, _)| n == &property.lexeme) {
+                                    if *is_const {
+                                        return Err(self.make_error(
+                                            format!("cannot assign to constant struct property '{}'", property.lexeme),
+                                            &property
+                                        ));
+                                    }
+                                }
+                            }
                         }
 
                         if let Some(op) = self.get_binary_op_from_token(&operator.token_type) {
@@ -569,6 +648,11 @@ impl Analyzer {
                 Ok(Stmt::Expr(expr))
             }, 
 
+            ASTNode::MethodCallExpression { .. } => {
+                 let expr = self.lower_expression(node)?;
+                 Ok(Stmt::Expr(expr))
+            },
+
             _ => Err(self.make_generic_error(format!("statement type {:?} not supported", node)))
         }
     }
@@ -613,8 +697,72 @@ impl Analyzer {
                         })
                     },
 
+                    TokenType::Star => {
+                        let inner_ty = match &rhs.ty {
+                            Type::REF(t) | Type::CONST_REF(t) => *t.clone(),
+                            _ => return Err(self.make_error(format!("cannot dereference '{}'", rhs.ty), &operator)),
+                        };
+                        Ok(Expr {
+                            kind: ExprKind::Unary { op: UnaryOp::DEREF, operand: Box::new(rhs) },
+                            ty: inner_ty
+                        })
+                    },
+
                     _ => Err(self.make_error(format!("unknown unary op: {}", operator.lexeme), &operator))
                 }
+            },
+
+            ASTNode::CastExpression { value, target } => {
+                let expr = self.lower_expression(*value)?;
+                let target_type = self.lower_type(*target)?;
+
+                let valid = match (&expr.ty, &target_type) {
+                    (t1, t2) if t1 == t2 => true,
+
+                    // --- 2. Float <-> Int (Essential for Ray Tracing) ---
+                    (Type::F64, Type::I64) => true, // write_color (3.5 -> 3)
+                    (Type::I64, Type::F64) => true, // math mixing (i as f64)
+                    (Type::F64, Type::I32) => true,
+                    (Type::I32, Type::F64) => true,
+                    (Type::F32, Type::I64) => true, 
+                    (Type::I64, Type::F32) => true,
+
+                    // --- 3. Int <-> Int (Widening & Narrowing) ---
+                    (Type::I32, Type::I64) => true, // Widen
+                    (Type::I64, Type::I32) => true, // Narrow (Truncate)
+                    (Type::I16, Type::I32) => true,
+                    (Type::I8,  Type::I64) => true,
+
+                    // --- 4. Float Precision (Promotion & Demotion) ---
+                    (Type::F32, Type::F64) => true, // Promote
+                    (Type::F64, Type::F32) => true, // Demote (lossy)
+
+                    // --- 5. Unsigned/Byte Support (Crucial for Images/PPM) ---
+                    (Type::F64, Type::U8)  => true, // The "perfect" cast for write_color (255.99 -> 255u8)
+                    (Type::I64, Type::U8)  => true, // i64 -> u8
+                    (Type::U8,  Type::I64) => true, // u8 -> i64
+                    (Type::U8,  Type::F64) => true, // u8 -> f64
+
+                    // --- 6. Indexing (usize) ---
+                    // Ray tracers do lots of array access. You often calculate an index as i64
+                    // but need to cast it to usize to access an array.
+                    (Type::I64, Type::USIZE) => true,
+                    (Type::USIZE, Type::I64) => true,
+
+                    _ => false,
+                };
+
+                if !valid {
+                    return Err(self.make_error(
+                        format!("cannot cast type {} to {}", expr.ty, target_type),
+                        &self.dummy_token(),
+                    ));
+                }
+
+                Ok(Expr {
+                    kind: ExprKind::Cast { expr: Box::new(expr) },
+                    ty: target_type
+                })
             }
 
             ASTNode::Expression { token } => {
@@ -725,8 +873,20 @@ impl Analyzer {
             },
 
             ASTNode::BinaryExpression { left, operator, right } => {
-                let lhs = self.lower_expression(*left)?;
-                let rhs = self.lower_expression(*right)?;
+                let mut lhs = self.lower_expression(*left)?;
+                let mut rhs = self.lower_expression(*right)?;
+
+                if let ExprKind::INT_LITERAL(val) = lhs.kind {
+                    if self.check_and_promote_int_literal(val, &rhs.ty) {
+                        lhs.ty = rhs.ty.clone();
+                    }
+                }
+
+                if let ExprKind::INT_LITERAL(val) = rhs.kind {
+                    if self.check_and_promote_int_literal(val, &lhs.ty) {
+                        rhs.ty = lhs.ty.clone();
+                    }
+                }
 
                 if lhs.ty != rhs.ty {
                     return Err(self.make_error(
@@ -768,6 +928,104 @@ impl Analyzer {
                 })
             },
 
+            ASTNode::MethodCallExpression { object, method, arguments } => {
+                let lhs = self.lower_expression(*object)?;
+                let method_name = method.lexeme;
+                
+                // 1. Resolve Struct Type from Object
+                let struct_name = match &lhs.ty {
+                    Type::STRUCT(name) => name.clone(),
+                    Type::REF(inner) | Type::CONST_REF(inner) => {
+                         if let Type::STRUCT(name) = inner.as_ref() {
+                             name.clone()
+                         } else {
+                             return Err(self.make_error(format!("type '{}' has no methods", lhs.ty), &method));
+                         }
+                    },
+
+                    _ => {
+                        return Err(self.make_error(format!("type '{}' has no methods", lhs.ty), &method));
+                    }
+                };
+
+                let namespaced_name = format!("{}::{}", struct_name, method_name);
+                
+                // 2. Resolve Function Symbol
+                let symbol = self.scope.resolve(&namespaced_name)
+                    .ok_or(self.make_error(format!("method '{}' not found on type '{}'", method_name, struct_name), &method))?;
+
+                let (param_types, return_type) = match symbol {
+                    Symbol::Function { params, return_type } => (params.clone(), return_type.clone()),
+                    _ => return Err(self.make_error(format!("'{}' is not a function", namespaced_name), &method)),
+                };
+                
+                // 3. Prepare Arguments & Handle Auto-Ref for 'self'
+                let mut args = Vec::new();
+                
+                let expected_self_ty = param_types.first().ok_or(
+                    self.make_error(format!("method '{}' expects at least 1 argument (self)", method_name), &method)
+                )?;
+
+                let self_arg = match (expected_self_ty, &lhs.ty) {
+                    // If method expects reference but object is a value -> Auto-Ref (Address Of)
+                    (Type::REF(_), Type::STRUCT(_)) | (Type::CONST_REF(_), Type::STRUCT(_)) => {
+                        let ty = lhs.ty.clone();
+
+                        Expr {
+                            kind: ExprKind::Unary { op: UnaryOp::ADDR_OF, operand: Box::new(lhs) },
+                            ty: Type::REF(Box::new(ty))
+                        }
+                    },
+                    // Otherwise pass as is (matches or strict mismatch caught in loop below)
+                    _ => lhs
+                };
+                args.push(self_arg);
+                
+                for arg in arguments {
+                    args.push(self.lower_expression(arg)?);
+                }
+                
+                // 4. Validate Arguments (Count and Types)
+                if args.len() != param_types.len() {
+                     return Err(self.make_error(
+                        format!("expected {} args, got {}", param_types.len(), args.len()),
+                        &method
+                    ));
+                }
+                
+                for (i, arg) in args.iter_mut().enumerate() {
+                    let expected = &param_types[i];
+
+                    if let Type::REF(inner) | Type::CONST_REF(inner) = &arg.ty {
+                        if inner.as_ref() == expected {
+                             *arg = Expr {
+                                kind: ExprKind::Unary { op: UnaryOp::DEREF, operand: Box::new(arg.clone()) },
+                                ty: *inner.clone()
+                             };
+                        }
+                    }
+
+                     // Integer promotion
+                    if let ExprKind::INT_LITERAL(l) = arg.kind {
+                        if self.check_and_promote_int_literal(l, expected) {
+                            arg.ty = expected.clone();
+                        }
+                    }
+                    
+                    if !self.check_type_compatibility(expected, &arg.ty) {
+                         return Err(self.make_error(
+                            format!("argument {} type mismatch: expected {}, found {}", i, expected, arg.ty),
+                            &method
+                        ));
+                    }
+                }
+                
+                Ok(Expr {
+                    kind: ExprKind::Call { callee: namespaced_name, args },
+                    ty: return_type
+                })
+            },
+
             ASTNode::FunctionCallExpression { name, mut arguments } => {
                 let mut call_name = name.lexeme.to_string();
 
@@ -796,7 +1054,7 @@ impl Analyzer {
 
                             if let Some(Symbol::Function { params, .. }) = self.scope.resolve(&namespaced_name) {
                                 if let Some(first_param_ty) = params.first() {
-                                    if matches!(first_param_ty, Type::REF(_) | Type::CONST_REF(_)) {
+                                    if matches!(first_param_ty, Type::REF(_) | Type::CONST_REF(_) | Type::STRUCT(_)) {
 
                                         let self_token = Token {
                                             lexeme: prefix,
@@ -809,15 +1067,19 @@ impl Analyzer {
                                         if matches!(prefix_ty, Type::REF(_) | Type::CONST_REF(_)) {
                                             arguments.insert(0, self_node);
                                         } else {
-                                            arguments.insert(0, ASTNode::UnaryExpression {
-                                                operator: Token {
-                                                    token_type: TokenType::Ampersand,
-                                                    ..name.clone()
-                                                },
-                                                right: Box::new(self_node),
-                                            });
+                                            if matches!(first_param_ty, Type::REF(_) | Type::CONST_REF(_)) {
+                                                arguments.insert(0, ASTNode::UnaryExpression {
+                                                    operator: Token {
+                                                        token_type: TokenType::Ampersand,
+                                                        ..name.clone()
+                                                    },
+                                                    right: Box::new(self_node),
+                                                });
+                                            } else {
+                                                arguments.insert(0, self_node);
+                                            }
                                         }
-                                    }
+                                    } 
                                 }
 
                                 call_name = namespaced_name;
@@ -843,7 +1105,9 @@ impl Analyzer {
 
                 let mut lowered_values = Vec::new();
 
-                for (def_name, def_type) in &def_fields {
+                for (def_name, def_type, is_const) in &def_fields { 
+                    if *is_const { continue; }
+
                     let matching_field = fields.iter().find(|(f_token, _)| f_token.lexeme == *def_name);
 
                     match matching_field {
@@ -890,6 +1154,21 @@ impl Analyzer {
             }
 
             ASTNode::MemberExpression { object, property } => {
+                if let ASTNode::VariableExpression { ref name } = *object {
+                    if let Some(Symbol::Struct { fields }) = self.scope.resolve(name.lexeme) {
+                        if let Some((_, field_type, is_const)) = fields.iter().find(|(n, _, _)| n == &property.lexeme) {
+                            if *is_const {
+                                return Ok(Expr {
+                                    kind: ExprKind::VariableReference { 
+                                        name: format!("{}.{}", name.lexeme, property.lexeme) 
+                                    },
+                                    ty: field_type.clone()
+                                });
+                            }
+                        }
+                    }
+                }
+
                 let lhs = self.lower_expression(*object)?;
                 
                 let actual_type = match &lhs.ty {
@@ -901,9 +1180,9 @@ impl Analyzer {
                     Type::STRUCT(name) => {
                         if let Some(Symbol::Struct { fields }) = self.scope.resolve(name) {
                             if let Some(idx) = fields.iter()
-                                .position(|(field_name, _)| field_name == &property.lexeme) 
+                                .position(|(field_name, _, _)| field_name == &property.lexeme) 
                             {
-                                let (_, field_type) = &fields[idx];
+                                let (_, field_type, _) = &fields[idx]; 
 
                                 return Ok(Expr {
                                     kind: ExprKind::MemberAccess {
@@ -1268,6 +1547,7 @@ impl Analyzer {
             Type::U32 => lit_val >= 0,
             Type::I64 | Type::ISIZE => true,
             Type::U64 | Type::USIZE => lit_val >= 0,
+            Type::F32 | Type::F64 => true,
             Type::BOOL => lit_val == 0 || lit_val == 1,
 
             _ => false, 
@@ -1318,9 +1598,12 @@ impl Analyzer {
         }
     }
 
-    fn lower_call_logic(&mut self, call_name: String, token: Token, arguments: Vec<ASTNode>) -> Result<Expr, HydraError<'static>> {
+    fn lower_call_logic(&mut self, call_name: String, token: Token, arguments: Vec<ASTNode>) 
+        -> Result<Expr, HydraError<'static>> 
+    {
         if call_name == "println" {
             let mut args = Vec::new();
+
             for arg in arguments {
                 // Recursively lower the arguments (like 'area')
                 args.push(self.lower_expression(arg)?);
@@ -1353,10 +1636,19 @@ impl Analyzer {
         let mut args = Vec::new();
         for (i, node) in arguments.into_iter().enumerate() {
             let arg_token = self.get_token_from_node(&node);
+
             let mut arg = self.lower_expression(node)?;
             let expected = &param_types[i];
 
-            // Auto-promote integer literals if needed
+            if let Type::REF(inner) | Type::CONST_REF(inner) = &arg.ty.clone() {
+                if inner.as_ref() == expected {
+                        arg = Expr {
+                        kind: ExprKind::Unary { op: UnaryOp::DEREF, operand: Box::new(arg) },
+                        ty: *inner.clone()
+                        };
+                }
+            }
+
             if let ExprKind::INT_LITERAL(l) = arg.kind {
                 if self.check_and_promote_int_literal(l, expected) {
                     arg.ty = expected.clone();
