@@ -93,7 +93,18 @@ impl<'c> CodeGen<'c> {
             Stmt::Return(value) => {
                 if let Some(expr) = value {
                     let val = self.compile_expr(expr)?;
-                    self.builder.build_return(Some(&val));
+
+                    let ret_val = if let Type::STRUCT(_) | Type::ARRAY(_, _) = expr.ty {
+                        if val.is_pointer_value() {
+                            self.builder.build_load(val.into_pointer_value(), "agg_load")
+                        } else {
+                            val
+                        }
+                    } else {
+                        val
+                    };
+
+                    self.builder.build_return(Some(&ret_val));
                 } else {
                     self.builder.build_return(None);
                 }
