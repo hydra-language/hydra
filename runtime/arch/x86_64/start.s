@@ -4,6 +4,8 @@
 .global _start
 .type _start, @function
 
+.extern exit
+
 _start:
     # Linux x86_64 System V ABI: set up argc/argv/envp for main
     xor    %rbp, %rbp
@@ -17,6 +19,5 @@ _start:
 
     # exit(return_code)
     mov    %eax, %edi           # exit code -> edi
-    mov    $60, %eax            # syscall: exit
-    syscall
+    call exit
 
