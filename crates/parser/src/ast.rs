@@ -137,6 +137,11 @@ pub enum ASTNode<'a> {
         arguments: Vec<ASTNode<'a>>,
     },
 
+    CastExpression {
+        value: Box<ASTNode<'a>>,
+        target: Box<ASTNode<'a>>,
+    },
+
     Reference { inner: Box<ASTNode<'a>> },
 
     ConstReference { inner: Box<ASTNode<'a>> },
