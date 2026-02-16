@@ -23,6 +23,12 @@ impl<'c> CodeGen<'c> {
                     Type::I64 | Type::U64 | Type::ISIZE | Type::USIZE => {
                         Ok(self.context.i64_type().const_int(value, false).into())
                     },
+                    Type::F32 => {
+                        Ok(self.context.f32_type().const_float(*val as f64).into())
+                    },
+                    Type::F64 => {
+                        Ok(self.context.f64_type().const_float(*val as f64).into())
+                    },
                     Type::BOOL => {
                         Ok(self.context.bool_type().const_int(value, false).into())
                     },
@@ -56,15 +62,98 @@ impl<'c> CodeGen<'c> {
                 let address = self.compile_target_address(target)?;
                 let val = self.compile_expr(value)?;
 
-                if let Type::STRUCT(_) = expr.ty {
-                    let src_ptr = val.into_pointer_value();
-                    self.build_struct_copy(address, src_ptr, &expr.ty)?;
+                if let Type::STRUCT(_) | Type::ARRAY(_, _) = expr.ty {
+                    if val.is_pointer_value() {
+                        let src_ptr = val.into_pointer_value();
+                        self.build_struct_copy(address, src_ptr, &expr.ty)?;
+                    } else {
+                        self.builder.build_store(address, val);
+                    }
                 } else {
                     self.builder.build_store(address, val);
                 }
 
                 Ok(val)
-            }
+            },
+
+            ExprKind::Cast { expr: inner_expr } => {
+                let val = self.compile_expr(inner_expr)?;
+                let src_ty = &inner_expr.ty;
+                let dest_ty = &expr.ty;
+
+                let dest_llvm_ty = compile_type(self.context, &self.target_data, dest_ty);
+
+                match (src_ty, dest_ty) {
+                    // --- 1. Float to Int (F64 -> I64/I32 etc) ---
+                    (Type::F64 | Type::F32, Type::I64 | Type::I32 | Type::I16 | Type::I8 | Type::U8) => {
+                        let float_val = val.into_float_value();
+
+                        Ok(self.builder.build_float_to_signed_int(
+                            float_val, 
+                            dest_llvm_ty.into_int_type(), 
+                            "cast_fptosi"
+                        ).into())
+                    },
+
+                    // --- 2. Int to Float ---
+                    (Type::I64 | Type::I32 | Type::I16 | Type::I8 | Type::U8, Type::F64 | Type::F32) => {
+                        let int_val = val.into_int_value();
+
+                        Ok(self.builder.build_signed_int_to_float(
+                            int_val, 
+                            dest_llvm_ty.into_float_type(), 
+                            "cast_sitofp"
+                        ).into())
+                    },
+
+                    // --- 3. Int to Int (Resizing) ---
+                    (Type::I64, Type::I32 | Type::I16 | Type::I8 | Type::U8) => {
+                        let int_val = val.into_int_value();
+
+                        Ok(self.builder.build_int_truncate(
+                            int_val, 
+                            dest_llvm_ty.into_int_type(), 
+                            "cast_trunc"
+                        ).into())
+                    },
+
+                    (Type::I32 | Type::I16 | Type::I8 | Type::U8, Type::I64) => {
+                        let int_val = val.into_int_value();
+
+                        Ok(self.builder.build_int_s_extend(
+                            int_val, 
+                            dest_llvm_ty.into_int_type(), 
+                            "cast_sext"
+                        ).into())
+                    },
+
+                    // --- 4. Float to Float (Resizing) ---
+                    (Type::F64, Type::F32) => {
+                        let float_val = val.into_float_value();
+
+                        Ok(self.builder.build_float_trunc(
+                            float_val,
+                            dest_llvm_ty.into_float_type(),
+                            "cast_fptrunc"
+                        ).into())
+                    },
+
+                    (Type::F32, Type::F64) => {
+                        let float_val = val.into_float_value();
+
+                        Ok(self.builder.build_float_ext(
+                            float_val,
+                            dest_llvm_ty.into_float_type(),
+                            "cast_fpext"
+                        ).into())
+                    },
+
+                    // --- 5. Identity ---
+                    (s, d) if s == d => Ok(val),
+
+                    _ => Err(format!("codegen not implemented for cast: {} as {}", src_ty, dest_ty))
+                }
+            },
 
             ExprKind::ArrayInit { elements } => {
                 let llvm_type = compile_type(self.context, &self.target_data, &expr.ty);
@@ -156,13 +245,18 @@ impl<'c> CodeGen<'c> {
             }
 
             ExprKind::VariableReference { name } => {
-                let ptr = self.variables.get(name)
-                    .expect(&format!("ICE: analyzer failed to validate variable '{}'", name));
+                let ptr = if let Some(local) = self.variables.get(name) {
+                    *local
+                } else {
+                    self.module.get_global(name)
+                        .map(|g| g.as_pointer_value())
+                        .ok_or_else(|| format!("ICE: analyzer failed to validate variable '{}'", name))?
+                };
 
                 if let Type::ARRAY(_, _) | Type::STRUCT(_) = expr.ty {
-                    Ok((*ptr).into())
+                    Ok(ptr.into())
                 } else { 
-                    Ok(self.builder.build_load(*ptr, name)) 
+                    Ok(self.builder.build_load(ptr, name)) 
                 }
             },
 
@@ -217,10 +311,10 @@ impl<'c> CodeGen<'c> {
             },
 
             ExprKind::Unary { op, operand } => {
-                let val = self.compile_expr(operand)?;
-
                 match op {
                     UnaryOp::NEG => {
+                        let val = self.compile_expr(operand)?;
+
                         if val.is_int_value() {
                             let int_value = val.into_int_value();
                             Ok(self.builder.build_int_neg(int_value, "neg").into())
@@ -233,20 +327,26 @@ impl<'c> CodeGen<'c> {
                     },
 
                     UnaryOp::NOT => {
+                        let val = self.compile_expr(operand)?;
+
                         let int_value = val.into_int_value();
                         Ok(self.builder.build_not(int_value, "not").into())
                     },
 
                     UnaryOp::ADDR_OF => {
-                        match &operand.kind {
-                            ExprKind::VariableReference { name } => {
-                                let ptr = self.get_variable_pointer(name); 
-                                let value: BasicValueEnum = ptr.into();
+                        let ptr = self.compile_target_address(operand)?;
 
-                                Ok(value)
-                            }
-                            
-                             _ => Err("can only take address of a variable".to_string())
+                        Ok(ptr.into())
+                    },
+
+                    UnaryOp::DEREF => {
+                        let val = self.compile_expr(operand)?;
+                        let ptr = val.into_pointer_value();
+
+                        if let Type::STRUCT(_) | Type::ARRAY(_, _) = expr.ty {
+                            Ok(ptr.into())
+                        } else {
+                            Ok(self.builder.build_load(ptr, "deref"))
                         }
                     }
                 }
@@ -264,9 +364,13 @@ impl<'c> CodeGen<'c> {
                 for arg in args {
                     let val = self.compile_expr(arg)?;
                     
-                    if let Type::STRUCT(_) = arg.ty {
-                        let ptr = val.into_pointer_value();
-                        compiled_args.push(self.builder.build_load(ptr, "arg_val").into());
+                    if let Type::STRUCT(_) | Type::ARRAY(_, _) = arg.ty {
+                        if val.is_pointer_value() {
+                            let ptr = val.into_pointer_value();
+                            compiled_args.push(self.builder.build_load(ptr, "arg_val").into());
+                        } else {
+                            compiled_args.push(val.into());
+                        }
                     } else {
                         compiled_args.push(val.into());
                     }
@@ -284,36 +388,35 @@ impl<'c> CodeGen<'c> {
                 let struct_ty = self.context.get_struct_type(name)
                     .ok_or(format!("LLVM struct type {} not found", name))?;
                 
-                // Create memory on the stack for the new instance
                 let ptr = self.builder.build_alloca(struct_ty, "struct_tmp");
                 
-                // Fill the memory with field values
                 for (i, val_expr) in values.iter().enumerate() {
                     let llvm_val = self.compile_expr(val_expr)?;
                     
-                    // Get pointer to field at index i
                     let field_ptr = self.builder.build_struct_gep(ptr, i as u32, "field_ptr")
                         .map_err(|_| "GEP failed during struct init")?;
                     
                     if let Type::STRUCT(_) = val_expr.ty {
-                        let src_ptr = llvm_val.into_pointer_value();
-                        self.build_struct_copy(field_ptr, src_ptr, &val_expr.ty)?;
+                        if llvm_val.is_pointer_value() {
+                            let src_ptr = llvm_val.into_pointer_value();
+                            self.build_struct_copy(field_ptr, src_ptr, &val_expr.ty)?;
+                        } else {
+                            self.builder.build_store(field_ptr, llvm_val);
+                        }
                     } else {
                         self.builder.build_store(field_ptr, llvm_val);
                     }
                 }
-
+                
                 let final_val = self.builder.build_load(ptr, "struct_ret_val");
-
+                
                 Ok(final_val)
             },
 
             ExprKind::MemberAccess { .. } => {
                 let field_ptr = self.compile_target_address(expr)?;
 
-                // THE FIX: If we are still looking at a struct, return the pointer.
-                // If it's a final field (f64), load it.
-                if let Type::STRUCT(_) = expr.ty {
+                if let Type::STRUCT(_) | Type::ARRAY(_, _) = expr.ty {
                     Ok(field_ptr.into())
                 } else {
                     Ok(self.builder.build_load(field_ptr, "field_val"))
@@ -324,15 +427,113 @@ impl<'c> CodeGen<'c> {
         }
     }
 
+    pub fn compile_const_expr(&self, expr: &Expr, globals: &[(String, Type, Expr)]) -> Result<BasicValueEnum<'c>, String> {
+        match &expr.kind {
+            ExprKind::FLOAT_LITERAL(val) => {
+                let f_ty = self.context.f64_type();
+                Ok(f_ty.const_float(*val).into())
+            }
+
+            ExprKind::INT_LITERAL(val) => {
+                let i_ty = self.context.i64_type();
+                Ok(i_ty.const_int(*val as u64, false).into())
+            }
+
+            ExprKind::Binary { op, lhs, rhs } => {
+                let left = self.compile_const_expr(lhs, globals)?;
+                let right = self.compile_const_expr(rhs, globals)?;
+
+                if left.is_float_value() {
+                    let l = left.into_float_value();
+                    let r = right.into_float_value();
+                    match op {
+                        BinaryOp::ADD => Ok(l.const_add(r).into()),
+                        BinaryOp::SUB => Ok(l.const_sub(r).into()),
+                        BinaryOp::MUL => Ok(l.const_mul(r).into()),
+                        BinaryOp::DIV => Ok(l.const_div(r).into()),
+                        _ => Err(format!("unsupported constant float op: {:?}", op)),
+                    }
+                } else {
+                    let l = left.into_int_value();
+                    let r = right.into_int_value();
+                    match op {
+                        BinaryOp::ADD => Ok(l.const_add(r).into()),
+                        BinaryOp::SUB => Ok(l.const_sub(r).into()),
+                        BinaryOp::MUL => Ok(l.const_mul(r).into()),
+                        BinaryOp::MOD => Ok(l.const_signed_remainder(r).into()),
+                        _ => Err(format!("unsupported constant int op: {:?}", op)),
+                    }
+                }
+            }
+
+            ExprKind::Unary { op, operand } => {
+                let val = self.compile_const_expr(operand, globals)?;
+                match op {
+                    UnaryOp::NEG if val.is_float_value() => Ok(val.into_float_value().const_neg().into()),
+                    UnaryOp::NEG if val.is_int_value() => Ok(val.into_int_value().const_neg().into()),
+                    _ => Err("unsupported constant unary op".into()),
+                }
+            }
+
+            ExprKind::StructInit { name, values } => {
+                let struct_ty = self.context.get_struct_type(name)
+                    .ok_or(format!("llvm struct type {} not found", name))?;
+
+                let mut const_vals = Vec::new();
+                for val in values {
+                    const_vals.push(self.compile_const_expr(val, globals)?);
+                }
+
+                Ok(struct_ty.const_named_struct(&const_vals).into())
+            }
+
+            ExprKind::VariableReference { name } => {
+                let global = self.module.get_global(name)
+                    .ok_or_else(|| format!("global constant '{}' not found", name))?;
+
+                if let Some(val) = global.get_initializer() {
+                    return Ok(val);
+                }
+
+                let (_, _, init_expr) = globals.iter()
+                    .find(|(n, _, _)| n == name)
+                    .ok_or_else(|| format!("varaible '{}' is undefined", name))?;
+
+                self.compile_const_expr(init_expr, globals)
+            }
+
+            ExprKind::ArrayInit { elements } => {
+                let llvm_type = compile_type(self.context, &self.target_data, &expr.ty);
+                let array_type = llvm_type.into_array_type();
+
+                let mut compiled = Vec::new();
+                for e in elements {
+                    compiled.push(self.compile_const_expr(e, globals)?);
+                }
+
+                match array_type.get_element_type() {
+                    BasicTypeEnum::FloatType(t) => {
+                        let vals: Vec<_> = compiled.iter().map(|v| v.into_float_value()).collect();
+                        Ok(t.const_array(&vals).into())
+                    }
+                    BasicTypeEnum::IntType(t) => {
+                        let vals: Vec<_> = compiled.iter().map(|v| v.into_int_value()).collect();
+                        Ok(t.const_array(&vals).into())
+                    }
+                    _ => Err("unsupported constant array element type".into())
+                }
+            }
+
+            _ => Err(format!("expression type {:?} is not a valid global constant", expr.kind))
+        }
+    }
+
     pub fn compile_target_address(&mut self, expr: &Expr) -> Result<inkwell::values::PointerValue<'c>, String> {
         match &expr.kind {
             ExprKind::VariableReference { name } => {
                 let ptr = self.variables.get(name)
                     .ok_or_else(|| format!("Variable '{}' not found", name))?;
 
-                // Check if the variable is a reference type (like 'self' or an '&' arg).
-                // If it is a reference, the pointer in our map is a "pointer to a pointer."
-                // We must load the actual address before we can GEP into it.
                 if let Type::REF(_) | Type::CONST_REF(_) = expr.ty {
                     Ok(self.builder.build_load(*ptr, &format!("{}_deref", name)).into_pointer_value())
                 } else {
@@ -343,14 +544,58 @@ impl<'c> CodeGen<'c> {
             ExprKind::MemberAccess { object, index, .. } => {
                 let obj_ptr = self.compile_target_address(object)?;
 
-                // IMPORTANT: LLVM requires the pointer to be a Pointer to a Struct.
-                // If this fails, it's usually because 'object' returned a pointer to a primitive.
                 let field_ptr = self.builder.build_struct_gep(obj_ptr, *index, "field_ptr")
                     .map_err(|e| format!("GEP failed at index {}: {:?}", index, e))?;
 
                 Ok(field_ptr)
             },
-            _ => Err(format!("Cannot get address of {:?}", expr.kind)),
+
+            ExprKind::ArrayAccess { array, index } => {
+                let arr_value = self.compile_expr(array)?;
+                let arr_ptr = arr_value.into_pointer_value();
+
+                let index_value = self.compile_expr(index)?;
+                let index_int = index_value.into_int_value();
+
+                unsafe {
+                    match array.ty {
+                        Type::ARRAY(_, _) => {
+                            let zero = self.context.i64_type().const_int(0, false);
+                            Ok(self.builder.build_gep(
+                                arr_ptr,
+                                &[zero, index_int],
+                                "array_idx_ptr",
+                            ))
+                        },
+
+                        Type::INFERRED_ARRAY(_) | Type::POINTER(_) => {
+                            Ok(self.builder.build_gep(
+                                arr_ptr,
+                                &[index_int],
+                                "ptr_idx_ptr"
+                            ))
+                        },
+
+                        _ => Err(format!("ICE: cannot take address of index for type {:?}", array.ty))
+                    }
+                }
+            },
+
+            _ => {
+                let val = self.compile_expr(expr)?;
+
+                let is_aggregate = matches!(expr.ty, Type::STRUCT(_) | Type::ARRAY(_, _));
+
+                if is_aggregate && val.is_pointer_value() {
+                    Ok(val.into_pointer_value())
+                } else {
+                    let llvm_ty = compile_type(self.context, &self.target_data, &expr.ty);
+                    let alloca = self.builder.build_alloca(llvm_ty, "tmp_rval");
+
+                    self.builder.build_store(alloca, val);
+                    Ok(alloca)
+                }
+            }
         }
     }
 
