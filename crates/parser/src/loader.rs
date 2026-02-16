@@ -1,15 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 use lexer::Lexer;
 use crate::parser::Parser;
-use crate::ASTNode;
+use crate::{ASTNode, ParserError};
 
 pub struct ExternalLoader<'a> {
-    // Cache ASTs by their absolute path to avoid re-parsing
-    cache: HashMap<PathBuf, Vec<ASTNode<'a>>>,
-    // Store the raw source strings so the tokens/AST can reference them
-    source_registry: HashMap<PathBuf, String>,
+    pub cache: HashMap<PathBuf, Vec<ASTNode<'a>>>,
+    pub integrated: HashSet<String>,
+    empty: Vec<ASTNode<'a>>,
 }
 
 impl<'a> ExternalLoader<'a> {
@@ -17,11 +16,13 @@ impl<'a> ExternalLoader<'a> {
     pub fn new() -> Self {
         Self {
             cache: HashMap::new(),
-            source_registry: HashMap::new(),
+            integrated: HashSet::new(),
+            empty: Vec::new(),
         }
     }
 
     pub fn load(&mut self, module_path: &str) -> Result<&Vec<ASTNode<'a>>, String> {
+
         let path = PathBuf::from(format!("{}.hydra", module_path));
         let abs_path = fs::canonicalize(&path)
             .map_err(|_| format!("could not find module file: {:?}", path))?;
@@ -30,6 +31,8 @@ impl<'a> ExternalLoader<'a> {
         if self.cache.contains_key(&abs_path) {
             return Ok(self.cache.get(&abs_path).unwrap());
         }
+
+        self.cache.insert(abs_path.clone(), Vec::new());
 
         // 2. Read File
         let source = fs::read_to_string(&abs_path)
@@ -44,7 +47,18 @@ impl<'a> ExternalLoader<'a> {
         
         let ast = {
             let mut parser = Parser::new(tokens, self);
-            parser.parse().map_err(|errs| format!("errors in {}: {:?}", module_path, errs))?
+            match parser.parse() {
+                Ok(nodes) => nodes,
+                Err(errs) => {
+                    let fname = abs_path.to_string_lossy();
+
+                    for err in &errs {
+                        err.report(leaked_source, &fname);
+                    }
+
+                    return Err(format!("module '{}' contains errors", module_path));
+                }
+            }
         };
 
         // 5. Store and Return
