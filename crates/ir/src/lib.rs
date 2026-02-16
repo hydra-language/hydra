@@ -6,6 +6,8 @@ use std::fmt;
 use types::Type;
 use stmt::Block;
 
+use crate::expr::Expr;
+
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
@@ -18,6 +20,7 @@ pub struct Function {
 pub struct Program {
     pub functions: Vec<Function>,
     pub structs: Vec<(String, Vec<(String, Type)>)>,
+    pub globals: Vec<(String, Type, Expr)>
 }
 
 impl fmt::Display for Function {
