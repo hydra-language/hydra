@@ -1,6 +1,14 @@
 use lexer::{Token, TokenType};
-use crate::{ASTNode, ParserError, StructSection, loader::ExternalLoader};
+use crate::{ASTNode, ParserError, loader::ExternalLoader};
 use errors::{generic::GenericError, expected_found::ExpectedFoundError};
+
+#[derive(PartialEq, PartialOrd, Clone, Copy)]
+pub enum StructSection {
+    NONE = 0,
+    FIELDS = 1,
+    CONSTANTS = 2,
+    METHODS = 3,
+}
 
 pub struct Parser<'a, 'b> {
     tokens: Vec<Token<'a>>,
@@ -211,7 +219,9 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn parse_if(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         let has_paren = self.match_token(TokenType::LeftParen);
 
+        if !has_paren { self.allow_struct = false; }
         let condition = self.parse_expression()?;
+        if !has_paren { self.allow_struct = true; }
 
         if has_paren {
             self.consume(TokenType::RightParen, "')' after if condition")?;
@@ -238,9 +248,15 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn parse_while(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
-        self.allow_struct = false;
+        let has_paren = self.match_token(TokenType::LeftParen);        
+        
+        if !has_paren { self.allow_struct = false; }
         let condition = self.parse_expression()?;
-        self.allow_struct = true;
+        if !has_paren { self.allow_struct = true; }
+
+        if has_paren {
+            self.consume(TokenType::RightParen, "expected ')' after while condition")?;
+        }
 
         let body = self.parse_block();
 
@@ -253,6 +269,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn parse_for(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         let has_paren = self.match_token(TokenType::LeftParen);
 
+        if !has_paren { self.allow_struct = false; }
         let variable = self.consume(TokenType::Identifier("".to_string()), "loop variable name")?.clone();
         self.consume(TokenType::In, "'in' after loop variable")?;
 
@@ -271,6 +288,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         };
 
         let end = self.parse_expression()?;
+        if !has_paren { self.allow_struct = true; }
 
         if has_paren {
             self.consume(TokenType::RightParen, "')' after range")?;
@@ -350,16 +368,20 @@ impl<'a, 'b> Parser<'a, 'b> {
         let mut params = Vec::new();
         if !self.check(TokenType::RightParen) {
             loop {
-                // Determine if we are looking at '&self' or '&const self'
-                let is_shorthand = self.check(TokenType::Ampersand) && (
-                    self.check_lexeme_at(1, "self") || 
-                    (self.check_at(1, TokenType::Const) && self.check_lexeme_at(2, "self"))
-                );
+                let is_shorthand = self.check(TokenType::Ampersand);
 
                 if is_shorthand {
                     self.advance(); // consume '&'
                     let is_const = self.match_token(TokenType::Const);
+
                     let self_token = self.consume_identifier("expected 'self'")?;
+                    if self_token.lexeme != "self" {
+                        return Err(ParserError::EXPECTED_FOUND(Box::new(ExpectedFoundError {
+                            code: "E002",
+                            message: format!("expected 'self', but found `{}`", self_token.lexeme),
+                            token: self_token,
+                        })));
+                    }
 
                     let s_name = struct_context.ok_or_else(|| {
                         ParserError::GENERIC(Box::new(GenericError {
@@ -397,6 +419,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         
         self.consume(TokenType::RightParen, "expected ')' after parameters")?;
         self.consume(TokenType::Arrow, "expected '->' before return type")?;
+
         let return_type = self.parse_type()?;
         let body = self.parse_block();
 
@@ -451,7 +474,16 @@ impl<'a, 'b> Parser<'a, 'b> {
 
                 let struct_name = name.lexeme;
                 methods.push(self.parse_function_rest(Some(struct_name))?);
-            } else if current_section < StructSection::METHODS {
+            } else {
+                if current_section > StructSection::FIELDS {
+                    return Err(ParserError::GENERIC(Box::new(GenericError {
+                        code: "E005",
+                        message: "fields must appear before constants and methods".to_string(),
+                        token: self.peek().clone(),
+                        help: None
+                    })));
+                }
+
                 current_section = StructSection::FIELDS;
 
                 let field_name = self.consume_identifier("expected field name")?.clone();
@@ -461,13 +493,6 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.consume(TokenType::Semicolon, "expected ';'")?;
 
                 fields.push((field_name, field_type));
-            } else {
-                return Err(ParserError::GENERIC(Box::new(GenericError {
-                    code: "E005",
-                    message: "only functions are allowed in the methods section".to_string(),
-                    token: self.peek().clone(),
-                    help: None
-                })));
             }
         }
 
@@ -733,7 +758,8 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn parse_unary(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         if self.match_token(TokenType::ExclamationMark) ||
             self.match_token(TokenType::Minus) || 
-            self.match_token(TokenType::Ampersand) 
+            self.match_token(TokenType::Ampersand) || 
+            self.match_token(TokenType::Star)
         {
             let operator = self.previous().clone();
             let right = self.parse_unary()?;
@@ -765,6 +791,13 @@ impl<'a, 'b> Parser<'a, 'b> {
                 };
             
                 expr = self.finish_parse_fn_call(token_name)?;
+            } else if self.match_token(TokenType::As) {
+                let target = self.parse_type()?;
+
+                expr = ASTNode::CastExpression {
+                    value: Box::new(expr),
+                    target: Box::new(*target),
+                };
             } else if self.match_token(TokenType::DoubleColon) {
                 let method_name = self.consume_identifier("method name after '::'")?;
 
@@ -892,13 +925,6 @@ impl<'a, 'b> Parser<'a, 'b> {
                 let mut final_token = self.previous().clone();
                 final_token.lexeme = leaked;
 
-                if self.check(TokenType::LeftBrace) {
-                    return self.parse_struct_initializer(final_token);
-                }
-
-                let mut final_token = self.previous().clone();
-                final_token.lexeme = leaked;
-
                 if self.allow_struct && self.check(TokenType::LeftBrace) {
                     return self.parse_struct_initializer(final_token);
                 }
@@ -946,6 +972,10 @@ impl<'a, 'b> Parser<'a, 'b> {
                 if !self.match_token(TokenType::Comma) {
                     break;
                 }
+
+                if self.check(TokenType::RightBrace) {
+                    break;
+                }
             }
         }
         self.consume(TokenType::RightBrace, "'}' to close array initializer")?;
@@ -970,7 +1000,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 code: "E006",
                 message: e,
                 token: error_token,
-                help: None,
+                help: Some("fix errors the errors pal".to_string()),
             }))
         })?;
 
