@@ -79,7 +79,7 @@ pub enum BinaryOp {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
-    NEG, NOT, ADDR_OF,
+    NEG, NOT, ADDR_OF, DEREF,
 }
 
 impl ExprKind {
@@ -210,6 +210,7 @@ impl fmt::Display for UnaryOp {
             UnaryOp::NEG => write!(f, "-"),
             UnaryOp::NOT => write!(f, "!"),
             UnaryOp::ADDR_OF => write!(f, "&"),
+            UnaryOp::DEREF => write!(f, "*"),
         }
     }
 }
