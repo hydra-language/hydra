@@ -14,7 +14,7 @@ pub enum Symbol {
     },
 
     Struct {
-        fields: Vec<(String, Type)>,
+        fields: Vec<(String, Type, bool)>,
     },
 }
 
@@ -64,5 +64,9 @@ impl Scope {
     // return to parent scope when leaving a child scope
     pub fn parent(self) -> Option<Scope> {
         self.parent.map(|b| *b)
+    }
+
+    pub fn define_or_update(&mut self, name: String, symbol: Symbol) {
+        self.symbols.insert(name, symbol);
     }
 }
