@@ -76,15 +76,30 @@ impl<'c> CodeGen<'c> {
     }
 
     pub fn generate(&mut self, program: &Program) -> Result<(), String> {
-
         for (name, fields) in &program.structs {
             let struct_type = self.context.opaque_struct_type(name);
             let field_types: Vec<BasicTypeEnum> = fields.iter()
                 .map(|(_, ty)| compile_type(self.context, &self.target_data, ty)).collect();
-
             struct_type.set_body(&field_types, false);
         }
-        
+
+        for (name, ty, _) in &program.globals {
+            let llvm_ty = compile_type(self.context, &self.target_data, ty);
+            let global = self.module.add_global(llvm_ty, None, name);
+
+            global.set_constant(true);
+        }
+
+        for (name, _, init_expr) in &program.globals {
+            let global = self.module.get_global(name).unwrap();
+
+            if global.get_initializer().is_none() {
+                let val = self.compile_const_expr(init_expr, &program.globals)?;
+
+                global.set_initializer(&val);
+            }
+        }
+
         for function in &program.functions {
             self.generate_function_prototype(function);
         }
@@ -95,7 +110,6 @@ impl<'c> CodeGen<'c> {
 
         Ok(())
     }
-
     pub fn ir_to_string(&self) -> String {
         self.module.print_to_string().to_string()
     }
@@ -130,8 +144,8 @@ impl<'c> CodeGen<'c> {
             BasicValueEnum::FloatValue(v) => v.is_const(),
             BasicValueEnum::PointerValue(v) => v.is_const(),
             BasicValueEnum::ArrayValue(v) => v.is_const(),
-
-            _ => unreachable!()
+            BasicValueEnum::StructValue(v) => v.as_instruction().is_none(),
+            BasicValueEnum::VectorValue(v) => v.is_const(),
         }
     }
 
