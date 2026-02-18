@@ -1,0 +1,41 @@
+include vec3::Vec3;
+include math::Math;
+
+struct Sphere {
+    center: Vec3;
+    radius: f64;
+
+    fn initialize(c: Vec3, r: f64) -> Sphere {
+        return Sphere {
+            .center = c,
+            .radius = r
+        };
+    }
+
+    fn hit(&const self, r: Ray, ray_t: Interval) -> f64 {
+        let oc: Vec3 = r::origin()::subtract(self.center);
+
+        let a = r::direction()::length_squared();
+        let half_b = oc::dot(r::direction());
+        let c = oc::length_squared() - self.radius * self.radius;
+
+        let discriminant = half_b * half_b - a * c;
+
+        if discriminant < 0.0 {
+            return -1.0;
+        }
+
+        let sqrtd = Math::sqrt(discriminant);
+
+        let root = (0.0 - half_b - sqrtd) / a;
+        if !ray_t::surrounds(root) {
+            root = (0.0 - half_b - sqrtd) / a;
+
+            if !ray_t::surrounds(root) {
+                return -1.0;
+            }
+        }
+
+        return root;
+    }
+}

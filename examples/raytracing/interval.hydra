@@ -1,0 +1,51 @@
+include math::Math;
+
+struct Interval {
+    min: f64;
+    max: f64;
+
+    const EMPTY: Interval = Interval {
+        .min = Math.INFINITY,
+        .max = -Math.INFINITY
+    };
+
+    const UNIVERSE: Interval = Interval {
+        .min = -Math.INFINITY,
+        .max = Math.INFINITY
+    };
+
+    fn new(min: f64, max: f64) -> Interval {
+        return Interval {
+            .min = min,
+            .max = max
+        };
+    }
+
+    fn initialize() -> Interval {
+        return Interval.EMPTY;
+    }
+    
+    fn size(&const self) -> f64 {
+        return self.max - self.min;
+    }
+    
+    fn contains(&const self, x: f64) -> bool {
+        return self.min <= x && x <= self.max;
+    }
+
+    fn surrounds(&const self, x: f64) -> bool {
+        return self.min < x && x < self.max;
+    }
+
+    fn clamp(&const self, x: f64) -> f64 {
+        if x < self.min {
+            return self.min;
+        }
+
+        if x > self.max {
+            return self.max;
+        }
+
+        return x;
+    }
+}

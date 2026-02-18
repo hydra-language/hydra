@@ -1,0 +1,44 @@
+struct Math {
+    const INFINITY: f64 = 1.0 / 0.0;
+
+    fn sqrt(n: f64) -> f64 {
+        if n <= 0.0 { 
+            return 0.0; 
+        }
+
+        let x: f64 = n;
+        let y: f64 = 1.0;
+        const e: f64 = 0.000001;
+
+        while true {
+            let diff: f64 = x - y;
+
+            if (diff < 0.0) {
+                diff = 0.0 - diff; 
+            }
+
+            if (diff < e) { break; }
+
+            x = (x + y) / 2.0;
+            y = n / x;
+        }
+
+        return x;
+    }
+
+    fn min(a: f64, b: f64) -> f64 {
+        if a < b {
+            return a;
+        } else {
+            return b;
+        }
+    }
+
+    fn abs(a: f64) -> f64 {
+        if a < 0.0 {
+            return 0.0 - a;
+        }
+
+        return a;
+    }
+}

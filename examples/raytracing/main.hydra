@@ -1,0 +1,86 @@
+include math::Math;
+include vec3::Vec3;
+include sphere::Sphere;
+include ray::Ray;
+include interval::Interval;
+include color::Color;
+
+fn ray_color(r: Ray) -> Vec3 {
+    let center: Vec3 = Vec3::new(0.0, 0.0, -1.0);
+    let sphere: Sphere = Sphere::initialize(center, 0.5);
+
+    let check: Interval = Interval::new(0.0, Math.INFINITY);
+    let t = sphere::hit(r, check);
+    
+    if t > 0.0 {
+        let hit_point = r::at(t);
+        let N = hit_point::subtract(center)::normalize();
+        
+        return Vec3::new(N::get_x() + 1.0, N::get_y() + 1.0, N::get_z() + 1)::scale(0.5);
+    }
+
+    let unit_direction = r::direction()::normalize();
+    let a = 0.5 * (unit_direction::get_y() + 1.0);
+
+    let white = Vec3::new(1.0, 1.0, 1.0);
+    let blue = Vec3::new(0.5, 0.7, 1.0);
+
+    return white::scale(1.0 - a)::add(blue::scale(a));
+}
+
+fn main() -> void {
+    const color: Color = Color::new();
+
+    const aspect_ratio = 16.0 / 9.0;
+    const width = 400;
+
+    let h_f64 = (width as f64) / aspect_ratio;
+    const height = 225;
+
+    let viewport_height = 2.0;
+    let viewport_width = viewport_height * ((width as f64) / (height as f64));
+    let focal_length = 1.0;
+
+    let camera_center = Vec3::zero();
+
+    let viewport_u = Vec3::new(viewport_width, 0.0, 0.0);
+    let viewport_v = Vec3::new(0.0, 0.0 - viewport_height, 0.0);
+
+    let pixel_data_u = viewport_u::scale(1.0 / (width as f64));
+    let pixel_data_v = viewport_v::scale(1.0 / (height as f64));
+
+    let viewport_upper_left = camera_center
+        ::subtract(Vec3::new(0.0, 0.0, focal_length))
+        ::subtract(viewport_u::scale(0.5))
+        ::subtract(viewport_v::scale(0.5));
+
+    let pixel00_loc = viewport_upper_left::add(
+        pixel_data_u::add(pixel_data_v)::scale(0.5)
+    );
+
+    println("P3\n{} {}\n255\n", width, height);
+
+    let j: i32 = 0;
+    while j < height {
+        let i: i32 = 0;
+        
+        while i < width {
+            let pixel_center = pixel00_loc::add(
+                pixel_data_u::scale(i as f64)::add(
+                    pixel_data_v::scale(j as f64)
+                )
+            );
+
+            let ray_direction = pixel_center::subtract(camera_center);
+
+            let r: Ray = Ray::initialize(camera_center, ray_direction);
+
+            let pixel_color: Vec3 = ray_color(r);
+
+            color::write_color(pixel_color);
+
+            i += 1;
+        }
+        j += 1;
+    }
+}

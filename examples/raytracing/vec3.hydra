@@ -1,0 +1,122 @@
+include math::Math;
+
+struct Vec3 {
+    vec: [f64, 3];
+
+    fn new(x: f64, y: f64, z: f64) -> Vec3 {
+        return Vec3 {
+            .vec = { x, y, z }
+        };
+    }
+
+    fn zero() -> Vec3 {
+        return Vec3 {
+            .vec = { 0.0, 0.0, 0.0 }
+        };
+    }
+
+    fn add(&const self, other: Vec3) -> Vec3 {
+        return Vec3 {
+            .vec = {
+                self.vec[0] + other.vec[0],
+                self.vec[1] + other.vec[1],
+                self.vec[2] + other.vec[2]
+            }
+        };
+    }
+
+    fn subtract(&const self, other: Vec3) -> Vec3 {
+        return Vec3 {
+            .vec = {
+                self.vec[0] - other.vec[0],
+                self.vec[1] - other.vec[1],
+                self.vec[2] - other.vec[2]
+            }
+        };
+    }
+
+    fn multiply(&const self, other: Vec3) -> Vec3 {
+        return Vec3 {
+            .vec = {
+                self.vec[0] * other.vec[0],
+                self.vec[1] * other.vec[1],
+                self.vec[2] * other.vec[2]
+            }
+        };
+    }
+
+    fn cross(&const self, other: Vec3) -> Vec3 {
+        return Vec3::new(
+            self.vec[1] * other.vec[2] - self.vec[2] * other.vec[1],
+            self.vec[2] * other.vec[0] - self.vec[0] * other.vec[2],
+            self.vec[0] * other.vec[1] - self.vec[1] * other.vec[0]
+        );
+    }
+
+    fn scale(&const self, t: f64) -> Vec3 {
+        return Vec3 {
+            .vec = {
+                self.vec[0] * t,
+                self.vec[1] * t,
+                self.vec[2] * t
+            }
+        };
+    }
+
+    fn dot(&const self, other: Vec3) -> f64 {
+        return self.vec[0] * other.vec[0] + self.vec[1] * other.vec[1] + self.vec[2] * other.vec[2];
+    }
+
+    fn length(&const self) -> f64 {
+        return Math::sqrt(self::dot(*self));
+    }
+
+    fn length_squared(&const self) -> f64 {
+        return self::dot(*self);
+    }
+
+    fn normalize(self: Vec3) -> Vec3 {
+        const len = self::length();
+
+        if len > 0.0 {
+            return self::scale(1.0 / len);
+        }
+
+        return self;
+    }
+
+    fn reflect(v: Vec3, n: Vec3) -> Vec3 {
+        return v::subtract(n::scale(2.0 * v::dot(n)));
+    }
+
+    fn refract(uv: Vec3, n: Vec3, eoe: f64) -> Vec3 {
+        let uv_inv = uv::scale(-1.0);
+
+        const cos_theta = Math::min(uv_inv::dot(n), 1.0);
+
+        let r_out_prep: Vec3 = uv::add(n::scale(cos_theta))::scale(eoe);
+        let r_out_parallel = n::scale(-Math::sqrt(Math::abs(1.0 - r_out_prep::dot(r_out_prep))));
+
+        return r_out_prep::add(r_out_parallel);
+    }
+
+    fn near_zero(&const self) -> bool {
+        const s = 0.00000001;
+
+        return (Math::abs(self.vec[0]) < s) && 
+            (Math::abs(self.vec[1]) < s) && 
+            (Math::abs(self.vec[2]) < s); 
+    }
+
+    fn get_x(&const self) -> f64 {
+        return self.vec[0];
+    }
+
+    fn get_y(&const self) -> f64 {
+        return self.vec[1];
+    }
+
+    fn get_z(&const self) -> f64 {
+        return self.vec[2];
+    }
+}

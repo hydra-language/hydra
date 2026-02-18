@@ -1,0 +1,35 @@
+include vec3::Vec3;
+include interval::Interval;
+include math::Math;
+
+struct Color {
+
+    fn new() -> Color {
+        return Color {};
+    }
+
+    fn linear_to_gamma(component: f64) -> f64 {
+        if component > 0 {
+            return Math::sqrt(component);
+        }
+
+        return 0.0;
+    }
+
+    fn write_color(&const self, pixel: Vec3) -> void {
+        let r = pixel::get_x();
+        let g = pixel::get_y();
+        let b = pixel::get_z();
+
+        r = self::linear_to_gamma(r);
+        g = self::linear_to_gamma(g);
+        b = self::linear_to_gamma(b);
+
+        const intensity = Interval::new(0, 0.999);
+        const rbyte: i32 = (256 * intensity::clamp(r)) as i32;
+        const gbyte: i32 = (256 * intensity::clamp(g)) as i32;
+        const bbyte: i32 = (256 * intensity::clamp(b)) as i32;
+
+        println("{} {} {}\n", rbyte, gbyte, bbyte);
+    }
+}

@@ -1,0 +1,33 @@
+include vec3::Vec3;
+
+struct Ray {
+    orig: Vec3;
+    dir: Vec3;
+
+    fn new(origin: Vec3, direction: Vec3) -> Ray {
+        return Ray {    
+            .orig = Vec3::zero(),
+            .dir = Vec3::zero()
+        };
+    }
+
+    fn initialize(orig: Vec3, dir: Vec3) -> Ray {
+        return Ray {
+            .orig = orig,
+            .dir = dir
+        };
+    }
+
+    fn at(self: &const Ray, t: f64) -> Vec3 {
+        let scaled: Vec3 = self.dir::scale(t);
+        return self.orig::add(scaled);
+    }
+
+    fn origin(&self) -> Vec3 {
+        return self.orig;
+    }
+
+    fn direction(&self) -> Vec3 {   
+        return self.dir;
+    }
+}
