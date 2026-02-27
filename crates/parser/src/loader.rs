@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::{env, fs};
 use std::path::{PathBuf};
 use lexer::Lexer;
 use crate::parser::Parser;
@@ -22,6 +22,37 @@ impl<'a> ExternalLoader<'a> {
     }
 
     pub fn load(&mut self, module_path: &str) -> Result<&Vec<ASTNode<'a>>, String> {
+        let mut actual_path = PathBuf::new();
+
+        let home = env::var("HOME")
+            .or_else(|_| env::var("USERPROFILE"))
+            .map_err(|_| "could not find home directory to resolve std::".to_string()
+            )?;
+
+        let is_lib_path = module_path.starts_with("std::") || 
+                          module_path.starts_with("core::") || 
+                          module_path.starts_with("alloc::");
+
+        if is_lib_path {
+            actual_path.push(home);
+            actual_path.push(".hydra");
+            actual_path.push("std");
+
+            let segments = module_path.split("::");
+            for segment in segments {
+                actual_path.push(segment);
+            }
+        } else {
+            let segments = module_path.split("::");
+            for segment in segments {
+                actual_path.push(segment);
+            }
+        }
+
+        actual_path.set_extension("hydra");
+
+        let source = std::fs::read_to_string(&actual_path)
+            .map_err(|_| format!("error: file not found at {:?}", actual_path))?;
 
         let path = PathBuf::from(format!("{}.hydra", module_path));
         let abs_path = fs::canonicalize(&path)
