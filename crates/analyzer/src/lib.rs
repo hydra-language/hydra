@@ -30,18 +30,43 @@ impl Analyzer {
         let mut globals = Vec::new();
 
         for node in &nodes {
-            if let ASTNode::StructDeclaration { name, .. } = node {
-                let struct_name = name.lexeme.to_string();
-                self.scope.define(struct_name.to_string(), Symbol::Struct { fields: Vec::new() }).ok();
+            match node {
+                ASTNode::StructDeclaration { name, .. } => {
+                    let struct_name = name.lexeme.to_string();
+                    self.scope.define(struct_name, Symbol::Struct { fields: Vec::new() }).ok();
+                }
+
+                ASTNode::FunctionDeclaration { name, parameters, return_type, generic_params, .. } => {
+                    let rt = self.lower_type(*return_type.clone()).unwrap_or(Type::VOID);
+                    let mut param_types = Vec::new();
+
+                    for (_, type_node) in parameters {
+                        param_types.push(self.lower_type(*type_node.clone()).unwrap_or(Type::VOID));
+                    }
+
+                    let mut gps = Vec::new();
+                    for gp in generic_params {
+                        gps.push(gp.lexeme.to_string());
+                    }
+
+                    self.scope.define(name.lexeme.to_string(), Symbol::Function { 
+                        params: param_types, 
+                        return_type: rt,
+                        generic_params: gps
+                    }).ok();
+                }
+
+                _ => {}
             }
         }
 
         for node in &nodes {
-            if let ASTNode::StructDeclaration { name, fields, methods, constants } = node {
+            if let ASTNode::StructDeclaration { name, fields, methods, constants, generic_params } = node {
                 let struct_name = name.lexeme.to_string();
 
-                if let Some(Symbol::Struct { fields: existing }) = self.scope.resolve(&struct_name) {
-                    if !existing.is_empty() { continue; }
+                self.enter_scope();
+                for gp in generic_params {
+                    self.scope.define(gp.lexeme.to_string(), Symbol::Struct { fields: Vec::new() }).ok();
                 }
 
                 let mut struct_fields = Vec::new();
@@ -52,6 +77,11 @@ impl Analyzer {
                         Err(e) => errors.push(e),
                     }
                 }
+                self.leave_scope();
+            
+                self.scope.define_or_update(struct_name.clone(), Symbol::Struct {
+                    fields: struct_fields.clone()
+                });
 
                 for constant in constants {
                     if let ASTNode::VariableDeclaration { name: c_name, type_annotation, .. } = constant {
@@ -84,10 +114,26 @@ impl Analyzer {
                 structs.push((struct_name.clone(), ir_fields));
 
                 for method in methods {
-                    if let ASTNode::FunctionDeclaration { name: m_name, parameters, return_type, .. } = method {
+                    if let ASTNode::FunctionDeclaration { 
+                        name: m_name, 
+                        parameters, 
+                        return_type, 
+                        generic_params: method_generics, .. } = method 
+                    {
                         let namespaced_name = format!("{}::{}", struct_name, m_name.lexeme);
 
                         if self.scope.resolve(&namespaced_name).is_some() { continue; }
+
+                        let mut all_generics = Vec::new();
+
+                        self.enter_scope();
+                        for gp in generic_params {
+                            all_generics.push(gp.lexeme.to_string())
+                        }
+
+                        for gp in method_generics {
+                            all_generics.push(gp.lexeme.to_string())
+                        }
 
                         let mut param_types = Vec::new();
                         for (_, type_node) in parameters {
@@ -96,9 +142,12 @@ impl Analyzer {
 
                         let rt = self.lower_type(*return_type.clone()).unwrap_or(Type::VOID);
 
+                        self.leave_scope();
+
                         self.scope.define(namespaced_name, Symbol::Function {
                             params: param_types,
-                            return_type: rt
+                            return_type: rt,
+                            generic_params: all_generics
                         }).ok();
                     }
                 }
@@ -106,7 +155,7 @@ impl Analyzer {
         }
 
         for node in &nodes {
-            if let ASTNode::FunctionDeclaration { name, parameters, return_type, .. } = node {
+            if let ASTNode::FunctionDeclaration { name, parameters, return_type, generic_params, .. } = node {
                 if self.scope.resolve(name.lexeme).is_some() { continue; }
 
                 let mut param_types = Vec::new();
@@ -125,9 +174,15 @@ impl Analyzer {
                     }
                 };
 
+                let mut gps = Vec::new();
+                for gp in generic_params {
+                    gps.push(gp.lexeme.to_string());
+                }
+
                 let symbol = Symbol::Function { 
                     params: param_types,
                     return_type: rt,
+                    generic_params: gps
                 };
 
                 if let Err(msg) = self.scope.define(name.lexeme.to_string(), symbol) {
@@ -147,7 +202,7 @@ impl Analyzer {
                     }
                 },
 
-                ASTNode::StructDeclaration { name, methods, constants, .. } => {
+                ASTNode::StructDeclaration { name, methods, constants, generic_params, .. } => {
                     let struct_name = name.lexeme;
 
                     for constant in constants {
@@ -169,15 +224,28 @@ impl Analyzer {
 
                         let full_name = format!("{}::{}", struct_name, m_name);
 
-                        if functions.iter().any(|f| f.name == full_name) { continue; }
+                        if functions.iter().any(|f| f.name == full_name) {
+                            continue; 
+                        }
 
-                        match self.lower_function(method) {
+                        self.enter_scope();
+                        for gp in &generic_params {
+                            self.scope.define(gp.lexeme.to_string(), Symbol::Struct {
+                                fields: Vec::new() 
+                            }).ok();
+                        }
+                        
+                        let lowered_res = self.lower_function(method);
+
+                        self.leave_scope();
+
+                        match lowered_res {
                             Ok(mut ir) => {
                                 ir.name = full_name;
                                 functions.push(ir);
                             }
 
-                            Err(e) => errors.push(e),
+                            Err(e) => errors.push(e)
                         }
                     }
                 },
@@ -315,6 +383,24 @@ impl Analyzer {
                 let mut rhs = self.lower_expression(*value)?;
 
                 match *target {
+                    ASTNode::UnaryExpression { ref operator, ref right } 
+                    if operator.token_type == TokenType::Star => 
+                    {
+                        let ptr_deref = self.lower_expression(*right.clone())?;
+                        
+                        if !matches!(ptr_deref.ty, Type::POINTER(_) | Type::REF(_) | Type::CONST_REF(_)) {
+                            return Err(self.make_error(
+                                "cannot dereference non-pointer type for assignment".into(), 
+                                operator
+                            ));
+                        }
+
+                        Ok(Stmt::Assign {
+                            target: AssignmentTarget::PointerDeref(Box::new(ptr_deref)),
+                            value: rhs
+                        })
+                    },
+
                     ASTNode::VariableExpression { name } => {
                         let var_name = name.lexeme.to_string();
 
@@ -719,8 +805,8 @@ impl Analyzer {
                 let valid = match (&expr.ty, &target_type) {
                     (t1, t2) if t1 == t2 => true,
 
-                    // --- 2. Float <-> Int (Essential for Ray Tracing) ---
-                    (Type::F64, Type::I64) => true, // write_color (3.5 -> 3)
+                    // --- 2. Float <-> Int
+                    (Type::F64, Type::I64) => true,
                     (Type::I64, Type::F64) => true, // math mixing (i as f64)
                     (Type::F64, Type::I32) => true,
                     (Type::I32, Type::F64) => true,
@@ -737,17 +823,17 @@ impl Analyzer {
                     (Type::F32, Type::F64) => true, // Promote
                     (Type::F64, Type::F32) => true, // Demote (lossy)
 
-                    // --- 5. Unsigned/Byte Support (Crucial for Images/PPM) ---
-                    (Type::F64, Type::U8)  => true, // The "perfect" cast for write_color (255.99 -> 255u8)
+                    // --- 5. Unsigned/Byte Support
+                    (Type::F64, Type::U8)  => true, 
                     (Type::I64, Type::U8)  => true, // i64 -> u8
                     (Type::U8,  Type::I64) => true, // u8 -> i64
                     (Type::U8,  Type::F64) => true, // u8 -> f64
 
                     // --- 6. Indexing (usize) ---
-                    // Ray tracers do lots of array access. You often calculate an index as i64
-                    // but need to cast it to usize to access an array.
                     (Type::I64, Type::USIZE) => true,
                     (Type::USIZE, Type::I64) => true,
+                    (Type::POINTER(inner), Type::POINTER(_)) if **inner == Type::U8 => true,
+                    (Type::POINTER(_), Type::POINTER(_)) => true,
 
                     _ => false,
                 };
@@ -928,7 +1014,7 @@ impl Analyzer {
                 })
             },
 
-            ASTNode::MethodCallExpression { object, method, arguments } => {
+            ASTNode::MethodCallExpression { object, method, arguments, generic_args } => {
                 let lhs = self.lower_expression(*object)?;
                 let method_name = method.lexeme;
                 
@@ -955,7 +1041,7 @@ impl Analyzer {
                     .ok_or(self.make_error(format!("method '{}' not found on type '{}'", method_name, struct_name), &method))?;
 
                 let (param_types, return_type) = match symbol {
-                    Symbol::Function { params, return_type } => (params.clone(), return_type.clone()),
+                    Symbol::Function { params, return_type, .. } => (params.clone(), return_type.clone()),
                     _ => return Err(self.make_error(format!("'{}' is not a function", namespaced_name), &method)),
                 };
                 
@@ -1019,14 +1105,20 @@ impl Analyzer {
                         ));
                     }
                 }
+
+                let mut lowered_generics = Vec::new();
+                for node in generic_args {
+                    lowered_generics.push(self.lower_type(node)?);
+                }
                 
                 Ok(Expr {
-                    kind: ExprKind::Call { callee: namespaced_name, args },
+                    kind: ExprKind::Call { callee: namespaced_name, args, generic_args: lowered_generics },
                     ty: return_type
                 })
             },
 
-            ASTNode::FunctionCallExpression { name, mut arguments } => {
+            ASTNode::FunctionCallExpression { name, mut arguments, generic_args } => {
+
                 let mut call_name = name.lexeme.to_string();
 
                 if call_name.contains("::") {
@@ -1088,7 +1180,13 @@ impl Analyzer {
                     }
                 }
 
-                self.lower_call_logic(call_name, name, arguments)
+                let mut lowered_generics = Vec::new();
+                for node in generic_args {
+                    lowered_generics.push(self.lower_type(node)?);
+                }
+
+
+                self.lower_call_logic(call_name, name, arguments, lowered_generics)
             }
 
             ASTNode::StructInitializer { name, fields } => {
@@ -1236,14 +1334,25 @@ impl Analyzer {
     }
 
     fn lower_function(&mut self, node: ASTNode) -> Result<Function, HydraError<'static>> {
-        if let ASTNode::FunctionDeclaration { name, parameters, return_type: rt, body } = node {
+        if let ASTNode::FunctionDeclaration { 
+            name, 
+            generic_params, 
+            parameters, 
+            return_type: rt, 
+            body, 
+            is_extern 
+        } = node 
+        {
+            self.enter_scope();
+
+            for gp in &generic_params {
+                self.scope.define(gp.lexeme.to_string(), Symbol::Struct { fields: Vec::new() }).ok();
+            }
+
             let return_type = self.lower_type(*rt)?;
             let prev_return_type = self.current_return_type.replace(return_type.clone());
 
             let mut ir_params = Vec::new();
-
-            self.enter_scope();
-
             for (param_name, param_type_node) in &parameters {
                 let ty = self.lower_type(*param_type_node.clone())?;
 
@@ -1259,14 +1368,15 @@ impl Analyzer {
             }
 
             self.leave_scope();
-
             self.current_return_type = prev_return_type;
 
             Ok(Function { 
                 name: name.lexeme.to_string(), 
                 params: ir_params, 
                 return_type, 
-                body: Block { stmts } 
+                body: Block { stmts },
+                is_extern,
+                generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect(),
             })
         } else {
             Err(self.make_generic_error("expected function".to_string()))
@@ -1445,6 +1555,18 @@ impl Analyzer {
                 Ok(Type::CONST_REF(Box::new(inner_type)))
             }
 
+            ASTNode::Pointer { inner } => {
+                let inner_type = self.lower_type(*inner)?;
+                Ok(Type::POINTER(Box::new(inner_type)))
+            }
+
+            ASTNode::GenericType { base, args } => {
+                // just resolve for now
+                // monorphized based on args
+                // once proof of concept
+                self.lower_type(*base)
+            }
+
             ASTNode::TypeIdentifier { type_token } => {
                 match type_token.lexeme {
                     "i8" => Ok(Type::I8), 
@@ -1483,7 +1605,7 @@ impl Analyzer {
                 match size_token.token_type {
                     TokenType::IntLiteral(n) => Ok(Type::ARRAY(Box::new(inner), n as usize)),
 
-                    TokenType::AnySize => Ok(Type::INFERRED_ARRAY(Box::new(inner))),
+                    TokenType::ANYSIZE => Ok(Type::INFERRED_ARRAY(Box::new(inner))),
 
                     _ => Err(self.make_error("array size must be int or 'anysize'".to_string(), &size_token))
                 }
@@ -1598,7 +1720,9 @@ impl Analyzer {
         }
     }
 
-    fn lower_call_logic(&mut self, call_name: String, token: Token, arguments: Vec<ASTNode>) 
+    fn lower_call_logic(&mut self, call_name: String, token: Token, 
+        arguments: Vec<ASTNode>, generic_args: Vec<Type>
+    ) 
         -> Result<Expr, HydraError<'static>> 
     {
         if call_name == "println" {
@@ -1612,7 +1736,8 @@ impl Analyzer {
             return Ok(Expr {
                 kind: ExprKind::Call { 
                     callee: "println".to_string(), 
-                    args 
+                    args,
+                    generic_args
                 },
                 ty: Type::VOID // println always returns void
             });
@@ -1622,7 +1747,7 @@ impl Analyzer {
             .ok_or(self.make_error(format!("undefined function: {}", call_name), &token))?;
 
         let (param_types, return_type) = match symbol {
-            Symbol::Function { params, return_type } => (params.clone(), return_type.clone()),
+            Symbol::Function { params, return_type, .. } => (params.clone(), return_type.clone()),
             _ => return Err(self.make_error(format!("'{}' is not a function", call_name), &token)),
         };
 
@@ -1666,7 +1791,7 @@ impl Analyzer {
         }
 
         Ok(Expr {
-            kind: ExprKind::Call { callee: call_name, args },
+            kind: ExprKind::Call { callee: call_name, args, generic_args},
             ty: return_type
         })
     }
