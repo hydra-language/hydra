@@ -52,6 +52,8 @@ pub enum AssignmentTarget {
         member: String,
         index: u32,
     },
+
+    PointerDeref(Box<Expr>),
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +150,10 @@ impl AssignmentTarget {
 
             AssignmentTarget::MemberAccess { object, member, .. } => {
                 format!("{}.{}", object.pretty_print(indent), member)
+            },
+
+            AssignmentTarget::PointerDeref(expr) => {
+                format!("*{}", expr.pretty_print(indent))
             },
         }
     }
