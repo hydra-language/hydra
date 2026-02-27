@@ -1,6 +1,6 @@
 use lexer::{Token, TokenType};
 use crate::{ASTNode, ParserError, loader::ExternalLoader};
-use errors::{generic::GenericError, expected_found::ExpectedFoundError};
+use errors::{expected_found::ExpectedFoundError, generic::{self, GenericError}};
 
 #[derive(PartialEq, PartialOrd, Clone, Copy)]
 pub enum StructSection {
@@ -39,7 +39,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         while !self.is_at_end() {
             match self.parse_declaration() {
-                Ok(stmt) => statements.push(stmt),
+                Ok(stmts) => statements.extend(stmts),
                 Err(e) => {
                     self.errors.push(e);
                     self.synchronize();
@@ -67,8 +67,8 @@ impl<'a, 'b> Parser<'a, 'b> {
 
             // If we see a keyword that starts a statement, we assume we are back on track
             match self.peek().token_type {
-                TokenType::Function | TokenType::Let | TokenType::Const | 
-                TokenType::For | TokenType::If | TokenType::While | TokenType::Return => return,
+                TokenType::FN | TokenType::LET | TokenType::CONST | 
+                TokenType::FOR | TokenType::IF | TokenType::WHILE | TokenType::RETURN => return,
                 
                 _ => {}
             }
@@ -81,34 +81,38 @@ impl<'a, 'b> Parser<'a, 'b> {
     // 3. DECLARATION DISPATCHER
     // ========================================================================
 
-    fn parse_declaration(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
-        if self.match_token(TokenType::Include) {
+    fn parse_declaration(&mut self) -> Result<Vec<ASTNode<'a>>, ParserError<'a>> {
+        if self.match_token(TokenType::INCLUDE) {
             return self.parse_include();
         }
 
-        if self.match_token(TokenType::Let) || self.match_token(TokenType::Const) {
+        let stmt = if self.match_token(TokenType::LET) || self.match_token(TokenType::CONST) {
             self.parse_variable()
-        } else if self.match_token(TokenType::Function) {
+        } else if self.match_token(TokenType::FN) {
             self.parse_function()
-        } else if self.match_token(TokenType::Struct) {
+        } else if self.match_token(TokenType::STRUCT) {
             self.parse_struct()
-        } else if self.match_token(TokenType::Return) {
+        } else if self.match_token(TokenType::RETURN) {
             self.parse_return()
-        } else if self.match_token(TokenType::If) {
+        } else if self.match_token(TokenType::IF) {
             self.parse_if()
-        } else if self.match_token(TokenType::For) {
+        } else if self.match_token(TokenType::FOR) {
             self.parse_for()
-        } else if self.match_token(TokenType::ForEach) {
+        } else if self.match_token(TokenType::FOREACH) {
             self.parse_foreach()
-        } else if self.match_token(TokenType::While) {
+        } else if self.match_token(TokenType::WHILE) {
             self.parse_while()
-        } else if self.match_token(TokenType::Break) {
+        } else if self.match_token(TokenType::BREAK) {
             self.parse_break()
-        } else if self.match_token(TokenType::Continue) {
+        } else if self.match_token(TokenType::CONTINUE) {
             self.parse_continue()
+        } else if self.match_token(TokenType::EXTERN) {
+            self.parse_extern()
         } else {
             self.parse_statement()
-        }
+        }?;
+
+        Ok(vec![stmt])
     }
 
     // ========================================================================
@@ -116,8 +120,8 @@ impl<'a, 'b> Parser<'a, 'b> {
     // ========================================================================
 
     fn parse_variable(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
-        let is_const = self.previous().token_type == TokenType::Const;
-        let name = self.consume(TokenType::Identifier("".to_string()), "variable name")?.clone();
+        let is_const = self.previous().token_type == TokenType::CONST;
+        let name = self.consume(TokenType::IDENTIFIER("".to_string()), "variable name")?.clone();
 
         let mut type_annotation = None;
         
@@ -150,7 +154,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn parse_break(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         let mut condition = None;
 
-        if self.match_token(TokenType::If) {
+        if self.match_token(TokenType::IF) {
             let has_paren = self.match_token(TokenType::LeftParen);
 
             condition = Some(Box::new(self.parse_expression()?));
@@ -168,7 +172,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn parse_continue(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         let mut condition = None;
 
-        if self.match_token(TokenType::If) {
+        if self.match_token(TokenType::IF) {
             let has_paren = self.match_token(TokenType::LeftParen);
 
             condition = Some(Box::new(self.parse_expression()?));
@@ -197,11 +201,11 @@ impl<'a, 'b> Parser<'a, 'b> {
             return Vec::new();
         }
 
-        let mut stmts = Vec::new();
+        let mut statements = Vec::new();
 
         while !self.check(TokenType::RightBrace) && !self.is_at_end() {
             match self.parse_declaration() {
-                Ok(stmt) => stmts.push(stmt),
+                Ok(stmts) => statements.extend(stmts),
                 Err(e) => {
                     self.errors.push(e);
                     self.synchronize();
@@ -213,7 +217,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             self.errors.push(e);
         }
 
-        stmts
+        statements
     }
 
     fn parse_if(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
@@ -229,8 +233,8 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         let then_branch = self.parse_block();
 
-        let else_branch = if self.match_token(TokenType::Else) {
-            if self.match_token(TokenType::If) {
+        let else_branch = if self.match_token(TokenType::ELSE) {
+            if self.match_token(TokenType::IF) {
                 let nested_if = self.parse_if()?;
                 Some(vec![nested_if])
             } else {
@@ -270,8 +274,8 @@ impl<'a, 'b> Parser<'a, 'b> {
         let has_paren = self.match_token(TokenType::LeftParen);
 
         if !has_paren { self.allow_struct = false; }
-        let variable = self.consume(TokenType::Identifier("".to_string()), "loop variable name")?.clone();
-        self.consume(TokenType::In, "'in' after loop variable")?;
+        let variable = self.consume(TokenType::IDENTIFIER("".to_string()), "loop variable name")?.clone();
+        self.consume(TokenType::IN, "'in' after loop variable")?;
 
         let start = self.parse_expression()?;
 
@@ -308,8 +312,8 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn parse_foreach(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         let has_paren = self.match_token(TokenType::LeftParen);
 
-        let item_name = self.consume(TokenType::Identifier("".to_string()), "item name")?.clone();
-        self.consume(TokenType::In, "'in' after item name")?;
+        let item_name = self.consume(TokenType::IDENTIFIER("".to_string()), "item name")?.clone();
+        self.consume(TokenType::IN, "'in' after item name")?;
 
         let iterable = self.parse_expression()?;
 
@@ -327,13 +331,16 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn parse_function(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
-        let name = self.consume(TokenType::Identifier("".to_string()), "function name")?.clone();
+        let name = self.consume(TokenType::IDENTIFIER("".to_string()), "function name")?.clone();
+
+        let generic_params = self.parse_generic_params()?;
+
         self.consume(TokenType::LeftParen, "'(' after function name")?;
 
         let mut parameters = Vec::new();
         if !self.check(TokenType::RightParen) {
             loop {
-                let param_name = self.consume(TokenType::Identifier("".to_string()), "parameter name")?.clone();
+                let param_name = self.consume(TokenType::IDENTIFIER("".to_string()), "parameter name")?.clone();
                 self.consume(TokenType::Colon, "':' after parameter name")?;
 
                 let param_type = self.parse_type()?;
@@ -347,15 +354,56 @@ impl<'a, 'b> Parser<'a, 'b> {
         self.consume(TokenType::RightParen, "')' after parameters")?;
         self.consume(TokenType::Arrow, "'->' after ')'")?;
 
-        let return_type = self.parse_type()?.clone();
+        let return_type = self.parse_type()?;
 
         let body = self.parse_block();
 
         Ok(ASTNode::FunctionDeclaration {
             name: name.clone(),
+            generic_params,
             parameters,
-            return_type: return_type.clone(),
+            return_type,
             body,
+            is_extern: false,
+        })
+    }
+
+    fn parse_extern(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        self.consume(TokenType::FN, "expected 'fn' after 'extern'")?;
+
+        let name = self.consume(TokenType::IDENTIFIER("".to_string()), "function name")?.clone();
+        let generic_params = self.parse_generic_params()?;
+
+        self.consume(TokenType::LeftParen, "'(' after function name")?;
+
+        let mut parameters = Vec::new();
+        if !self.check(TokenType::RightParen) {
+            loop {
+                let param_name = self.consume(TokenType::IDENTIFIER("".to_string()), "parameter name")?.clone();
+                self.consume(TokenType::Colon, "':' after parameter name")?;
+                let param_type = self.parse_type()?;
+
+                parameters.push((param_name, param_type));
+
+                if !self.match_token(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.consume(TokenType::RightParen, "')' after parameters")?;
+        self.consume(TokenType::Arrow, "-> after ')'")?;
+
+        let return_type = self.parse_type()?;
+        self.consume(TokenType::Semicolon, "expected ';' after extern declaration")?;
+
+        Ok(ASTNode::FunctionDeclaration {
+            name,
+            generic_params,
+            parameters,
+            return_type,
+            body: Vec::new(),
+            is_extern: true,
         })
     }
 
@@ -363,6 +411,9 @@ impl<'a, 'b> Parser<'a, 'b> {
         -> Result<ASTNode<'a>, ParserError<'a>> 
     {
         let name = self.consume_identifier("expected function name")?;
+
+        let generic_params = self.parse_generic_params()?;
+
         self.consume(TokenType::LeftParen, "expected '(' after function name")?;
 
         let mut params = Vec::new();
@@ -372,7 +423,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
                 if is_shorthand {
                     self.advance(); // consume '&'
-                    let is_const = self.match_token(TokenType::Const);
+                    let is_const = self.match_token(TokenType::CONST);
 
                     let self_token = self.consume_identifier("expected 'self'")?;
                     if self_token.lexeme != "self" {
@@ -424,15 +475,35 @@ impl<'a, 'b> Parser<'a, 'b> {
         let body = self.parse_block();
 
         Ok(ASTNode::FunctionDeclaration { 
-            name, 
+            name,
+            generic_params,
             parameters: params, 
             return_type, 
-            body 
+            body,
+            is_extern: false,
         })
+    }
+
+    fn parse_generic_params(&mut self) -> Result<Vec<Token<'a>>, ParserError<'a>> {
+        let mut params = Vec::new();
+        if self.match_token(TokenType::LeftAngle) { // <
+            loop {
+                params.push(self.consume_identifier("expected generic parameter name")?);
+                
+                if self.match_token(TokenType::RightAngle) { // >
+                    break;
+                }
+                self.consume(TokenType::Comma, "expected comma between generic parameters")?;
+            }
+        }
+        Ok(params)
     }
 
     fn parse_struct(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         let name = self.consume_identifier("expected struct name")?;
+
+        let generic_params = self.parse_generic_params()?;
+
         self.consume(TokenType::LeftBrace, "expected '{' before struct body")?;
 
         let mut constants = Vec::new();
@@ -442,7 +513,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         let mut current_section = StructSection::NONE;
 
         while !self.check(TokenType::RightBrace) && !self.is_at_end() {
-            if self.match_token(TokenType::Const) {
+            if self.match_token(TokenType::CONST) {
                 if current_section > StructSection::CONSTANTS {
                     return Err(ParserError::GENERIC(Box::new(GenericError {
                         code: "E005",
@@ -469,7 +540,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     type_annotation: Some(const_type),
                     initializer: Box::new(value),
                 });
-            } else if self.match_token(TokenType::Function) {
+            } else if self.match_token(TokenType::FN) {
                 current_section = StructSection::METHODS;
 
                 let struct_name = name.lexeme;
@@ -500,6 +571,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         Ok(ASTNode::StructDeclaration {
             name,
+            generic_params,
             constants,
             fields,
             methods,
@@ -562,7 +634,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
 
         if self.match_token(TokenType::Ampersand) {
-            let is_const = self.match_token(TokenType::Const);
+            let is_const = self.match_token(TokenType::CONST);
             let inner = self.parse_type()?; // Recursive call
             
             return if is_const {
@@ -572,20 +644,47 @@ impl<'a, 'b> Parser<'a, 'b> {
             };
         }
 
+        if self.match_token(TokenType::Star) {
+            let inner = self.parse_type()?;
+            
+            return Ok(Box::new(ASTNode::Pointer { inner }));
+        }
+
         let current_token = self.peek();
         use TokenType::*;
         match &current_token.token_type {
-            Const => {
+            CONST => {
                 self.advance();
                 self.parse_type()
             }
 
-            Identifier(_) |
-            ISize | I8 | I16 | I32 | I64 | 
-            USize | U8 | U16 | U32 | U64 |
-            F32 | F64 | Char | Bool => {
+            IDENTIFIER(_) |
+            ISIZE | I8 | I16 | I32 | I64 | 
+            USIZE | U8 | U16 | U32 | U64 |
+            F32 | F64 | CHAR | BOOL => {
                 let type_token = self.advance().clone();
-                Ok(Box::new(ASTNode::TypeIdentifier { type_token }))
+                let mut type_node = ASTNode::TypeIdentifier { type_token };
+
+                if self.match_token(TokenType::LeftAngle) {
+                    let mut args = Vec::new();
+
+                    loop {
+                        args.push(*self.parse_type()?);
+
+                        if self.match_token(TokenType::RightAngle) {
+                            break;
+                        }
+
+                        self.consume(TokenType::Comma, "expected ',' between generic types")?;
+                    }
+
+                    type_node = ASTNode::GenericType { 
+                        base: Box::new(type_node), 
+                        args 
+                    };
+                }
+
+                Ok(Box::new(type_node))
             },
 
             _ => Err(ParserError::GENERIC(Box::new(GenericError {
@@ -790,8 +889,8 @@ impl<'a, 'b> Parser<'a, 'b> {
                     }
                 };
             
-                expr = self.finish_parse_fn_call(token_name)?;
-            } else if self.match_token(TokenType::As) {
+                expr = self.finish_parse_fn_call(token_name, Vec::new())?;
+            } else if self.match_token(TokenType::AS) {
                 let target = self.parse_type()?;
 
                 expr = ASTNode::CastExpression {
@@ -799,22 +898,68 @@ impl<'a, 'b> Parser<'a, 'b> {
                     target: Box::new(*target),
                 };
             } else if self.match_token(TokenType::DoubleColon) {
-                let method_name = self.consume_identifier("method name after '::'")?;
+                if self.match_token(TokenType::LeftAngle) {
+                    let mut generic_args = Vec::new();
 
-                if self.check(TokenType::LeftParen) {
-                    self.advance();
+                    loop {
+                        generic_args.push(*self.parse_type()?);
+                        
+                        if self.match_token(TokenType::RightAngle) {
+                            break;
+                        }
 
+                        self.consume(TokenType::Comma, "expected ',' in generic args")?;
+                    }
+
+                    self.consume(TokenType::LeftParen, "expected '(' after generic args")?;
+                    
                     let args = self.finish_parse_fn_call_args()?;
-                    expr = ASTNode::MethodCallExpression {
-                        object: Box::new(expr),
-                        method: method_name,
-                        arguments: args,
+
+                    expr = match expr {
+                        ASTNode::VariableExpression { name } => {
+                            ASTNode::FunctionCallExpression {
+                                name,
+                                arguments: args,
+                                generic_args,
+                            }
+                        },
+
+                        ASTNode::MemberExpression { object, property } => {
+                            ASTNode::MethodCallExpression {
+                                object,
+                                method: property,
+                                arguments: args,
+                                generic_args,
+                            }
+                        },
+
+                        _ => return Err(ParserError::GENERIC(Box::new(GenericError {
+                            code: "E007",
+                            message: "generic call ::<T> must follow a name or member access".to_string(),
+                            token: self.previous().clone(),
+                            help: None
+                        })))
                     };
                 } else {
-                    expr = ASTNode::MemberExpression {
-                        object: Box::new(expr), 
-                        property: method_name,
-                    };
+                    let method_name = self.consume_identifier("method name after '::'")?;
+
+                    if self.check(TokenType::LeftParen) {
+                        self.advance();
+
+                        let args = self.finish_parse_fn_call_args()?;
+
+                        expr = ASTNode::MethodCallExpression {
+                            object: Box::new(expr),
+                            method: method_name,
+                            arguments: args,
+                            generic_args: Vec::new(),
+                        };
+                    } else {
+                        expr = ASTNode::MemberExpression {
+                            object: Box::new(expr),
+                            property: method_name
+                        };
+                    }
                 }
             } else if self.match_token(TokenType::Dot) {
                 let name = self.consume_identifier("property name after '.'")?;
@@ -842,7 +987,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     token,
                 };
             } else if self.match_token(TokenType::Dot) {
-                let name = if let TokenType::Identifier(_) = self.peek().token_type {
+                let name = if let TokenType::IDENTIFIER(_) = self.peek().token_type {
                     self.advance().clone()
                 } else {
                     return Err(ParserError::GENERIC(Box::new(GenericError {
@@ -865,12 +1010,15 @@ impl<'a, 'b> Parser<'a, 'b> {
         Ok(expr)
     }
 
-    fn finish_parse_fn_call(&mut self, name: Token<'a>) -> Result<ASTNode<'a>, ParserError<'a>> {
+    fn finish_parse_fn_call(&mut self, name: Token<'a>, generic_args: Vec<ASTNode<'a>>) 
+        -> Result<ASTNode<'a>, ParserError<'a>> 
+    {
         let arguments = self.finish_parse_fn_call_args()?;
 
         Ok(ASTNode::FunctionCallExpression {
             name, 
-            arguments 
+            arguments,
+            generic_args
         })
     }
 
@@ -905,17 +1053,19 @@ impl<'a, 'b> Parser<'a, 'b> {
                 })
             }
 
-            AnySize => {
+            ANYSIZE => {
                 self.advance();
                 Ok(ASTNode::Expression {
                     token: self.previous().clone(),
                 })
             }
 
-            Identifier(_) => {
+            IDENTIFIER(_) => {
                 let mut name = self.advance().clone().lexeme.to_string();
 
-                while self.match_token(TokenType::DoubleColon) {
+                while self.check(TokenType::DoubleColon) && !self.check_at(1, TokenType::LeftAngle) {
+                    self.advance();
+
                     let member = self.consume_identifier("expected name after '::'")?;
                     name = format!("{}::{}", name, member.lexeme);
                 }
@@ -986,7 +1136,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         })
     }
 
-    fn parse_include(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+    fn parse_include(&mut self) -> Result<Vec<ASTNode<'a>>, ParserError<'a>> {
         let module_name = self.consume_identifier("expected module name")?.lexeme;
         self.consume(TokenType::DoubleColon, "expected '::' after module name")?;
 
@@ -1004,20 +1154,39 @@ impl<'a, 'b> Parser<'a, 'b> {
             }))
         })?;
 
+        let mut included_nodes = Vec::new();
+        let mut found_item = false;
+
         for node in external_declarations {
             match node {
-                ASTNode::StructDeclaration { name, .. } if name.lexeme == item_name => return Ok(node.clone()),
-                ASTNode::FunctionDeclaration { name, .. } if name.lexeme == item_name => return Ok(node.clone()),
+                ASTNode::StructDeclaration { name, .. } if name.lexeme == item_name => {
+                    included_nodes.push(node.clone());
+                    found_item = true;
+                }
+
+                ASTNode::FunctionDeclaration { name, .. } if name.lexeme == item_name => {
+                    included_nodes.push(node.clone());
+                    found_item = true;
+                }
+
+                ASTNode::FunctionDeclaration { is_extern: true, .. } => {
+                    included_nodes.push(node.clone());
+                }
+
                 _ => continue,
             }
         }
 
-        Err(ParserError::GENERIC(Box::new(GenericError {
-            code: "E006",
-            message: format!("item '{}' not found in '{}'", item_name, module_name),
-            token: self.previous().clone(),
-            help: None,
-        })))
+        if !found_item {
+            return Err(ParserError::GENERIC(Box::new(GenericError {
+                code: "E006",
+                message: format!("item '{}' not found in '{}'", item_name, module_name),
+                token: self.previous().clone(),
+                help: None,
+            })));
+        }
+
+        Ok(included_nodes)
     }
 
     // ========================================================================
@@ -1047,7 +1216,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn consume_identifier(&mut self, expected: &str) -> Result<Token<'a>, ParserError<'a>> {
-        if let TokenType::Identifier(_) = self.peek().token_type {
+        if let TokenType::IDENTIFIER(_) = self.peek().token_type {
             Ok(self.advance().clone())
         } else {
             Err(ParserError::EXPECTED_FOUND(Box::new(ExpectedFoundError {
@@ -1094,7 +1263,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         use TokenType::*;
         match (&self.tokens[self.current].token_type, &token) {
-            (Identifier(_), Identifier(_)) => true,
+            (IDENTIFIER(_), IDENTIFIER(_)) => true,
             (IntLiteral(_), IntLiteral(_)) => true,
             (FloatLiteral(_), FloatLiteral(_)) => true,
             (StringLiteral(_), StringLiteral(_)) => true,
