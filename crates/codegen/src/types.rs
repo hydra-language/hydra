@@ -47,7 +47,11 @@ pub fn compile_type<'c>(context: &'c Context, target_data: &TargetData, ty: &Typ
             basic_inner.ptr_type(AddressSpace::default()).into()
         }
 
-        // TODO: structs
+        Type::POINTER(inner) => {
+            let llvm_inner = compile_type(context, target_data, inner);
+            llvm_inner.ptr_type(inkwell::AddressSpace::default()).into()
+        }
+
         _ => panic!("codegen not yet implemented for type {:?}", ty),
     }
 }
