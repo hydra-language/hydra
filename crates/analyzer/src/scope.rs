@@ -11,6 +11,7 @@ pub enum Symbol {
     Function {
         params: Vec<Type>,
         return_type: Type,
+        generic_params: Vec<String>,
     },
 
     Struct {
