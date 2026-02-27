@@ -1,4 +1,4 @@
-use inkwell::{FloatPredicate, types::BasicTypeEnum, values::{BasicValue, BasicValueEnum, PointerValue}};
+use inkwell::{AddressSpace, FloatPredicate, types::BasicTypeEnum, values::{BasicValue, BasicValueEnum, PointerValue}};
 use inkwell::types::BasicType;
 use ir::{expr::{BinaryOp, Expr, ExprKind, UnaryOp}, types::Type};
 use crate::{CodeGen, types::compile_type};
@@ -352,7 +352,58 @@ impl<'c> CodeGen<'c> {
                 }
             }
 
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call { callee, args, generic_args} => {
+                if callee == "__intrinsic_layout_new" {
+                    let target_type = generic_args.first().expect("Layout::new requires a generic type <T>");
+
+                    let llvm_type = self.compile_type(target_type);
+
+                    let size_val = llvm_type.size_of()
+                        .expect("cannot calculate size of opaque type");
+
+                    let layout_struct_type = self.module.get_struct_type("Layout")
+                        .expect("struct Layout must be defined");
+
+                    let mut layout_val = layout_struct_type.get_undef();
+
+                    layout_val = self.builder.build_insert_value(layout_val, size_val, 0, "layout_init")
+                        .unwrap().into_struct_value();
+
+                    return Ok(layout_val.into());
+                }
+
+                if callee == "__intrinsic_alloc" {
+                    let size_val = self.compile_expr(&args[0])?.into_int_value();
+
+                    let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
+                        let i8_ptr = self.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+                        let fn_type = i8_ptr.fn_type(&[self.context.i64_type().into()], false);
+
+                        self.module.add_function("malloc", fn_type, None)
+                    });
+
+                    let result = self.builder.build_call(malloc_fn, &[size_val.into()], "malloc_ptr")
+                        .try_as_basic_value().left().unwrap();
+
+                    return Ok(result);
+                }
+
+                if callee == "__intrinsic_dealloc" {
+                    let ptr_val = self.compile_expr(&args[0])?.into_pointer_value();
+
+                    let free_fn = self.module.get_function("free").unwrap_or_else(|| {
+                        let fn_type = self.context.void_type().fn_type(
+                            &[self.context.i8_type().ptr_type(AddressSpace::default()).into()],
+                            false
+                        );
+                        self.module.add_function("free", fn_type, None)
+                    });
+
+                    self.builder.build_call(free_fn, &[ptr_val.into()], "");
+
+                    return Ok(self.context.i32_type().const_zero().into());
+                }
+
                 if callee == "println" {
                     return self.compile_println(args);
                 }
@@ -525,6 +576,27 @@ impl<'c> CodeGen<'c> {
             }
 
             _ => Err(format!("expression type {:?} is not a valid global constant", expr.kind))
+        }
+    }
+
+    pub fn compile_type(&self, ty: &Type) -> BasicTypeEnum<'c> {
+        match ty {
+            Type::I32 => self.context.i32_type().into(),
+            Type::I64 => self.context.i64_type().into(),
+            Type::F64 => self.context.f64_type().into(),
+            Type::BOOL => self.context.bool_type().into(),
+            
+            Type::REF(inner) | Type::CONST_REF(inner) => {
+                let inner_llvm = self.compile_type(inner);
+                inner_llvm.ptr_type(inkwell::AddressSpace::default()).into()
+            },
+            
+            Type::STRUCT(name) => {
+                let struct_ty = self.module.get_struct_type(name).expect("struct not found");
+                struct_ty.into()
+            },
+
+             _ => panic!("type compilation not implemented for {:?}", ty),
         }
     }
 
