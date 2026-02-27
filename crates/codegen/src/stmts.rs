@@ -78,7 +78,12 @@ impl<'c> CodeGen<'c> {
                                 .map_err(|_| "llvm gep failed: index out of bounds".to_string())?;
 
                         self.builder.build_store(field_ptr, val);
-                    }
+                    },
+
+                    AssignmentTarget::PointerDeref(ptr_expr) => {
+                        let addr = self.compile_expr(ptr_expr)?.into_pointer_value();
+                        self.builder.build_store(addr, val);
+                    },
                 }
 
                 Ok(())
