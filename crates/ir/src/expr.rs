@@ -37,7 +37,8 @@ pub enum ExprKind {
 
     Call {
         callee: String,
-        args: Vec<Expr>
+        args: Vec<Expr>,
+        generic_args: Vec<Type>,
     },
 
     Cast {
@@ -125,7 +126,7 @@ impl ExprKind {
                 expr.pretty_print(indent)
             },
             
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call { callee, args, generic_args: _ } => {
                 if args.is_empty() {
                     return format!("{}()", callee);
                 }
