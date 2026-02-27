@@ -1,4 +1,3 @@
-use ir::types::Type;
 use lexer::Token;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -12,9 +11,11 @@ pub enum ASTNode<'a> {
 
     FunctionDeclaration {
         name: Token<'a>,
+        generic_params: Vec<Token<'a>>,
         parameters: Vec<(Token<'a>, Box<ASTNode<'a>>)>,
         return_type: Box<ASTNode<'a>>,
         body: Vec<ASTNode<'a>>,
+        is_extern: bool,
     },
 
     ReturnStatement {
@@ -32,6 +33,7 @@ pub enum ASTNode<'a> {
     FunctionCallExpression {
         name: Token<'a>,
         arguments: Vec<ASTNode<'a>>,
+        generic_args: Vec<ASTNode<'a>>,
     },
 
     BinaryExpression {
@@ -121,6 +123,7 @@ pub enum ASTNode<'a> {
 
     StructDeclaration {
         name: Token<'a>,
+        generic_params: Vec<Token<'a>>,
         constants: Vec<ASTNode<'a>>,
         fields: Vec<(Token<'a>, Box<ASTNode<'a>>)>,
         methods: Vec<ASTNode<'a>>,
@@ -135,6 +138,7 @@ pub enum ASTNode<'a> {
         object: Box<ASTNode<'a>>,
         method: Token<'a>,
         arguments: Vec<ASTNode<'a>>,
+        generic_args: Vec<ASTNode<'a>>,
     },
 
     CastExpression {
@@ -142,7 +146,20 @@ pub enum ASTNode<'a> {
         target: Box<ASTNode<'a>>,
     },
 
-    Reference { inner: Box<ASTNode<'a>> },
+    Reference { 
+        inner: Box<ASTNode<'a>> 
+    },
 
-    ConstReference { inner: Box<ASTNode<'a>> },
+    ConstReference { 
+        inner: Box<ASTNode<'a>> 
+    },
+
+    Pointer {
+        inner: Box<ASTNode<'a>>,
+    },
+
+    GenericType {
+        base: Box<ASTNode<'a>>,
+        args: Vec<ASTNode<'a>>,
+    },
 }
