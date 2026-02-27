@@ -1,12 +1,22 @@
 use std::{env, fs, path::{Path, PathBuf}, process::{self, Command}};
 
-use clap::{ArgAction, CommandFactory, Parser as ClapParser};
-use inkwell::context::Context;
+use clap::{CommandFactory, Parser as ClapParser, ValueEnum};
+use inkwell::{OptimizationLevel, context::Context};
 
 use lexer::Lexer;
 use parser::{loader::ExternalLoader, parser::Parser};
 use analyzer::Analyzer;
 use codegen::CodeGen;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum EmitStage {
+    Tokens,
+    Ast,
+    Hir,
+    Ir,
+    IrOpt,
+    Asm,
+}
 
 #[derive(ClapParser, Debug)]
 #[command(name = "hydrac", version = env!("CARGO_PKG_VERSION"))]
@@ -14,17 +24,11 @@ struct Cli {
     #[arg(value_name = "INPUT")]
     input: Option<String>,
 
-    #[arg(long, action = ArgAction::SetTrue, help = "emit tokens to a .tokens file")]
-    tokens: bool,
+    #[arg(long, value_enum, value_delimiter = ',', help = "emit up to a specific compilation stage")]
+    emit: Option<Vec<EmitStage>>,
 
-    #[arg(long, action = ArgAction::SetTrue, help = "emit ast nodes to a .nodes file")]
-    ast: bool,
-
-    #[arg(long, action = ArgAction::SetTrue, help = "emit typed ir to a .hir file")]
-    hir: bool,
-
-    #[arg(long, action = ArgAction::SetTrue, help = "emit llvm ir to a .ll file")]
-    ir: bool,
+    #[arg(long, help = "build with maximum optimizations")]
+    release: bool,
 
     #[arg(short, long, value_name = "OUTPUT", help = "specify name of output file")]
     output: Option<String>
@@ -32,6 +36,13 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
+    let emit_list: Vec<EmitStage> = cli.emit.clone().unwrap_or_default();
+
+    let opt_level = if cli.release {
+        OptimizationLevel::Aggressive
+    } else {
+        OptimizationLevel::None
+    };
 
     if cli.input.is_none() {
         Cli::command().print_help().unwrap();
@@ -64,182 +75,201 @@ fn main() {
     };
 
     let mut lexer = Lexer::new(&contents);
-    let tokens = match lexer.tokenize() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("lexer error: {}", e);
-            process::exit(1);
+    let tokens = lexer.tokenize().unwrap_or_else(|e| {
+        eprintln!("lexer error: {}", e);
+        process::exit(1);
+    });
+
+    if emit_list.contains(&EmitStage::Tokens) {
+        let fname = input_path.with_extension("tokens");
+
+        fs::write(&fname,tokens.iter()
+                .map(|t| format!("{:?}", t))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ).unwrap();
+
+        println!("info: tokens written to: {}", fname.display());
+
+        if cli.emit.is_some() { 
+            return; 
         }
-    };
 
-    if cli.tokens {
-        let token_output = tokens.iter()
-            .map(|t| format!("{:?}", t))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let token_filename = input_path.with_extension("tokens").to_string_lossy().into_owned();
-        if let Err(e) = fs::write(&token_filename, token_output) {
-            eprintln!("error: write to tokens file '{}' failed: {}", token_filename, e);
-            process::exit(1);
-        }
-
-        println!("info: tokens written to: {}", token_filename);
     }
+
+    // ---------------- PARSE ----------------
 
     let mut loader = ExternalLoader::new();
     let mut parser = Parser::new(tokens, &mut loader);
-    let ast = match parser.parse() {
-        Ok(ast) => ast,
-        Err(errors) => {
-            for error in errors {
-                error.report(&contents, &input);
-            }
-
-            process::exit(1);
+    let ast = parser.parse().unwrap_or_else(|errors| {
+        for e in errors {
+            e.report(&contents, input_path.to_str().unwrap());
         }
-    };
+        process::exit(1);
+    });
+        
+    if emit_list.contains(&EmitStage::Ast) {
+        let fname = input_path.with_extension("nodes");
+        fs::write(
+            &fname,
+            ast.iter()
+                .map(|n| format!("{:#?}", n))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        )
+            .unwrap();
+        println!("info: AST written to: {}", fname.display());
 
-    if cli.ast {
-        let ast_ouput = ast.iter()
-            .map(|node| format!("{:#?}", node))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        let ast_filename = input_path.with_extension("nodes").to_string_lossy().into_owned();
-        if let Err(e) = fs::write(&ast_filename, ast_ouput) {
-            eprintln!("error: writing nodes to ast file '{}' failed: {}", ast_filename, e);
-            process::exit(1);
+        if cli.emit.is_some() { 
+            return; 
         }
-
-        println!("info: ast nodes written to: {}", ast_filename);
     }
+
+    // ---------------- ANALYZE ----------------
 
     let mut analyzer = Analyzer::new();
-    let ir = match analyzer.analyze(ast) {
-        Ok(ir) => ir,
-        Err(errors) => {
-            for error in errors {
-                error.report(&contents, &input);
-            }
-
-            process::exit(1);
+    let hir = analyzer.analyze(ast).unwrap_or_else(|errors| {
+        for e in errors {
+            e.report(&contents, input_path.to_str().unwrap());
         }
-    };
+        process::exit(1);
+    });
 
-    if cli.hir {
-        let ir_output = ir.functions.iter()
-            .map(|func| format!("{}", func)) // Changed 'stmt' to 'func' for clarity
-            .collect::<Vec<_>>()
-            .join("\n\n");
+    if emit_list.contains(&EmitStage::Hir) {
+        let fname = input_path.with_extension("hir");
+        fs::write(
+            &fname,
+            hir.functions
+                .iter()
+                .map(|f| format!("{}", f))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        )
+            .unwrap();
 
-        let filename = input_path.with_extension("hir").to_string_lossy().into_owned();
+        println!("info: HIR written to: {}", fname.display());
 
-        if let Err(e) = fs::write(&filename, ir_output) {
-            eprintln!("error: writing ir to file '{}' failed: {}", filename, e);
-            process::exit(1);
+        if cli.emit.is_some() { 
+            return; 
         }
-
-        println!("info: hydra ir written to: {}", filename);
     }
+
+    // ---------------- CODEGEN ----------------
 
     let context = Context::create();
     let mut codegen = CodeGen::new(&context, &module_name);
 
-    if let Err(e) = codegen.generate(&ir) {
+    codegen.generate(&hir).unwrap_or_else(|e| {
         eprintln!("codegen error: {}", e);
-        process::exit(1);
-    }
-
-    let ll_file = input_path.with_extension("ll");
-    let ir_output = codegen.ir_to_string();
-    fs::write(&ll_file, ir_output).unwrap_or_else(|e| {
-        eprintln!("error: writing ir to file '{}' failed: {}", ll_file.display(), e);
         process::exit(1);
     });
 
-    if cli.ir {
-        println!("info: ir written to file: {}", ll_file.display());
-        return;
+    if emit_list.contains(&EmitStage::Ir) {
+        let fname = input_path.with_extension("pre.ll");
+
+        codegen.module.print_to_file(&fname).unwrap();
+        println!("info: LLVM ir written to: {}", fname.display());
+
+        if cli.emit.is_some() { 
+            return; 
+        }
+    }
+
+    if emit_list.contains(&EmitStage::IrOpt) {
+        CodeGen::run_ir_passes(&codegen.module);
+
+        let fname = input_path.with_extension("opt.ll");
+        codegen.module.print_to_file(&fname).unwrap();
+        println!("info: optimized LLVM ir written to: {}", fname.display());
+
+        if cli.emit.is_some() {
+            return;
+        }
+    }
+
+    if emit_list.contains(&EmitStage::Asm) {
+        let fname = input_path.with_extension("s");
+
+        CodeGen::emit_asm(&codegen.module, &codegen.triple, OptimizationLevel::None, &fname);
+        println!("info: assembly written to: {}", fname.display());
+
+        if cli.emit.is_some() {
+            return;
+        }
     }
 
     let obj_file = PathBuf::from(format!("{}.o", module_name));
-    let clang_status = Command::new("clang")
-        .args([ll_file.to_str().unwrap(), "-c", "-o", obj_file.to_str().unwrap(), "-O2", "-Wno-override-module"])
-        .status()
-        .expect("error: failed to run clang\nhelp: try installing a clang compiler");
 
-    if !clang_status.success() {
-        eprintln!("error: failed to run clang\nhelp: try installing a clang compiler");
-        process::exit(1);
+    if cli.release {
+        CodeGen::run_ir_passes(&codegen.module);
     }
 
-    let exe_path = env::current_exe().expect("error: failed to get current executable path");
+    CodeGen::emit_object(&codegen.module, &codegen.triple, opt_level, &obj_file);
 
-    let runtime_dir = exe_path.parent()
-        .expect("error: failed to locate directory hydrac is located in")
-        .join("../../runtime/arch");
-
-    let arch = env::consts::ARCH;
-
-    let start_s = match arch {
-        "x86_64" => runtime_dir.join("x86_64/start.s"),
-        "aarch64" => runtime_dir.join("arm/start.s"),
-        _ => {
-            eprintln!("error: unsupported architecture: '{}'", arch);
-            process::exit(1);
-        }
+    let exe_name = if cfg!(target_os = "windows") {
+        format!("{}.exe", module_name)
+    } else {
+        module_name.clone()
     };
 
-    let start_o = start_s.with_extension("o");
-
-    if !start_o.exists() || start_o.metadata().unwrap().modified().unwrap() 
-        < start_s.metadata().unwrap().modified().unwrap() 
-    {
-        let mut assemble_cmd = Command::new("as");
-        if arch == "x86_64" {
-            assemble_cmd.arg("--64");
-        }
-
-        let status = assemble_cmd.arg(&start_s)
+    if cfg!(target_os = "windows") {
+        Command::new("clang")
+            .arg(&obj_file)
             .arg("-o")
-            .arg(&start_o)
+            .arg(&exe_name)
             .status()
-            .expect("error: runtime linking failed");
+            .expect("failed to link");
+    } else {
+        let runtime_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../runtime/arch");        
 
-        if !status.success() {
-            eprintln!("error: runtime linking failed");
+        let start_s = match env::consts::ARCH {
+            "x86_64" => runtime_dir.join("x86_64/start.s"),
+            "aarch64" => runtime_dir.join("aarch64/start.s"),
+            _ => unreachable!(),
+        };
+
+        if !start_s.exists() {
+            eprintln!("runtime start file not found: {}", start_s.display());
             process::exit(1);
         }
-    }
 
-    let dynamic_linker = match arch {
-        "x86_64" => "/lib64/ld-linux-x86-64.so.2",
-        "aarch64" => "/lib/ld-linux-aarch64.so.1",
-        _ => unreachable!()
-    };
+        let start_o = start_s.with_extension("o");
 
-    let linker_status = Command::new("ld")
-        .arg("--pie")
-        .arg("-o")
-        .arg(&module_name)
-        .arg(&start_o)
-        .arg(&obj_file)
-        .arg("-dynamic-linker")
-        .arg(dynamic_linker)
-        .arg("-lc")
-        .status()
-        .expect("error: linking against libc failed");
+        let needs_rebuild = !start_o.exists()
+        || start_o.metadata().unwrap().modified().unwrap() 
+        < start_s.metadata().unwrap().modified().unwrap();
 
+        if needs_rebuild {
+            Command::new("as")
+                .arg(&start_s)
+                .arg("-o")
+                .arg(&start_o)
+                .status()
+                .expect("failed to assemble start.s");
+        }
 
-    if !linker_status.success() {
-        eprintln!("error: linking against libc failed");
-        process::exit(1);
-    }
+        let dynamic_linker = if env::consts::ARCH == "x86_64" { 
+            "/lib64/ld-linux-x86-64.so.2" 
+        } else { 
+            "/lib/ld-linux-aarch64.so.1" 
+        };
 
-    for file in [&obj_file, &ll_file, &start_o] {
-        if let Err(e) = fs::remove_file(file) {
-            eprintln!("warning: could not remove object file '{}': {}", file.display(), e);
+        Command::new("ld")
+            .arg("--pie")
+            .arg("-o")
+            .arg(&exe_name)
+            .arg(&start_o)
+            .arg(&obj_file)
+            .arg("-dynamic-linker")
+            .arg(dynamic_linker).arg("-lc")
+            .status()
+            .unwrap();
+
+        for file in [&obj_file] {
+            if let Err(e) = fs::remove_file(file) {
+                eprintln!("warning: could not remove file '{}': {}", file.display(), e);
+            }
         }
     }
 }
