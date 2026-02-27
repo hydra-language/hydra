@@ -10,15 +10,17 @@ pub mod types;
 pub mod variables;
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use inkwell::OptimizationLevel;
 use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::builder::Builder;
+use inkwell::passes::PassManager;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
-use inkwell::targets::{InitializationConfig, Target, TargetData, TargetMachine};
+use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine, TargetTriple};
 
 use ir::Program;
 use ir::types::Type;
@@ -33,7 +35,7 @@ pub struct CodeGen<'c> {
     pub current_fn: Option<FunctionValue<'c>>,
     pub loop_stack: Vec<(BasicBlock<'c>, BasicBlock<'c>)>,
     pub target_data: TargetData,
-    pub machine: TargetMachine,
+    pub triple: TargetTriple,
 }
 
 impl<'c> CodeGen<'c> {
@@ -48,7 +50,7 @@ impl<'c> CodeGen<'c> {
             &triple,
             "generic",
             "",
-            OptimizationLevel::Default,
+            OptimizationLevel::None,
             inkwell::targets::RelocMode::PIC,
             inkwell::targets::CodeModel::Default
         ).unwrap();
@@ -71,7 +73,7 @@ impl<'c> CodeGen<'c> {
             current_fn: None,
             loop_stack: Vec::new(),
             target_data,
-            machine,
+            triple
         }
     }
 
@@ -152,5 +154,59 @@ impl<'c> CodeGen<'c> {
     pub fn get_variable_pointer(&self, name: &str) -> PointerValue<'c> {
         self.variables.get(name).copied()
             .unwrap_or_else(|| panic!("ICE: variable could not be found")) 
+    }
+
+    pub fn run_ir_passes(module: &Module) {
+        let fpm = PassManager::create(module);
+
+        fpm.add_promote_memory_to_register_pass();
+        fpm.add_instruction_combining_pass();
+        fpm.add_reassociate_pass();
+        fpm.add_gvn_pass();
+        fpm.add_cfg_simplification_pass();
+        fpm.add_basic_alias_analysis_pass();
+        fpm.add_tail_call_elimination_pass();
+        fpm.add_loop_vectorize_pass();
+        fpm.add_slp_vectorize_pass();
+
+        fpm.initialize();
+
+        for func in module.get_functions() {
+            fpm.run_on(&func);
+        }
+    }
+
+    pub fn emit_asm(module: &Module, triple: &TargetTriple, opt: OptimizationLevel, path: &Path) 
+    {
+        Target::initialize_native(&InitializationConfig::default()).unwrap();
+
+        let target = Target::from_triple(triple).unwrap();
+
+        let machine = target.create_target_machine(
+            triple,
+            "generic",
+            "",
+            opt,
+            RelocMode::PIC,
+            CodeModel::Default,
+        ).unwrap();
+
+        machine.write_to_file(module, FileType::Assembly, path).unwrap();
+    }
+
+    pub fn emit_object(module: &Module, triple: &TargetTriple, opt: OptimizationLevel, path: &Path) {
+        Target::initialize_native(&InitializationConfig::default()).unwrap();
+
+        let target = Target::from_triple(triple).unwrap();
+        let machine = target.create_target_machine(
+            triple,
+            "generic",
+            "",
+            opt,
+            RelocMode::PIC,
+            CodeModel::Default
+        ).unwrap();
+
+        machine.write_to_file(module, FileType::Object, path).unwrap();
     }
 }
