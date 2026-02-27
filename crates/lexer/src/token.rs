@@ -12,51 +12,52 @@ pub enum TokenType {
     // -----------------------------------------------------------------------
     // Identifier
     // -----------------------------------------------------------------------
-    Identifier(String),
+    IDENTIFIER(String),
 
     // -----------------------------------------------------------------------
     // Primitive Types
     // -----------------------------------------------------------------------
-    ISize,
+    ISIZE,
     I8,
     I16,
     I32,
     I64,
-    USize,
+    USIZE,
     U8,
     U16,
     U32,
     U64,
     F32,
     F64,
-    Char,
-    Bool,
+    CHAR,
+    BOOL,
 
     // -----------------------------------------------------------------------
     // Keywords
     // -----------------------------------------------------------------------
-    Let,
-    Const,
-    Function,               // fn
-    Struct,
-    Extension,
-    Return,
-    In,
-    As,
-    On,
-    If,
-    Else,
-    For,
-    ForEach,
-    While,
-    Match,
-    Break,
-    Continue,
-    Include,                // for imports
-    Typedef,                // for aliasing predefined types and others
-    Trait,
-    AnySize,                // comptime generic used in function parameters of arrays
-    AnyType,                // comptime generic used in function parameters, return types and struct fields
+    LET,
+    CONST,
+    FN,                     // fn
+    STRUCT,
+    EXTENSION,
+    RETURN,
+    IN,
+    AS,
+    ON,
+    IF,
+    ELSE,
+    FOR,
+    FOREACH,
+    WHILE,
+    MATCH,
+    BREAK,
+    CONTINUE,
+    INCLUDE,                // for imports
+    TYPEDEF,                // for aliasing predefined types and others
+    TRAIT,
+    ANYSIZE,                // comptime generic used in function parameters of arrays
+    ANYTYPE,                // comptime generic used in function parameters, return types and struct fields
+    EXTERN,                 // extern
     NONE,
 
     // -----------------------------------------------------------------------
