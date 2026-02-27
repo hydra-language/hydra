@@ -14,6 +14,8 @@ pub struct Function {
     pub params: Vec<(String, Type)>,
     pub return_type: Type,
     pub body: Block,
+    pub is_extern: bool,
+    pub generic_params: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
