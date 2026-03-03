@@ -312,10 +312,18 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn parse_foreach(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
         let has_paren = self.match_token(TokenType::LeftParen);
 
+        if !has_paren { 
+            self.allow_struct = false; 
+        }
+
         let item_name = self.consume(TokenType::IDENTIFIER("".to_string()), "item name")?.clone();
         self.consume(TokenType::IN, "'in' after item name")?;
 
         let iterable = self.parse_expression()?;
+
+        if !has_paren {
+            self.allow_struct = true;
+        }
 
         if has_paren {
             self.consume(TokenType::RightParen, "')' after iterable")?;
