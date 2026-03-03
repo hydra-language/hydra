@@ -28,6 +28,11 @@ fn ray_color(r: Ray) -> Vec3 {
     return white::scale(1.0 - a)::add(blue::scale(a));
 }
 
+/* to run and see a proper image do:
+ * hydrac main.hydra --release for an optimized build or hydrac main.hydra for a debug build
+ * ./main > image.ppm
+ * open the image in a ppm viewer or any image viewer that supports ppm
+*/
 fn main() -> void {
     const color: Color = Color::new();
 
