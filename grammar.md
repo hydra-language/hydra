@@ -3,6 +3,8 @@ Hydra Language Grammar
 
 This document outlines the grammar and syntax for the Hydra programming language. All examples demonstrate the intended way to write Hydra code.
 
+NOTE: this is subject to change
+
 * * *
 
 1\. Comments
@@ -16,6 +18,8 @@ Comments are used for annotating code and are ignored by the compiler. Hydra use
 
     /* This is a multi
         line comment */
+
+Nested comments are NOT allowed
 
 * * *
 
@@ -55,103 +59,47 @@ Hydra includes a standard set of primitive types.
 
 ### Arrays
 
-Arrays have a fixed size and can have mutable or immutable elements, independent of the array's own mutability.
+Arrays have a fixed size known at compile time and cannot grow
 
 **Syntax**:
 
-    <let | const> <name>: [<const?> <type>, <size>] = { <elements> };
+    <let | const> <name>: [<type>, <size>] = { <elements> };
 
 **Examples**:
 ```rust
 // A mutable array with mutable elements.
 let a: [i32, 3] = { 1, 2, 3 };
 a[0] = 100; // OK
-
-// A mutable array with immutable elements.
-let b: [const char, 5] = { 'h', 'e', 'l', 'l', 'o' };
-b[0] = 'j'; // ERROR: elements are const.
     
 // An immutable array with mutable elements.
 const c: [i64, 3] = { 1, 2, 3 };
 c = { 4, 5, 6 }; // ERROR: binding 'c' is const.
-    
-// A fully immutable array.
-const d: [const char, 2] = { 'x', 'y' };
 ```
 
 4\. Memory
 -----------
 
-Memory would workin in a little bit of a complicated way. \
-The idea is RAII for stack allocated items (Resource Aqcuistion Is Initialization) 
-and ARC (Automatic Reference Counting) for heap allocated items. \
+Memory layout and memory safety are still being defined. The goal is something similar to Rust. \
+For now, everything is allocated on the stack
 
-The idea behind this is to eliminate the need for a super strict borrow checker
-like Rust has, whilst having memory safety without a garbage collector.
-
-### Stack
-In Hydra, all primitive types and their array equivalents are stack allocated and are managed by RAII
-
-```rust
-fn main() -> void {
-    const x: i32 = 10; // x is an primtive i32 and is allocated 4 bytes on the stack
-    const arr: [f64, 2] = { 3.14, 3.14 }; // arr is an array of 2 f64s and is allocated on the stack
-}
-```
----
-
-### Heap
-Custom user defined types are a bit different.
-
-These are allocated on the heap by wrapping them in pipes (`|`). \
-These give a reference to the stack managed by ARC.
-
-```rust
-fn main() -> void {
-    // this is a heap allocated Vec (dynamic array)
-    // under the hood, variables are wrapped in | |
-    // specifically, the struct returned in new is allocated the heap,
-    // which in turn, makes anything that depends on new also heap allocated
-    let vec: Vec<i32> = Vec<i32>::new();
-    vec::push(5);
-}
-```
-
-Suppose you wanted to make your own String representation. \
-It could look like this, for example:
-```rust
-struct String {
-    data: [const char, anysize],
-    len: usize,
-    capacity: usize,
-
-    fn new(data: &[const char, anysize]) -> |String| {
-        let len: usize = data::length();
-        let capacity = &len;
-
-        // there is no need to wrap String in | | in the return statement
-        // as the return type of the function is a heap allocation
-        return String { 
-            data = data,
-            len = len,
-            capacity = len
-        };
-    }
-}
-```
 ---
 
 5\. Structs and Extensions
 --------------------------
 
 Structs are user-defined types that group related data and functions. \
+Structs can have regular data fields, constants and functions. \
+Struct constants follow the standard for writing a const variable
+
 Extensions are a way to override `trait` functions for user defined types
 
 **Syntax**:
 
+```rust
     struct <StructName> {
-        <field_name>: <type>,
-        ...
+        <field_name>: <type>;
+        const name: type = val; 
+        
         fn <method_name>(<parameters>) -> <return_type> {
             // Method body
         }
@@ -162,8 +110,9 @@ Extensions are a way to override `trait` functions for user defined types
             /* Your override here */
         }
     }
-
+```
 **Example**:
+
 ```rust
 struct Vec3 {
     vector: [f64, 3],
@@ -209,32 +158,6 @@ fn add(a: i32, b: i32) -> i32 {
 
 fn main() -> void {
     const sum: i32 = add(5, 3);
-}
-```
-
-Lets say you'd like to take an i64 and do arithmetic with an i32.
-You would need to cast the smaller type to the bigger type
-using the **`as`** keyword.
-
-There are two ways of doing this:
-Cast the value in the return statement or cast the parameter when the function is called.
-
-The return type, in this instance, needs to match the bigger type.
-```rust
-fn add(a: i32, b: i64) -> i64 {
-    return (a + b) as i64; // cast in return statement
-}
-
-fn subtract(a: i32, b: i64) -> i64 {
-    return a - b;
-}
-
-fn main() -> void {
-    const sum: i64 = add(5, 6);
-    const difference: i64 = subtract(10 as i64, 5);
-
-    println("{}", sum);
-    println("{}", difference);
 }
 ```
 
@@ -361,26 +284,20 @@ while (i < 5) {
 *   **`break if (condition)`**: Exits the loop if the condition evaluates to true
 *   **`continue if (condition)`**: Skips the remainder of the current iteration and continues to the next one if condition is true
 
-This skips the traditional wrapping of `continue` or `break` in an `if` statement \
-You may also optionally run a block in the control action. This block will execute based on the condition provided
+This skips the traditional wrapping of `continue` or `break` in an `if` statement for a single expression \
+You may choose to do the traditional `if cond { continue \ break }` for a single expression but the standard is `break if (cond)` or `continue if (cond)` \
+If your statement executes multiple lines of code, then the traditional way is necessary
 
 ```rust
 // prints i and skips even numbers
 for (i in 0..10) {
-    continue if (i % 2 == 0) {
-        println("{}", i); // print the odd numbers
-    };
-    
-    println("{}", i): // print the even numbers
+    println("{}", i);
+    continue if (i % 2 == 0);
 }
 
 for (i in 0..20) {
-    break if (i % 5 == 0 && i != 0) {
-        // prints all numbers that are not divisible by 5 
-        // and not equal to 0 until the condition evaluates 
-        // to true
-        println("{}", i); 
-    };
+    println("{}", i); 
+    break if (i % 5 == 0 && i != 0);
 }
 ```
 
@@ -407,3 +324,4 @@ let check: string = match (x % 2) {
     1 => "odd"
 };
 ```
+
