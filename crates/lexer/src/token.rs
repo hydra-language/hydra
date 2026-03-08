@@ -128,6 +128,7 @@ pub enum TokenType {
     Comma,
     Colon,              // :
     DoubleColon,        // ::
+    Hash,
 
     // -----------------------------------------------------------------------
     // Special
