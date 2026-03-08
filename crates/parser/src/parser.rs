@@ -1,5 +1,5 @@
 use lexer::{Token, TokenType};
-use crate::{ASTNode, ParserError, loader::ExternalLoader};
+use crate::{ASTNode, Annotation, ParserError, loader::ExternalLoader};
 use errors::{expected_found::ExpectedFoundError, generic::{self, GenericError}};
 
 #[derive(PartialEq, PartialOrd, Clone, Copy)]
@@ -86,10 +86,12 @@ impl<'a, 'b> Parser<'a, 'b> {
             return self.parse_include();
         }
 
+        let annotations = self.parse_annotations()?;
+
         let stmt = if self.match_token(TokenType::LET) || self.match_token(TokenType::CONST) {
             self.parse_variable()
         } else if self.match_token(TokenType::FN) {
-            self.parse_function()
+            self.parse_function(annotations)
         } else if self.match_token(TokenType::STRUCT) {
             self.parse_struct()
         } else if self.match_token(TokenType::RETURN) {
@@ -338,7 +340,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         })
     }
 
-    fn parse_function(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+    fn parse_function(&mut self, annotations: Vec<Annotation>) -> Result<ASTNode<'a>, ParserError<'a>> {
         let name = self.consume(TokenType::IDENTIFIER("".to_string()), "function name")?.clone();
 
         let generic_params = self.parse_generic_params()?;
@@ -364,10 +366,20 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         let return_type = self.parse_type()?;
 
-        let body = self.parse_block();
+        let is_bodyless = annotations.iter()
+            .any(|a| matches!(a.name.as_str(), "intrinsic" | "builtin")
+        );
+
+        let body = if is_bodyless {
+            self.consume(TokenType::Semicolon, "expected ';' after intrinsic function declaration")?;
+            Vec::new()
+        } else {
+            self.parse_block()
+        };
 
         Ok(ASTNode::FunctionDeclaration {
             name: name.clone(),
+            annotations,
             generic_params,
             parameters,
             return_type,
@@ -407,6 +419,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         Ok(ASTNode::FunctionDeclaration {
             name,
+            annotations: Vec::new(),
             generic_params,
             parameters,
             return_type,
@@ -484,6 +497,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         Ok(ASTNode::FunctionDeclaration { 
             name,
+            annotations: Vec::new(),
             generic_params,
             parameters: params, 
             return_type, 
@@ -919,35 +933,49 @@ impl<'a, 'b> Parser<'a, 'b> {
                         self.consume(TokenType::Comma, "expected ',' in generic args")?;
                     }
 
-                    self.consume(TokenType::LeftParen, "expected '(' after generic args")?;
-                    
-                    let args = self.finish_parse_fn_call_args()?;
+                    if self.match_token(TokenType::DoubleColon) {
+                        let method_name = self.consume_identifier("expected method name after '::'")?;
+                        self.consume(TokenType::LeftParen, "expected '(' after method name")?;
 
-                    expr = match expr {
-                        ASTNode::VariableExpression { name } => {
-                            ASTNode::FunctionCallExpression {
-                                name,
-                                arguments: args,
-                                generic_args,
-                            }
-                        },
+                        let args = self.finish_parse_fn_call_args()?;
 
-                        ASTNode::MemberExpression { object, property } => {
-                            ASTNode::MethodCallExpression {
-                                object,
-                                method: property,
-                                arguments: args,
-                                generic_args,
-                            }
-                        },
+                        expr = ASTNode::MethodCallExpression {
+                            object: Box::new(expr),
+                            method: method_name,
+                            arguments: args,
+                            generic_args,
+                        };
+                    } else {
+                        self.consume(TokenType::LeftParen, "expected '(' after generic args")?;
 
-                        _ => return Err(ParserError::GENERIC(Box::new(GenericError {
-                            code: "E007",
-                            message: "generic call ::<T> must follow a name or member access".to_string(),
-                            token: self.previous().clone(),
-                            help: None
-                        })))
-                    };
+                        let args = self.finish_parse_fn_call_args()?;
+
+                        expr = match expr {
+                            ASTNode::VariableExpression { name } => {
+                                ASTNode::FunctionCallExpression {
+                                    name,
+                                    arguments: args,
+                                    generic_args,
+                                }
+                            },
+
+                            ASTNode::MemberExpression { object, property } => {
+                                ASTNode::MethodCallExpression {
+                                    object,
+                                    method: property,
+                                    arguments: args,
+                                    generic_args,
+                                }
+                            },
+
+                            _ => return Err(ParserError::GENERIC(Box::new(GenericError {
+                                code: "E007",
+                                message: "generic call ::<T> must follow a name or member access".to_string(),
+                                token: self.previous().clone(),
+                                help: None
+                            })))
+                        };
+                    }
                 } else {
                     let method_name = self.consume_identifier("method name after '::'")?;
 
@@ -1181,9 +1209,16 @@ impl<'a, 'b> Parser<'a, 'b> {
                     included_nodes.push(node.clone());
                 }
 
+                ASTNode::FunctionDeclaration { ref annotations, .. } 
+                    if annotations.iter().any(|a| matches!(a.name.as_str(), "intrinsic" | "builtin")) => 
+                {
+                    included_nodes.push(node.clone());
+                }
+
                 _ => continue,
             }
         }
+
 
         if !found_item {
             return Err(ParserError::GENERIC(Box::new(GenericError {
@@ -1195,6 +1230,49 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
 
         Ok(included_nodes)
+    }
+
+    fn parse_annotations(&mut self) -> Result<Vec<Annotation>, ParserError<'a>> {
+        let mut annotations = Vec::new();
+
+        while self.match_token(TokenType::Hash) {
+            let name_token = self.consume_identifier("expected annotation name after '#'")?;
+            let name = name_token.lexeme.to_string();
+
+            let mut args = Vec::new();
+
+            if self.match_token(TokenType::LeftParen) {
+                if !self.check(TokenType::RightParen) {
+                    loop {
+                        let arg_token = self.advance().clone();
+
+                        if let TokenType::StringLiteral(ref s) = arg_token.token_type {
+                            args.push(s.clone())
+                        } else {
+                            return Err(ParserError::GENERIC(Box::new(GenericError {
+                                code: "E002",
+                                message: "expected string literal in annotation arguments".to_string(),
+                                token: arg_token,
+                                help: None,
+                            })));
+                        }
+
+                        if !self.match_token(TokenType::Comma) {
+                            break;
+                        }
+                    }
+                }
+
+                self.consume(TokenType::RightParen, "expected ')' after annotation arguments")?;
+            }
+
+            annotations.push(Annotation {
+                name,
+                args
+            });
+        }
+
+        Ok(annotations)
     }
 
     // ========================================================================
