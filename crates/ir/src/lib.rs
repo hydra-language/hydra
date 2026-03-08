@@ -15,6 +15,7 @@ pub struct Function {
     pub return_type: Type,
     pub body: Block,
     pub is_extern: bool,
+    pub is_intrinsic: bool,
     pub generic_params: Vec<String>,
 }
 
