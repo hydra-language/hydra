@@ -70,6 +70,7 @@ impl<'a> Lexer<'a> {
             '[' => Some(TokenType::LeftBracket),
             ']' => Some(TokenType::RightBracket),
             ';' => Some(TokenType::Semicolon),
+            '#' => Some(TokenType::Hash),
             '.' => {
                 if self.peek() == '.' {
                     if self.peek_next() == '.' {
