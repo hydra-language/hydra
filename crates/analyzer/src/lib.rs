@@ -51,6 +51,7 @@ impl Analyzer {
 
                     self.scope.define(name.lexeme.to_string(), Symbol::Function { 
                         params: param_types, 
+                        annotations: Vec::new(),
                         return_type: rt,
                         generic_params: gps
                     }).ok();
@@ -146,6 +147,7 @@ impl Analyzer {
 
                         self.scope.define(namespaced_name, Symbol::Function {
                             params: param_types,
+                            annotations: Vec::new(),
                             return_type: rt,
                             generic_params: all_generics
                         }).ok();
@@ -181,6 +183,7 @@ impl Analyzer {
 
                 let symbol = Symbol::Function { 
                     params: param_types,
+                    annotations: Vec::new(),
                     return_type: rt,
                     generic_params: gps
                 };
@@ -1015,6 +1018,25 @@ impl Analyzer {
             },
 
             ASTNode::MethodCallExpression { object, method, arguments, generic_args } => {
+                if let ASTNode::VariableExpression { name } = &*object {
+                    if let Some(Symbol::Struct { .. }) = self.scope.resolve(&name.lexeme) {
+                        
+                        let static_method_name = format!("{}::{}", name.lexeme, method.lexeme);
+                        
+                        let mut lowered_generic_args = Vec::new();
+                        for arg in generic_args {
+                            lowered_generic_args.push(self.lower_type(arg)?);
+                        }
+                        
+                        return self.lower_call_logic(
+                            static_method_name, 
+                            method, 
+                            arguments, 
+                            lowered_generic_args
+                        );
+                    }
+                }
+
                 let lhs = self.lower_expression(*object)?;
                 let method_name = method.lexeme;
                 
@@ -1062,6 +1084,7 @@ impl Analyzer {
                             ty: Type::REF(Box::new(ty))
                         }
                     },
+
                     // Otherwise pass as is (matches or strict mismatch caught in loop below)
                     _ => lhs
                 };
@@ -1118,7 +1141,6 @@ impl Analyzer {
             },
 
             ASTNode::FunctionCallExpression { name, mut arguments, generic_args } => {
-
                 let mut call_name = name.lexeme.to_string();
 
                 if call_name.contains("::") {
@@ -1154,8 +1176,8 @@ impl Analyzer {
                                         };
                                         let self_node = ASTNode::VariableExpression { name: self_token };
 
-                                        // If the prefix variable is already a reference (like 'self' is),
-                                        // we don't wrap it in another '&' (ADDR_OF).
+                                        // dont wrap in another '&' if already a reference (self or
+                                        // &var)
                                         if matches!(prefix_ty, Type::REF(_) | Type::CONST_REF(_)) {
                                             arguments.insert(0, self_node);
                                         } else {
@@ -1335,7 +1357,8 @@ impl Analyzer {
 
     fn lower_function(&mut self, node: ASTNode) -> Result<Function, HydraError<'static>> {
         if let ASTNode::FunctionDeclaration { 
-            name, 
+            name,
+            annotations,
             generic_params, 
             parameters, 
             return_type: rt, 
@@ -1343,6 +1366,8 @@ impl Analyzer {
             is_extern 
         } = node 
         {
+            let is_intrinsic = annotations.iter().any(|a| a.name == "intrinsic");
+
             self.enter_scope();
 
             for gp in &generic_params {
@@ -1376,6 +1401,7 @@ impl Analyzer {
                 return_type, 
                 body: Block { stmts },
                 is_extern,
+                is_intrinsic,
                 generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect(),
             })
         } else {
@@ -1397,7 +1423,6 @@ impl Analyzer {
         let mut outer_stmts = Vec::new();
 
         // 2. Initialize loop variable: let i = start;
-        // THIS WAS MISSING in the IR generation
         outer_stmts.push(Stmt::Var {
             name: var_name.clone(),
             ty: start_expr.ty.clone(),
@@ -1720,16 +1745,48 @@ impl Analyzer {
         }
     }
 
+    fn get_type_size(&self, ty: &Type) -> Result<i64, HydraError<'static>> {
+        match ty {
+            Type::I8 | Type::U8 | Type::BOOL | Type::CHAR => Ok(1),
+            Type::I16 | Type::U16 => Ok(2),
+            Type::I32 | Type::U32 | Type::F32 => Ok(4),
+            Type::I64 | Type::U64 | Type::F64 | Type::USIZE | Type::ISIZE => Ok(8),
+            
+            // Pointers and References are always 8 bytes (on 64-bit systems)
+            Type::POINTER(_) | Type::REF(_) | Type::CONST_REF(_) => Ok(8),
+            
+            Type::ARRAY(inner, len) => {
+                let inner_size = self.get_type_size(inner)?;
+                Ok(inner_size * (*len as i64))
+            },
+            
+            Type::STRUCT(name) => {
+                if let Some(Symbol::Struct { fields }) = self.scope.resolve(name) {
+                    let mut total_size = 0;
+
+                    for (_, field_ty, _) in fields {
+                        total_size += self.get_type_size(&field_ty)?;
+                    }
+
+                    Ok(total_size)
+                } else {
+                    Err(self.make_generic_error(format!("cannot determine size of undefined struct '{}'", name)))
+                }
+            },
+            
+            Type::VOID => Ok(0),
+            _ => Err(self.make_generic_error(format!("cannot determine size of type '{}'", ty))),
+        }
+    }
+
     fn lower_call_logic(&mut self, call_name: String, token: Token, 
-        arguments: Vec<ASTNode>, generic_args: Vec<Type>
-    ) 
+        arguments: Vec<ASTNode>, generic_args: Vec<Type>) 
         -> Result<Expr, HydraError<'static>> 
     {
         if call_name == "println" {
             let mut args = Vec::new();
 
             for arg in arguments {
-                // Recursively lower the arguments (like 'area')
                 args.push(self.lower_expression(arg)?);
             }
             
@@ -1746,10 +1803,33 @@ impl Analyzer {
         let symbol = self.scope.resolve(&call_name)
             .ok_or(self.make_error(format!("undefined function: {}", call_name), &token))?;
 
-        let (param_types, return_type) = match symbol {
-            Symbol::Function { params, return_type, .. } => (params.clone(), return_type.clone()),
+        let (param_types, return_type, annotations) = match symbol {
+            Symbol::Function { params, return_type, annotations, .. } => 
+                (params.clone(), return_type.clone(), annotations.clone()),
+
             _ => return Err(self.make_error(format!("'{}' is not a function", call_name), &token)),
         };
+
+        if let Some(builtin) = annotations.iter().find(|a| a.name == "builtin") {
+            if let Some(builtin_type) = builtin.args.first() {
+                match builtin_type.as_str() {
+                    "size_of" => {
+                        if generic_args.len() != 1 {
+                            return Err(self.make_error("size_of expects one generic type argument".into(), &token));
+                        }
+
+                        let size = self.get_type_size(&generic_args[0])?;
+
+                        return Ok(Expr {
+                            kind: ExprKind::INT_LITERAL(size),
+                            ty: Type::USIZE,
+                        });
+                    },
+
+                    _ => return Err(self.make_error(format!("unknown builtin '{}'", builtin_type), &token))
+                }
+            }
+        }
 
         if arguments.len() != param_types.len() {
             return Err(self.make_error(
