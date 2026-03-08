@@ -1,6 +1,12 @@
 use lexer::Token;
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Annotation {
+    pub name: String,
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ASTNode<'a> {
     VariableDeclaration {
         is_const: bool,
@@ -11,6 +17,7 @@ pub enum ASTNode<'a> {
 
     FunctionDeclaration {
         name: Token<'a>,
+        annotations: Vec<Annotation>,
         generic_params: Vec<Token<'a>>,
         parameters: Vec<(Token<'a>, Box<ASTNode<'a>>)>,
         return_type: Box<ASTNode<'a>>,
