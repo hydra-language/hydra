@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use ir::types::Type;
+use parser::Annotation;
 
 #[derive(Debug, Clone)]
 pub enum Symbol {
@@ -10,6 +11,7 @@ pub enum Symbol {
 
     Function {
         params: Vec<Type>,
+        annotations: Vec<Annotation>,
         return_type: Type,
         generic_params: Vec<String>,
     },
