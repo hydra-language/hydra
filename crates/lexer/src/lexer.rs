@@ -235,24 +235,33 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 'x' | 'X' => {
                     self.advance(); // consume 'x'
+                    
                     while self.peek().is_ascii_hexdigit() || self.peek() == '_' {
                         self.advance();
                     }
+
                     let lexeme = &self.input[self.start_offset()..self.current_offset()];
-                    let value = i64::from_str_radix(&lexeme[2..].replace('_', ""), 16)
-                        .map_err(|_| format!("Invalid hexadecimal literal: '{}'", lexeme))?;
+
+                    let value = u64::from_str_radix(&lexeme[2..].replace('_', ""), 16)
+                        .map_err(|_| format!("Invalid hexadecimal literal: '{}'", lexeme))? as i64;
+
                     return Ok(Some(TokenType::IntLiteral(value)));
                 }
+
                 'b' => {
                     self.advance(); // consume 'b'
+                   
                     while self.peek() == '0' || self.peek() == '1' || self.peek() == '_' {
                         self.advance();
                     }
+
                     let lexeme = &self.input[self.start_offset()..self.current_offset()];
-                    let value = i64::from_str_radix(&lexeme[2..].replace('_', ""), 2)
-                        .map_err(|_| format!("Invalid binary literal: '{}'", lexeme))?;
+                    let value = u64::from_str_radix(&lexeme[2..].replace('_', ""), 2)
+                        .map_err(|_| format!("Invalid binary literal: '{}'", lexeme))? as i64;
+
                     return Ok(Some(TokenType::IntLiteral(value)));
                 }
+
                 _ => {}
             }
         }
@@ -276,8 +285,10 @@ impl<'a> Lexer<'a> {
             Ok(Some(TokenType::FloatLiteral(value)))
         } else {
             let lexeme = &self.input[self.start_offset()..self.current_offset()];
-            let value: i64 = lexeme.replace('_', "").parse()
-                .map_err(|_| format!("Invalid integer literal: '{}'", lexeme))?;
+
+            let value = lexeme.replace('_', "").parse::<u64>()
+                .map_err(|_| format!("Invalid integer literal: '{}'", lexeme))? as i64;
+
             Ok(Some(TokenType::IntLiteral(value)))
         }
     }
