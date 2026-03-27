@@ -94,6 +94,8 @@ impl<'a, 'b> Parser<'a, 'b> {
             self.parse_function(annotations)
         } else if self.match_token(TokenType::STRUCT) {
             self.parse_struct()
+        } else if self.match_token(TokenType::EXTENSION) {
+            self.parse_extension()
         } else if self.match_token(TokenType::RETURN) {
             self.parse_return()
         } else if self.match_token(TokenType::IF) {
@@ -441,10 +443,15 @@ impl<'a, 'b> Parser<'a, 'b> {
         if !self.check(TokenType::RightParen) {
             loop {
                 let is_shorthand = self.check(TokenType::Ampersand);
+                let is_value_ref = !is_shorthand && self.peek().lexeme == "self";
 
-                if is_shorthand {
-                    self.advance(); // consume '&'
-                    let is_const = self.match_token(TokenType::CONST);
+                if is_shorthand || is_value_ref {
+                    let mut is_const = false;
+                    
+                    if is_shorthand {
+                        self.advance();
+                        is_const = self.match_token(TokenType::CONST);
+                    }
 
                     let self_token = self.consume_identifier("expected 'self'")?;
                     if self_token.lexeme != "self" {
@@ -468,10 +475,14 @@ impl<'a, 'b> Parser<'a, 'b> {
                         type_token: Token { lexeme: s_name, ..self_token.clone() }
                     });
 
-                    let self_type = if is_const {
-                        Box::new(ASTNode::ConstReference { inner: type_id })
+                    let self_type = if is_shorthand {
+                        if is_const {
+                            Box::new(ASTNode::ConstReference { inner: type_id })
+                        } else {
+                            Box::new(ASTNode::Reference { inner: type_id })
+                        }
                     } else {
-                        Box::new(ASTNode::Reference { inner: type_id })
+                            type_id
                     };
 
                     params.push((self_token, self_type));
@@ -630,6 +641,64 @@ impl<'a, 'b> Parser<'a, 'b> {
         Ok(ASTNode::StructInitializer { 
             name, 
             fields 
+        })
+    }
+
+    fn parse_extension(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+        let target = self.parse_type()?;
+
+        let type_name = match &*target {
+            ASTNode::TypeIdentifier { type_token } => type_token.lexeme,
+            _ => {
+                return Err(ParserError::GENERIC(Box::new(GenericError {
+                    code: "E003",
+                    message: "extensions current only support primitives".to_string(),
+                    token: self.previous().clone(),
+                    help: Some("try extending a primitive like 'i32' or 'f64'".to_string())
+                })));
+            }
+        };
+
+        self.consume(TokenType::LeftBrace, "expected '{' before extension body")?;
+
+        let mut constants = Vec::new();
+        let mut methods = Vec::new();
+
+        while !self.check(TokenType::RightBrace) && !self.is_at_end() {
+            if self.match_token(TokenType::CONST) {
+                let name = self.consume_identifier("expected constant name")?;
+                self.consume(TokenType::Colon, "expected ':' after constant name")?;
+
+                let const_type = self.parse_type()?;
+                self.consume(TokenType::Equal, "expected '=' in constant declaration")?;
+
+                let value = self.parse_expression()?;
+                self.consume(TokenType::Semicolon, "expected ';' after constant")?;
+
+                constants.push(ASTNode::VariableDeclaration {
+                    is_const: true,
+                    name,
+                    type_annotation: Some(const_type),
+                    initializer: Box::new(value),
+                });
+            } else if self.match_token(TokenType::FN) {
+                methods.push(self.parse_function_rest(Some(type_name))?);
+            } else {
+                return Err(ParserError::GENERIC(Box::new(GenericError {
+                    code: "E009",
+                    message: "only constants and functions are allowed inside extension blocks".to_string(),
+                    token: self.peek().clone(),
+                    help: None
+                })));
+            }
+        }
+
+        self.consume(TokenType::RightBrace, "expected '}' after extension body")?;
+
+        Ok(ASTNode::ExtensionDeclaration { 
+            target, 
+            constants, 
+            methods 
         })
     }
 
@@ -855,7 +924,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                         self.match_token(TokenType::ForwardSlash) || 
                         self.match_token(TokenType::Modulo) 
             {
-                Some(self.previous().clone())    
+                Some(self.previous().clone())   
             } else {
                 None
             };
@@ -1136,6 +1205,11 @@ impl<'a, 'b> Parser<'a, 'b> {
                     token: current_token.clone(),
                     help: Some("did you type an operator twice? (e.g. `**` instead of `*`)".to_string())
                 })))
+            }
+
+            ISIZE | I8 | I16 | I32 | I64 | USIZE | U8 | U16 | U32 | U64 | F32 | F64 | CHAR | BOOL => {
+                let token = self.advance().clone();
+                Ok(ASTNode::TypeIdentifier { type_token: token })
             }
 
             _ => Err(ParserError::GENERIC(Box::new(GenericError {
