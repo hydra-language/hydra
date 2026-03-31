@@ -7,8 +7,16 @@ use crate::CodeGen;
 
 impl<'c> CodeGen<'c> {
 
+    pub fn compile_println(&mut self, args: &[Expr]) -> Result<BasicValueEnum<'c>, String> {
+        self.compile_print_base(args, true)
+    }
 
-    pub fn compile_println(&mut self, args: &[Expr]) -> Result<BasicValueEnum<'c>, String> 
+    pub fn compile_print(&mut self, args: &[Expr]) -> Result<BasicValueEnum<'c>, String> {
+        self.compile_print_base(args, false)
+    }
+
+
+    pub fn compile_print_base(&mut self, args: &[Expr], append_newline: bool) -> Result<BasicValueEnum<'c>, String> 
     {
         let fmt_str_expr = args.first().ok_or("println requires format string")?;
 
@@ -36,21 +44,31 @@ impl<'c> CodeGen<'c> {
             }
         }
 
-        let newline = self.get_global_string_ptr("\n");
-
-        self.call_printf("%s", &[newline.into()]);
+        if append_newline {
+            let newline = self.get_global_string_ptr("\n");
+            self.call_printf("%s", &[newline.into()]);
+        }
 
         Ok(self.context.i32_type().const_zero().into())
     }
 
     fn compile_print_value(&mut self, value: BasicValueEnum<'c>, ty: &Type) -> Result<(), String> {
         match ty {
-            Type::I32 => self.call_printf("%d", &[value.into()]),
-            Type::U32 => self.call_printf("%u", &[value.into()]),
-            Type::F32 | Type::F64 => self.call_printf("%f", &[value.into()]),
+            Type::I32 | Type::I8 => self.call_printf("%d", &[value.into()]),
+            Type::U32 | Type::U8 => self.call_printf("%u", &[value.into()]),
+
+            Type::F32 => {
+                let f64_type = self.context.f64_type();
+                let promoted = self.builder.build_float_ext(value.into_float_value(), f64_type, "print_fpext");
+
+                self.call_printf("%f", &[promoted.into()]);
+            } 
+            Type::F64 => self.call_printf("%f", &[value.into()]),
+
             Type::I64 | Type::ISIZE => self.call_printf("%lld", &[value.into()]),
             Type::U64 | Type::USIZE => self.call_printf("%llu", &[value.into()]),
-            Type::I8 | Type::U8 | Type::CHAR => self.call_printf("%c", &[value.into()]),
+            Type::POINTER(_) | Type::REF(_) => self.call_printf("%p", &[value.into()]),
+            Type::CHAR => self.call_printf("%c", &[value.into()]),
 
             Type::ARRAY(inner, size) => {
                 match **inner {
