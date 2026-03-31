@@ -8,3 +8,7 @@ parser = { path = "../parser" }
 ir = { path = "../ir" }
 lexer = { path = "../lexer" }   # For tokens/operators
 errors = { path = "../errors" } # For reporting semantic errors
+
+[lib]
+name = "analyzer"
+path = "src/mod.rs"
