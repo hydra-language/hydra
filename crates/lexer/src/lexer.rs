@@ -342,6 +342,7 @@ impl<'a> Lexer<'a> {
             "anysize" => TokenType::ANYSIZE,
             "anytype" => TokenType::ANYTYPE,
             "extern" => TokenType::EXTERN,
+            "pub" => TokenType::PUB,
             "None" => TokenType::NONE,
             "true" => TokenType::BoolLiteral(true),
             "false" => TokenType::BoolLiteral(false),

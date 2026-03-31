@@ -58,6 +58,7 @@ pub enum TokenType {
     ANYSIZE,                // comptime generic used in function parameters of arrays
     ANYTYPE,                // comptime generic used in function parameters, return types and struct fields
     EXTERN,                 // extern
+    PUB,                    // pub
     NONE,
 
     // -----------------------------------------------------------------------
