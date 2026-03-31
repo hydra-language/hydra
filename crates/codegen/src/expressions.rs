@@ -11,7 +11,7 @@ impl<'c> CodeGen<'c> {
                 let value = *val as u64;
 
                 match expr.ty {
-                    Type::I8 | Type::U8 => {
+                    Type::I8 | Type::U8 | Type::CHAR => {
                         Ok(self.context.i8_type().const_int(value, false).into())
                     },
                     Type::I16 | Type::U16 => {
@@ -31,9 +31,6 @@ impl<'c> CodeGen<'c> {
                     },
                     Type::BOOL => {
                         Ok(self.context.bool_type().const_int(value, false).into())
-                    },
-                    Type::CHAR => {
-                        Ok(self.context.i32_type().const_int(value, false).into())
                     },
 
                     _ => Err(format!("unsupported integer literal type: {:?}", expr.ty))
@@ -56,6 +53,11 @@ impl<'c> CodeGen<'c> {
 
             ExprKind::STRING_LITERAL(s) => {
                 Ok(self.context.const_string(s.as_bytes(), false).into())
+            },
+
+            ExprKind::CHAR_LITERAL(c) => {
+                let value = *c as u64;
+                Ok(self.context.i8_type().const_int(value, false).into())
             },
 
             ExprKind::Assignment { target, value, .. } => {
@@ -107,33 +109,47 @@ impl<'c> CodeGen<'c> {
                     },
 
                     // --- 3. Int to Int (Resizing) ---
-                    (Type::I64, Type::I32 | Type::I16 | Type::I8 | Type::U8) => {
+                    (
+                        Type::I64 | Type::U64 | Type::ISIZE | Type::USIZE | 
+                        Type::I32 | Type::U32 | Type::CHAR | 
+                        Type::I16 | Type::U16 | 
+                        Type::I8 | Type::U8 | Type::BOOL,
+                        
+                        Type::I64 | Type::U64 | Type::ISIZE | Type::USIZE | 
+                        Type::I32 | Type::U32 | Type::CHAR | 
+                        Type::I16 | Type::U16 | 
+                        Type::I8 | Type::U8 | Type::BOOL
+                    ) => {
                         let int_val = val.into_int_value();
+                        let dest_int_ty = dest_llvm_ty.into_int_type();
+                        
+                        let src_width = int_val.get_type().get_bit_width();
+                        let dest_width = dest_int_ty.get_bit_width();
 
-                        Ok(self.builder.build_int_truncate(
-                            int_val, 
-                            dest_llvm_ty.into_int_type(), 
-                            "cast_trunc"
-                        ).into())
+                        if src_width > dest_width {
+                            Ok(self.builder.build_int_truncate(int_val, dest_int_ty, "cast_trunc").into())
+                        } else if src_width < dest_width {
+                            let is_unsigned = matches!(src_ty, 
+                                Type::U8 | Type::U16 | Type::U32 | Type::U64 | 
+                                Type::USIZE | Type::CHAR | Type::BOOL
+                            );
+
+                            if is_unsigned {
+                                Ok(self.builder.build_int_z_extend(int_val, dest_int_ty, "cast_zext").into())
+                            } else {
+                                Ok(self.builder.build_int_s_extend(int_val, dest_int_ty, "cast_sext").into())
+                            }
+                        } else {
+                            Ok(val) 
+                        }
                     },
 
-                    (Type::I32 | Type::I16 | Type::I8 | Type::U8, Type::I64) => {
-                        let int_val = val.into_int_value();
-
-                        Ok(self.builder.build_int_s_extend(
-                            int_val, 
-                            dest_llvm_ty.into_int_type(), 
-                            "cast_sext"
-                        ).into())
-                    },
-
-                    // --- 4. Float to Float (Resizing) ---
                     (Type::F64, Type::F32) => {
                         let float_val = val.into_float_value();
 
                         Ok(self.builder.build_float_trunc(
-                            float_val,
-                            dest_llvm_ty.into_float_type(),
+                            float_val, 
+                            dest_llvm_ty.into_float_type(), 
                             "cast_fptrunc"
                         ).into())
                     },
@@ -142,14 +158,21 @@ impl<'c> CodeGen<'c> {
                         let float_val = val.into_float_value();
 
                         Ok(self.builder.build_float_ext(
-                            float_val,
-                            dest_llvm_ty.into_float_type(),
+                            float_val, 
+                            dest_llvm_ty.into_float_type(), 
                             "cast_fpext"
                         ).into())
                     },
 
-                    // --- 5. Identity ---
-                    (s, d) if s == d => Ok(val),
+                    (Type::REF(_) | Type::CONST_REF(_) | Type::POINTER(_), Type::POINTER(_)) => {
+                        let ptr_val = val.into_pointer_value();
+
+                        Ok(self.builder.build_pointer_cast(
+                            ptr_val, 
+                            dest_llvm_ty.into_pointer_type(), 
+                            "cast_ptr"
+                        ).into())
+                    },
 
                     _ => Err(format!("codegen not implemented for cast: {} as {}", src_ty, dest_ty))
                 }
@@ -408,6 +431,10 @@ impl<'c> CodeGen<'c> {
                     return self.compile_println(args);
                 }
 
+                if callee == "print" {
+                    return self.compile_print(args);
+                }
+
                 let func_value = self.module.get_function(callee)
                     .ok_or(format!("ICE: function '{}' not found in module", callee))?;
 
@@ -488,6 +515,11 @@ impl<'c> CodeGen<'c> {
             ExprKind::INT_LITERAL(val) => {
                 let i_ty = self.context.i64_type();
                 Ok(i_ty.const_int(*val as u64, false).into())
+            }
+
+            ExprKind::CHAR_LITERAL(c) => {
+                let i_ty = self.context.i8_type();
+                Ok(i_ty.const_int(*c as u64, false).into())
             }
 
             ExprKind::Binary { op, lhs, rhs } => {

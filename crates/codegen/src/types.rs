@@ -7,7 +7,7 @@ use ir::types::Type;
 
 pub fn compile_type<'c>(context: &'c Context, target_data: &TargetData, ty: &Type) -> BasicTypeEnum<'c> {
     match ty {
-        Type::I8  | Type::U8  => context.i8_type().as_basic_type_enum(),
+        Type::I8  | Type::U8 | Type::CHAR => context.i8_type().as_basic_type_enum(),
         Type::I16 | Type::U16 => context.i16_type().as_basic_type_enum(),
         Type::I32 | Type::U32 => context.i32_type().as_basic_type_enum(),
         Type::I64 | Type::U64 => context.i64_type().as_basic_type_enum(),
@@ -22,7 +22,6 @@ pub fn compile_type<'c>(context: &'c Context, target_data: &TargetData, ty: &Typ
         },
 
         Type::BOOL => context.bool_type().as_basic_type_enum(), // i1
-        Type::CHAR => context.i32_type().as_basic_type_enum(),
 
         Type::VOID => panic!("cannot create a variable or value of type 'void'"),
 
