@@ -23,6 +23,7 @@ pub enum ASTNode<'a> {
         return_type: Box<ASTNode<'a>>,
         body: Vec<ASTNode<'a>>,
         is_extern: bool,
+        is_pub: bool,
     },
 
     ReturnStatement {
@@ -134,11 +135,18 @@ pub enum ASTNode<'a> {
         constants: Vec<ASTNode<'a>>,
         fields: Vec<(Token<'a>, Box<ASTNode<'a>>)>,
         methods: Vec<ASTNode<'a>>,
+        is_pub: bool,
     },
 
     StructInitializer {
         name: Token<'a>,
         fields: Vec<(Token<'a>, Box<ASTNode<'a>>)>,
+    },
+
+    ExtensionDeclaration {
+        target: Box<ASTNode<'a>>,
+        constants: Vec<ASTNode<'a>>,
+        methods: Vec<ASTNode<'a>>,
     },
 
     MethodCallExpression {
