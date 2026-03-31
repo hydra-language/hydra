@@ -88,14 +88,34 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         let annotations = self.parse_annotations()?;
 
+        let is_pub = self.match_token(TokenType::PUB);
+
         let stmt = if self.match_token(TokenType::LET) || self.match_token(TokenType::CONST) {
+            if is_pub {
+                return Err(ParserError::GENERIC(Box::new(GenericError {
+                    code: "E010",
+                    message: "pub not supported on variables".to_string(),
+                    token: self.previous().clone(),
+                    help: None
+                })));
+            }
+
             self.parse_variable()
         } else if self.match_token(TokenType::FN) {
-            self.parse_function(annotations)
+            self.parse_function(annotations, is_pub)
         } else if self.match_token(TokenType::STRUCT) {
-            self.parse_struct()
+            self.parse_struct(is_pub)
         } else if self.match_token(TokenType::EXTENSION) {
-            self.parse_extension()
+            if is_pub {
+                return Err(ParserError::GENERIC(Box::new(GenericError {
+                    code: "E010",
+                    message: "pub cannot be attached to an extension block".to_string(),
+                    token: self.previous().clone(),
+                    help: None
+                })));
+            }
+
+            self.parse_extension(is_pub)
         } else if self.match_token(TokenType::RETURN) {
             self.parse_return()
         } else if self.match_token(TokenType::IF) {
@@ -111,7 +131,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         } else if self.match_token(TokenType::CONTINUE) {
             self.parse_continue()
         } else if self.match_token(TokenType::EXTERN) {
-            self.parse_extern()
+            self.parse_extern(is_pub)
         } else {
             self.parse_statement()
         }?;
@@ -342,7 +362,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         })
     }
 
-    fn parse_function(&mut self, annotations: Vec<Annotation>) -> Result<ASTNode<'a>, ParserError<'a>> {
+    fn parse_function(&mut self, annotations: Vec<Annotation>, is_pub: bool) -> Result<ASTNode<'a>, ParserError<'a>> {
         let name = self.consume(TokenType::IDENTIFIER("".to_string()), "function name")?.clone();
 
         let generic_params = self.parse_generic_params()?;
@@ -387,10 +407,11 @@ impl<'a, 'b> Parser<'a, 'b> {
             return_type,
             body,
             is_extern: false,
+            is_pub
         })
     }
 
-    fn parse_extern(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+    fn parse_extern(&mut self, is_pub: bool) -> Result<ASTNode<'a>, ParserError<'a>> {
         self.consume(TokenType::FN, "expected 'fn' after 'extern'")?;
 
         let name = self.consume(TokenType::IDENTIFIER("".to_string()), "function name")?.clone();
@@ -427,10 +448,11 @@ impl<'a, 'b> Parser<'a, 'b> {
             return_type,
             body: Vec::new(),
             is_extern: true,
+            is_pub
         })
     }
 
-    fn parse_function_rest(&mut self, struct_context: Option<&'a str>) 
+    fn parse_function_rest(&mut self, struct_context: Option<&'a str>, is_pub: bool) 
         -> Result<ASTNode<'a>, ParserError<'a>> 
     {
         let name = self.consume_identifier("expected function name")?;
@@ -514,6 +536,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             return_type, 
             body,
             is_extern: false,
+            is_pub
         })
     }
 
@@ -532,7 +555,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         Ok(params)
     }
 
-    fn parse_struct(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+    fn parse_struct(&mut self, is_pub: bool) -> Result<ASTNode<'a>, ParserError<'a>> {
         let name = self.consume_identifier("expected struct name")?;
 
         let generic_params = self.parse_generic_params()?;
@@ -546,7 +569,18 @@ impl<'a, 'b> Parser<'a, 'b> {
         let mut current_section = StructSection::NONE;
 
         while !self.check(TokenType::RightBrace) && !self.is_at_end() {
+            let is_member_pub = self.match_token(TokenType::PUB);
+
             if self.match_token(TokenType::CONST) {
+                if is_member_pub {
+                    return Err(ParserError::GENERIC(Box::new(GenericError {
+                        code: "E010",
+                        message: "pub not yet supported on struct constants".to_string(),
+                        token: self.previous().clone(),
+                        help: None
+                    })));
+                }
+
                 if current_section > StructSection::CONSTANTS {
                     return Err(ParserError::GENERIC(Box::new(GenericError {
                         code: "E005",
@@ -577,9 +611,18 @@ impl<'a, 'b> Parser<'a, 'b> {
                 current_section = StructSection::METHODS;
 
                 let struct_name = name.lexeme;
-                methods.push(self.parse_function_rest(Some(struct_name))?);
+                methods.push(self.parse_function_rest(Some(struct_name), is_pub)?);
             } else {
                 if current_section > StructSection::FIELDS {
+                    if is_member_pub {
+                        return Err(ParserError::GENERIC(Box::new(GenericError {
+                            code: "E010",
+                            message: "pub not yet supported on struct constants".to_string(),
+                            token: self.previous().clone(),
+                            help: None
+                        })));
+                    }
+
                     return Err(ParserError::GENERIC(Box::new(GenericError {
                         code: "E005",
                         message: "fields must appear before constants and methods".to_string(),
@@ -608,6 +651,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             constants,
             fields,
             methods,
+            is_pub
         })
     }
 
@@ -644,7 +688,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         })
     }
 
-    fn parse_extension(&mut self) -> Result<ASTNode<'a>, ParserError<'a>> {
+    fn parse_extension(&mut self, is_pub: bool) -> Result<ASTNode<'a>, ParserError<'a>> {
         let target = self.parse_type()?;
 
         let type_name = match &*target {
@@ -682,7 +726,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     initializer: Box::new(value),
                 });
             } else if self.match_token(TokenType::FN) {
-                methods.push(self.parse_function_rest(Some(type_name))?);
+                methods.push(self.parse_function_rest(Some(type_name), is_pub)?);
             } else {
                 return Err(ParserError::GENERIC(Box::new(GenericError {
                     code: "E009",
@@ -1266,17 +1310,29 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         let mut included_nodes = Vec::new();
         let mut found_item = false;
+        let mut is_private = false;
 
         for node in external_declarations {
             match node {
-                ASTNode::StructDeclaration { name, .. } if name.lexeme == item_name => {
-                    included_nodes.push(node.clone());
+                ASTNode::StructDeclaration { name, is_pub, .. } if name.lexeme == item_name => {
                     found_item = true;
+
+                    if *is_pub {
+                        included_nodes.push(node.clone());
+                    } else {
+                        is_private = true;
+                    }
                 }
 
-                ASTNode::FunctionDeclaration { name, .. } if name.lexeme == item_name => {
-                    included_nodes.push(node.clone());
+                ASTNode::FunctionDeclaration { name, is_pub, .. } if name.lexeme == item_name => {
                     found_item = true;
+
+                    if *is_pub {
+                        included_nodes.push(node.clone());
+                    } else {
+                        is_private = true;
+                    }
+
                 }
 
                 ASTNode::FunctionDeclaration { is_extern: true, .. } => {
@@ -1291,6 +1347,15 @@ impl<'a, 'b> Parser<'a, 'b> {
 
                 _ => continue,
             }
+        }
+
+        if found_item && is_private {
+            return Err(ParserError::GENERIC(Box::new(GenericError {
+                code: "E011",
+                message: format!("item '{}' is private", item_name),
+                token: self.previous().clone(),
+                help: Some(format!("add the `pub` keyword to `{}` in module `{}`", item_name, module_name)),
+            })));
         }
 
 
