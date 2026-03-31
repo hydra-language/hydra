@@ -21,6 +21,7 @@ pub enum Symbol {
     },
 }
 
+#[derive(Default)]
 pub struct Scope {
     symbols: HashMap<String, Symbol>,
     parent: Option<Box<Scope>>,
@@ -29,10 +30,7 @@ pub struct Scope {
 impl Scope {
     
     pub fn new() -> Self {
-        Self {
-            symbols: HashMap::new(),
-            parent: None
-        }
+        Self::default()
     }
 
     pub fn new_child(parent: Scope) -> Self {
