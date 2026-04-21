@@ -76,11 +76,11 @@ NOTE: there is a stack bug if building on windows that does not allow the raytra
 To run the `hydrac` command globally from any terminal, you need to create a symbolic link to your WindowsApps folder (which is already on your system PATH).
 
 1.  Open a **new PowerShell window as Administrator**.
-2.  Run the following command. Make sure to update `YOUR_USERNAME` and the path to your cloned repository:
+2.  Run the following command. Make sure you have `$env:USERPROFILE` set and replace the `path\to` with the path to your cloned repository:
     ```powershell
     New-Item -ItemType SymbolicLink `
-      -Path "C:\Users\YOUR_USERNAME\AppData\Local\Microsoft\WindowsApps\hydrac.exe" `
-      -Target "C:\Users\YOUR_USERNAME\path\to\hydra\target\release\hydrac.exe"
+      -Path "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\hydrac.exe" `
+      -Target "$env:USERPROFILE\path\to\hydra\target\release\hydrac.exe"
     ```
 
 🎉 **You're all set!** Check out the `examples` folder in the source code to run some sample programs and get a feel for the syntax.
