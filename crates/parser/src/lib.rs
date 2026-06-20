@@ -1,6 +1,5 @@
 pub mod ast;
 pub mod parser;
-pub mod loader;
+pub mod program;
 
 pub use ast::*;
-pub use errors::HydraError as ParserError;

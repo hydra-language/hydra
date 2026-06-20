@@ -1,4 +1,5 @@
 use super::token::{Token, TokenType};
+use errors::error::{HydraError, Span};
 
 pub struct Lexer<'a> {
     input: &'a str,
@@ -7,9 +8,12 @@ pub struct Lexer<'a> {
     start: usize,
     line: usize,
     column: usize,
+    start_line: usize,
+    start_column: usize,
 }
 
 impl<'a> Lexer<'a> {
+
     pub fn new(input: &'a str) -> Self {
         Self {
             input,
@@ -18,10 +22,20 @@ impl<'a> Lexer<'a> {
             start: 0,
             line: 1,
             column: 1,
+            start_line: 1,
+            start_column: 1
         }
     }
 
-    pub fn tokenize(&mut self) -> Result<Vec<Token<'a>>, String> {
+    fn error(&self, code: &'static str, message: impl Into<String>) -> HydraError {
+        HydraError::new(code, message, Span {
+            line: self.start_line,
+            column: self.start_column,
+            length: (self.current - self.start).max(1)
+        })
+    }
+
+    pub fn tokenize(&mut self) -> Result<Vec<Token<'a>>, HydraError> {
         let mut tokens = Vec::new();
 
         while !self.is_at_end() {
@@ -32,8 +46,8 @@ impl<'a> Lexer<'a> {
             }
 
             self.start = self.current;
-            let start_line = self.line;
-            let start_column = self.column;
+            self.start_line = self.line;
+            self.start_column = self.column;
 
             if let Some(token_type) = self.scan_token()? {
                 let lexeme = &self.input[self.start_offset()..self.current_offset()];
@@ -41,8 +55,11 @@ impl<'a> Lexer<'a> {
                 tokens.push(Token {
                     token_type,
                     lexeme,
-                    line: start_line,
-                    column: start_column,
+                    span: Span {
+                        line: self.start_line,
+                        column: self.start_column,
+                        length: self.current - self.start
+                    }
                 });
             }
         }
@@ -50,14 +67,17 @@ impl<'a> Lexer<'a> {
         tokens.push(Token {
             token_type: TokenType::EOF,
             lexeme: "",
-            line: self.line,
-            column: self.column,
+            span: Span {
+                line: self.line,
+                column: self.column,
+                length: 1
+            }
         });
 
         Ok(tokens)
     }
 
-    fn scan_token(&mut self) -> Result<Option<TokenType>, String> {
+    fn scan_token(&mut self) -> Result<Option<TokenType>, HydraError> {
         let c = self.advance();
 
         let result = match c {
@@ -221,7 +241,7 @@ impl<'a> Lexer<'a> {
                 } else if c.is_alphabetic() || c == '_' {
                     return self.scan_identifier(c);
                 } else {
-                    return Err(format!("Unexpected character '{}' at line {}, column {}", c, self.line, self.column));
+                    return Err(self.error("L001", format!("unexpected character '{}'", c)));
                 }
             }
         };
@@ -229,7 +249,7 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
-    fn scan_number(&mut self, first_digit: char) -> Result<Option<TokenType>, String> {
+    fn scan_number(&mut self, first_digit: char) -> Result<Option<TokenType>, HydraError> {
         // Check for hex or binary
         if first_digit == '0' {
             match self.peek() {
@@ -243,7 +263,7 @@ impl<'a> Lexer<'a> {
                     let lexeme = &self.input[self.start_offset()..self.current_offset()];
 
                     let value = u64::from_str_radix(&lexeme[2..].replace('_', ""), 16)
-                        .map_err(|_| format!("Invalid hexadecimal literal: '{}'", lexeme))? as i64;
+                        .map_err(|_| self.error("L002", format!("invalid hexadecimal literal: '{}'", lexeme)))? as i64;
 
                     return Ok(Some(TokenType::IntLiteral(value)));
                 }
@@ -257,7 +277,7 @@ impl<'a> Lexer<'a> {
 
                     let lexeme = &self.input[self.start_offset()..self.current_offset()];
                     let value = u64::from_str_radix(&lexeme[2..].replace('_', ""), 2)
-                        .map_err(|_| format!("Invalid binary literal: '{}'", lexeme))? as i64;
+                        .map_err(|_| self.error("L003", format!("invalid binary literal: '{}'", lexeme)))? as i64;
 
                     return Ok(Some(TokenType::IntLiteral(value)));
                 }
@@ -281,19 +301,20 @@ impl<'a> Lexer<'a> {
 
             let lexeme = &self.input[self.start_offset()..self.current_offset()];
             let value: f64 = lexeme.replace('_', "").parse()
-                .map_err(|_| format!("Invalid float literal: '{}'", lexeme))?;
+                .map_err(|_| self.error("L004", format!("invalid float literal: '{}'", lexeme)))?;
+
             Ok(Some(TokenType::FloatLiteral(value)))
         } else {
             let lexeme = &self.input[self.start_offset()..self.current_offset()];
 
             let value = lexeme.replace('_', "").parse::<u64>()
-                .map_err(|_| format!("Invalid integer literal: '{}'", lexeme))? as i64;
+                .map_err(|_| self.error("L005", format!("invalid integer literal: '{}'", lexeme)))? as i64;
 
             Ok(Some(TokenType::IntLiteral(value)))
         }
     }
 
-    fn scan_identifier(&mut self, _first: char) -> Result<Option<TokenType>, String> {
+    fn scan_identifier(&mut self, _first: char) -> Result<Option<TokenType>, HydraError> {
         while self.peek().is_alphanumeric() || self.peek() == '_' {
             self.advance();
         }
@@ -321,6 +342,7 @@ impl<'a> Lexer<'a> {
             "bool" => TokenType::BOOL,
             "let" => TokenType::LET,
             "const" => TokenType::CONST,
+            "mut" => TokenType::MUT,
             "fn" => TokenType::FN,
             "struct" => TokenType::STRUCT,
             "extension" => TokenType::EXTENSION,
@@ -337,6 +359,7 @@ impl<'a> Lexer<'a> {
             "match" => TokenType::MATCH,
             "continue" => TokenType::CONTINUE,
             "include" => TokenType::INCLUDE,
+            "module" => TokenType::MODULE,
             "typedef" => TokenType::TYPEDEF,
             "trait" => TokenType::TRAIT,
             "anysize" => TokenType::ANYSIZE,
@@ -404,7 +427,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn scan_string(&mut self) -> Result<Option<TokenType>, String> {
+    fn scan_string(&mut self) -> Result<Option<TokenType>, HydraError> {
         let mut value = String::new();
 
         while !self.is_at_end() {
@@ -422,7 +445,7 @@ impl<'a> Lexer<'a> {
                         '"' => '"',
                         '\\' => '\\',
 
-                        other => return Err(format!("Invalid escape sequence: '\\{}'", other)),
+                        other => return Err(self.error("L006", format!("invalid escape sequence: '\\{}'", other))),
                     };
 
                     value.push(escaped);
@@ -439,18 +462,12 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        Err(format!(
-            "Unterminated string at line {}, column {}",
-            self.line, self.column
-        ))
+        Err(self.error("L007", "unterminated string literal"))
     }
 
-    fn scan_char(&mut self) -> Result<Option<TokenType>, String> {
+    fn scan_char(&mut self) -> Result<Option<TokenType>, HydraError> {
         if self.is_at_end() {
-            return Err(format!(
-                "Unterminated char at line {}, column {}",
-                self.line, self.column
-            ));
+            return Err(self.error("L008", "unterminated character literal"))
         }
 
         let c = match self.advance() {
@@ -463,10 +480,7 @@ impl<'a> Lexer<'a> {
                     '\\' => '\\',
 
                     other => {
-                        return Err(format!(
-                            "Invalid escape sequence: '\\{}' at line {}, column {}",
-                            other, self.line, self.column
-                        ));
+                        return Err(self.error("L006", format!("invalid escape sequence: '\\{}'", other)));
                     }
                 }
             }
@@ -475,10 +489,7 @@ impl<'a> Lexer<'a> {
         };
 
         if self.peek() != '\'' {
-            return Err(format!(
-                "Unterminated or multi-character literal at line {}, column {}",
-                self.line, self.column
-            ));
+            return Err(self.error("L009", "unterminated or multi-character literal"))
         }
 
         self.advance(); // consume closing '

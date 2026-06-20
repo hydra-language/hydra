@@ -1,6 +1,6 @@
 use super::Analyzer;
 use std::mem;
-use errors::{HydraError, generic::GenericError};
+use errors::error::Span;
 use lexer::{Token, TokenType};
 use parser::ast::ASTNode;
 use crate::scope::Scope;
@@ -9,47 +9,21 @@ use ir::expr::BinaryOp;
 impl Analyzer {
 
     pub(crate) fn enter_scope(&mut self) {
-        let parent = mem::replace(&mut self.scope, Scope::new());
-        self.scope = Scope::new_child(parent);
+        let current_module_path = self.current_module.clone();
+        let parent = mem::replace(&mut self.scope, Scope::new(current_module_path.clone()));
+        
+        let mut new_scope = Scope::new(current_module_path);
+        new_scope.parent = Some(Box::new(parent));
+        self.scope = new_scope;
     }
 
     pub(crate) fn leave_scope(&mut self) {
-        let current_scope = mem::replace(&mut self.scope, Scope::new());
-        let parent = current_scope.parent().expect("popped global scope");
-
-        self.scope = parent;
-    }
-
-    pub(crate) fn dummy_token(&self) -> Token<'static> {
-        Token { 
-            token_type: TokenType::EOF, 
-            lexeme: "", 
-            line: 0, 
-            column: 0 
+        let current_module_path = self.current_module.clone();
+        let current_scope = mem::replace(&mut self.scope, Scope::new(current_module_path));
+        
+        if let Some(parent) = current_scope.parent() {
+            self.scope = parent;
         }
-    }
-
-    pub(crate) fn make_error(&self, msg: String, token: &Token) -> HydraError<'static> {
-        HydraError::GENERIC(Box::new(GenericError {
-            code: "E000", 
-            message: msg, 
-            help: None,
-            token: Token { 
-                token_type: token.token_type.clone(), 
-                lexeme: "", 
-                line: token.line, 
-                column: token.column 
-            }
-        }))
-    }
-
-    pub(crate) fn make_generic_error(&self, msg: String) -> HydraError<'static> {
-        HydraError::GENERIC(Box::new(GenericError { 
-            code: "E000", 
-            message: msg, 
-            token: self.dummy_token(), 
-            help: None 
-        }))
     }
 
     pub(crate) fn get_token_from_node<'a>(&self, node: &ASTNode<'a>) -> Token<'a> {
@@ -57,7 +31,8 @@ impl Analyzer {
             ASTNode::VariableExpression { name } => name.clone(),
             ASTNode::Expression { token } | ASTNode::Primtive { token } => token.clone(),
             ASTNode::BinaryExpression { operator, .. } => operator.clone(),
-            ASTNode::FunctionCallExpression { name, .. } => name.clone(),
+            ASTNode::FunctionCallExpression { callee, .. } => self.get_token_from_node(callee), 
+            ASTNode::PathExpression { segments } => segments.first().unwrap().clone(),
             ASTNode::VariableDeclaration { name, .. } => name.clone(),
             ASTNode::AssignmentExpression { operator, .. } => operator.clone(),
             ASTNode::MemberExpression { property, .. } => property.clone(),
@@ -66,7 +41,11 @@ impl Analyzer {
             ASTNode::TypeIdentifier { type_token } => type_token.clone(),
             ASTNode::ReturnStatement { value } => self.get_token_from_node(value),
 
-            _ => self.dummy_token(),
+            _ => Token {
+                token_type: TokenType::EOF,
+                lexeme: "",
+                span: Span::default()
+            }
         }
     }
 

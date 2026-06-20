@@ -6,5 +6,3 @@ edition = "2021"
 [dependencies]
 lexer = { path = "../lexer" }
 errors = { path = "../errors/" }
-ir = { path = "../ir" }
-

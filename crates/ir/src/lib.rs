@@ -1,6 +1,8 @@
 pub mod types;
 pub mod expr;
 pub mod stmt;
+pub mod context;
+pub mod hir;
 
 use std::fmt;
 use types::Type;
@@ -26,6 +28,15 @@ pub struct Program {
     pub globals: Vec<(String, Type, Expr)>
 }
 
+#[derive(Debug, Clone)]
+pub enum Constant {
+    Int(i64, Type),
+    Float(f64, Type),
+    Bool(bool),
+    Char(char),
+    String(String),
+}
+
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let params_str = self.params.iter()
@@ -43,5 +54,17 @@ impl fmt::Display for Program {
             writeln!(f, "{}", func)?;
         }
         Ok(())
+    }
+}
+
+impl std::fmt::Display for Constant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Constant::Int(v, _) => write!(f, "{}", v),
+            Constant::Float(v, _) => write!(f, "{}", v),
+            Constant::Bool(v) => write!(f, "{}", v),
+            Constant::Char(v) => write!(f, "'{}'", v),
+            Constant::String(v) => write!(f, "\"{}\"", v),
+        }
     }
 }

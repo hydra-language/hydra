@@ -1,3 +1,5 @@
+use errors::error::Span;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenType {
     // -----------------------------------------------------------------------
@@ -37,6 +39,7 @@ pub enum TokenType {
     // -----------------------------------------------------------------------
     LET,
     CONST,
+    MUT,
     FN,                     // fn
     STRUCT,
     EXTENSION,
@@ -53,6 +56,7 @@ pub enum TokenType {
     BREAK,
     CONTINUE,
     INCLUDE,                // for imports
+    MODULE,
     TYPEDEF,                // for aliasing predefined types and others
     TRAIT,
     ANYSIZE,                // comptime generic used in function parameters of arrays
@@ -141,6 +145,5 @@ pub enum TokenType {
 pub struct Token<'a> {
     pub token_type: TokenType,
     pub lexeme: &'a str,
-    pub line: usize,
-    pub column: usize,
+    pub span: Span
 }

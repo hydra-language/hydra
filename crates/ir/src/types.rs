@@ -49,10 +49,14 @@ impl fmt::Display for Type {
             Type::F64 => write!(f, "f64"),
             Type::BOOL => write!(f, "bool"),
             Type::CHAR => write!(f, "char"),
-            Type::ARRAY(ty, size) => write!(f, "[{}, {}]", ty, size),
-            Type::INFERRED_ARRAY(ty) => write!(f, "[{}, anysize]", ty),
 
-            _ => write!(f, "{:?}", self)
+            Type::STRUCT(name) => write!(f, "{}", name),
+            Type::REF(inner) => write!(f, "&{}", inner),
+            Type::CONST_REF(inner) => write!(f, "&const {}", inner),
+            Type::POINTER(inner) => write!(f, "*{}", inner),
+            
+            Type::ARRAY(inner, size) => write!(f, "[{}, {}]", inner, size),
+            Type::INFERRED_ARRAY(inner) => write!(f, "[{}]", inner),
         }
     }
 }

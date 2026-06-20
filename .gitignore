@@ -3,3 +3,7 @@
 
 # target binaries
 target/
+
+*.sh
+*.txt
+*.o

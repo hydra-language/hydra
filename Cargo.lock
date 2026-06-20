@@ -144,6 +144,7 @@ dependencies = [
  "inkwell",
  "ir",
  "lexer",
+ "mir",
  "parser",
 ]
 
@@ -172,9 +173,6 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 [[package]]
 name = "errors"
 version = "0.1.0"
-dependencies = [
- "lexer",
-]
 
 [[package]]
 name = "find-msvc-tools"
@@ -216,6 +214,10 @@ dependencies = [
 [[package]]
 name = "ir"
 version = "0.1.0"
+dependencies = [
+ "errors",
+ "parser",
+]
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -232,6 +234,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 [[package]]
 name = "lexer"
 version = "0.1.0"
+dependencies = [
+ "errors",
+]
 
 [[package]]
 name = "libc"
@@ -266,6 +271,15 @@ name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
+
+[[package]]
+name = "mir"
+version = "0.1.0"
+dependencies = [
+ "analyzer",
+ "errors",
+ "ir",
+]
 
 [[package]]
 name = "once_cell"
@@ -307,7 +321,6 @@ name = "parser"
 version = "0.1.0"
 dependencies = [
  "errors",
- "ir",
  "lexer",
 ]
 

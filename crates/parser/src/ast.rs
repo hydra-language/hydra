@@ -9,6 +9,7 @@ pub struct Annotation {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ASTNode<'a> {
     VariableDeclaration {
+        is_pub: bool,
         is_const: bool,
         name: Token<'a>,
         type_annotation: Option<Box<ASTNode<'a>>>,
@@ -38,8 +39,12 @@ pub enum ASTNode<'a> {
         name: Token<'a>,
     },
 
+    PathExpression {
+        segments: Vec<Token<'a>>,
+    },
+
     FunctionCallExpression {
-        name: Token<'a>,
+        callee: Box<ASTNode<'a>>,
         arguments: Vec<ASTNode<'a>>,
         generic_args: Vec<ASTNode<'a>>,
     },
@@ -134,19 +139,20 @@ pub enum ASTNode<'a> {
         generic_params: Vec<Token<'a>>,
         constants: Vec<ASTNode<'a>>,
         fields: Vec<(Token<'a>, Box<ASTNode<'a>>)>,
-        methods: Vec<ASTNode<'a>>,
         is_pub: bool,
     },
 
     StructInitializer {
-        name: Token<'a>,
+        name: Box<ASTNode<'a>>,
         fields: Vec<(Token<'a>, Box<ASTNode<'a>>)>,
     },
 
     ExtensionDeclaration {
+        trait_target: Option<Box<ASTNode<'a>>>,
         target: Box<ASTNode<'a>>,
         constants: Vec<ASTNode<'a>>,
         methods: Vec<ASTNode<'a>>,
+        generic_params: Vec<Token<'a>>,
     },
 
     MethodCallExpression {
@@ -162,19 +168,33 @@ pub enum ASTNode<'a> {
     },
 
     Reference { 
+        is_mut: bool, 
         inner: Box<ASTNode<'a>> 
     },
 
-    ConstReference { 
+    RawPointer { 
+        is_mut: bool, 
         inner: Box<ASTNode<'a>> 
     },
 
-    Pointer {
-        inner: Box<ASTNode<'a>>,
+    BorrowExpression { 
+        is_mut: bool, 
+        right: Box<ASTNode<'a>> 
+    },
+
+    DereferenceExpression {
+        right: Box<ASTNode<'a>>
     },
 
     GenericType {
         base: Box<ASTNode<'a>>,
         args: Vec<ASTNode<'a>>,
     },
+
+    IncludeStatement {
+        path: Box<ASTNode<'a>>,
+        alias: Option<Token<'a>>,
+    },
+
+    ModuleDeclaration { name: Box<ASTNode<'a>> }
 }
