@@ -1,194 +1,151 @@
 use crate::CodeGen;
-use inkwell::AddressSpace;
-use ir::{stmt::{AssignmentTarget, Stmt}, types::Type};
+use ir::{context::DefKind, types::Type};
+use mir::{Statement, StatementKind, Terminator, Place, MIRFunction, LocalID};
+use inkwell::values::PointerValue;
 
 impl<'c> CodeGen<'c> {
 
-    pub fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
-        match stmt {
-            Stmt::Var { name, ty, init, is_mutable } => {
-                let init_val = self.compile_expr(init)?;
+    pub fn compile_stmt(&mut self, stmt: &Statement, mir_fn: &MIRFunction) -> Result<(), String> {
+        match &stmt.kind {
+            StatementKind::Assign(place, rvalue) => {
+                let rval_llvm = self.compile_rvalue(rvalue, mir_fn)?;
 
-                if !is_mutable && self.is_val_const(&init_val) {
-                    let global = self.module.add_global(
-                        init_val.get_type(), 
-                        Some(AddressSpace::default()), 
-                        name
-                    );
-
-                    global.set_initializer(&init_val);
-                    global.set_constant(true);
-
-                    self.variables.insert(name.clone(), global.as_pointer_value());
-
-                    return Ok(());
+                // Check type of local being assigned to
+                let place_ty = &mir_fn.locals[place.local.0].ty;
+                if *place_ty != ir::types::Type::VOID {
+                    let dest_ptr = self.compile_place(place, mir_fn)?;
+                    self.builder.build_store(dest_ptr, rval_llvm);
                 }
-
-                let alloca = self.create_entry_block_alloca(name, ty);
-                self.builder.build_store(alloca, init_val);
-
-                self.variables.insert(name.clone(), alloca);
-
-                Ok(())
-            },
-
-            Stmt::Assign { target, value } => {
-                let val = self.compile_expr(value)?;
-
-                match target {
-                    AssignmentTarget::Variable(name) => {
-                        let ptr =* self.variables.get(name)
-                            .ok_or(format!("ICE: variable '{}' not found in codegen", name)
-                        )?;
-
-                        self.builder.build_store(ptr, val);
-                    },
-
-                    AssignmentTarget::ArrayAccess { array, index } => {
-                        let array_val = self.compile_expr(array)?;
-                        let array_ptr = array_val.into_pointer_value();
-
-                        let index_val = self.compile_expr(index)?;
-                        let index_int = index_val.into_int_value();
-
-                        let element_ptr = unsafe {
-                            match array.ty {
-                                Type::ARRAY(_, _) => {
-                                    let zero = self.context.i64_type().const_int(0, false);
-                                    self.builder.build_gep(array_ptr, &[zero, index_int], "elem_ptr")
-                                },
-
-                                Type::INFERRED_ARRAY(_) | Type::POINTER(_) => {
-                                    self.builder.build_gep(array_ptr, &[index_int], "elem_ptr")
-                                },
-
-                                _ => return Err(format!("ICE: assign to non-array type {:?}", array.ty))
-                            }
-                        };
-
-                        self.builder.build_store(element_ptr, val);
-                    },
-
-                    AssignmentTarget::MemberAccess { object, index, .. } => {
-                        let obj_val = self.compile_expr(object)?;
-                        
-                        let struct_ptr = obj_val.into_pointer_value();
-
-                        let field_ptr = self.builder.build_struct_gep(struct_ptr, *index, "field_ptr")
-                                .map_err(|_| "llvm gep failed: index out of bounds".to_string())?;
-
-                        self.builder.build_store(field_ptr, val);
-                    },
-
-                    AssignmentTarget::PointerDeref(ptr_expr) => {
-                        let addr = self.compile_expr(ptr_expr)?.into_pointer_value();
-                        self.builder.build_store(addr, val);
-                    },
-                }
-
-                Ok(())
+                // If it IS void, we do nothing (no memory to store into!)
             }
 
-            Stmt::Expr(expr) => {
-                self.compile_expr(expr)?;
-
-                Ok(())
-            },
-
-            Stmt::Return(value) => {
-                if let Some(expr) = value {
-                    let val = self.compile_expr(expr)?;
-
-                    let ret_val = if let Type::STRUCT(_) | Type::ARRAY(_, _) = expr.ty {
-                        if val.is_pointer_value() {
-                            self.builder.build_load(val.into_pointer_value(), "agg_load")
-                        } else {
-                            val
-                        }
-                    } else {
-                        val
-                    };
-
-                    self.builder.build_return(Some(&ret_val));
-                } else {
-                    self.builder.build_return(None);
-                }
-
-                Ok(())
-            },
-
-            Stmt::If { cond, then_block, else_block } => {
-                let parent_func = self.current_fn.unwrap();
-
-                let then_bb = self.context.append_basic_block(parent_func, "if_then");
-                let else_bb = self.context.append_basic_block(parent_func, "if_else");
-                let merge_bb = self.context.append_basic_block(parent_func, "if_merge");
-
-                let cond_val = self.compile_expr(cond)?.into_int_value();
-
-                if else_block.is_some() {
-                    self.builder.build_conditional_branch(cond_val, then_bb, else_bb);
-                } else {
-                    self.builder.build_conditional_branch(cond_val, then_bb, merge_bb);
-                }
-
-                self.builder.position_at_end(then_bb);
-                for stmt in &then_block.stmts {
-                    self.compile_stmt(stmt)?;
-                }
-
-                if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
-                    self.builder.build_unconditional_branch(merge_bb);
-                }
-
-                // 4. Compile 'Else' Block
-                self.builder.position_at_end(else_bb);
-                if let Some(block) = else_block {
-                    for stmt in &block.stmts {
-                        self.compile_stmt(stmt)?;
-                    }
-                    if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
-                        self.builder.build_unconditional_branch(merge_bb);
-                    }
-                } else {
-                    // Empty else block just jumps to merge
-                    self.builder.build_unconditional_branch(merge_bb);
-                }
-
-                // 5. Continue at Merge Block
-                self.builder.position_at_end(merge_bb);
-
-                Ok(())
-            }
-
-            Stmt::While { cond, body, kind: _} => {
-                self.compile_while(cond, body)
-            },
-
-            Stmt::Block(block) => {
-                for s in &block.stmts {
-                    self.compile_stmt(s)?;
-                }
-                Ok(())
-            },
-
-            Stmt::Break => {
-                let (_, break_bb) = self.loop_stack.last()
-                    .ok_or("break statement used outside of loop")?;
-
-                self.builder.build_unconditional_branch(*break_bb);
-
-                Ok(())
-            },
-
-            Stmt::Continue => {
-                let (continue_bb, _) = self.loop_stack.last()
-                    .ok_or("continue statement used outside of loop")?;
-
-                self.builder.build_unconditional_branch(*continue_bb);
-
-                Ok(())
+            StatementKind::Drop(_) => {
+                // Stack types drop automatically. Heap drop logic goes here later!
             }
         }
+        Ok(())
+    }
+
+    pub fn compile_terminator(&mut self, term: &Terminator, mir_fn: &MIRFunction) -> Result<(), String> {
+        match term {
+            Terminator::Goto { target } => {
+                let target_bb = self.blocks.get(target).unwrap();
+                self.builder.build_unconditional_branch(*target_bb);
+            }
+            Terminator::SwitchInt { discriminant, true_target, false_target } => {
+                let cond_val = self.compile_operand(discriminant, mir_fn)?.into_int_value();
+                let t_bb = self.blocks.get(true_target).unwrap();
+                let f_bb = self.blocks.get(false_target).unwrap();
+                self.builder.build_conditional_branch(cond_val, *t_bb, *f_bb);
+            }
+            Terminator::Return => {
+                let ret_ty = &mir_fn.locals[0].ty;
+                if *ret_ty == ir::types::Type::VOID {
+                    self.builder.build_return(None);
+                } else {
+                    let ret_ptr = self.locals.get(&LocalID(0)).unwrap();
+                    let ret_val = self.builder.build_load(*ret_ptr, "ret_val");
+                    self.builder.build_return(Some(&ret_val));
+                }
+            }
+
+            Terminator::Call { callee, args, destination, target } => {
+                let func_info = self.module.get_function(callee)
+                    .ok_or_else(|| format!("ICE: no LLVM function found for '{}'", callee))?;
+
+                let mut llvm_args = Vec::new();
+                for arg in args {
+                    llvm_args.push(self.compile_operand(arg, mir_fn)?.into());
+                }
+
+                let call_val = self.builder.build_call(func_info, &llvm_args, "call_tmp");
+
+                let dest_ty = &mir_fn.locals[destination.local.0].ty;
+                if *dest_ty != ir::types::Type::VOID {
+                    let dest_ptr = self.compile_place(destination, mir_fn)?;
+                    if let Some(val) = call_val.try_as_basic_value().left() {
+                        self.builder.build_store(dest_ptr, val);
+                    }
+                }
+
+                let target_bb = self.blocks.get(target).unwrap();
+                self.builder.build_unconditional_branch(*target_bb);
+            }
+
+            Terminator::BuiltinCall { name, args, target } => {
+                self.compile_builtin(name, args, mir_fn)?;
+                let target_bb = self.blocks.get(target).unwrap();
+                self.builder.build_unconditional_branch(*target_bb);
+            }
+            Terminator::Unreachable => {
+                self.builder.build_unreachable();
+            }
+        }
+        Ok(())
+    }
+
+    /// Evaluates a Place down to an LLVM Memory Pointer
+    pub fn compile_place(&self, place: &Place, mir_fn: &MIRFunction) -> Result<PointerValue<'c>, String> {
+        let ptr = self.locals.get(&place.local).ok_or_else(|| {
+            format!("ICE: Attempted to compile place for unallocated local _{}", place.local.0)
+        })?;
+
+        let mut ptr = *ptr;
+        let mut current_ty = mir_fn.locals[place.local.0].ty.clone();
+
+        for proj in &place.projection {
+            match proj {
+                mir::ProjectionElem::Deref => {
+                    ptr = self.builder.build_load(ptr, "deref").into_pointer_value();
+
+                    if let Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) = current_ty {
+                        current_ty = *inner;
+                    }
+                }
+                mir::ProjectionElem::Field(idx) => {
+                    // Auto-deref through any pointer/reference wrappers before GEP.
+                    // This handles the case where the MIR emits a Field projection
+                    // directly on a &T or *T without an explicit preceding Deref.
+                    while let Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) = &current_ty {
+                        ptr = self.builder.build_load(ptr, "auto_deref").into_pointer_value();
+                        current_ty = *inner.clone();
+                    }
+
+                    let struct_name = match &current_ty {
+                        Type::STRUCT(name) => name.clone(),
+                        _ => return Err(format!(
+                            "ICE: field access on non-struct type {:?}", current_ty
+                        )),
+                    };
+
+                    let _struct_ty = self.module.get_struct_type(&struct_name)
+                        .ok_or_else(|| format!("ICE: struct type '{}' not found in module", struct_name))?;
+
+                    ptr = self.builder.build_struct_gep(ptr, *idx as u32, "field_ptr")
+                        .map_err(|_| format!("GEP failed: invalid field index {} on '{}'", idx, struct_name))?;
+
+                    current_ty = self.hir_context
+                        .find_struct_by_name(&struct_name)
+                        .map(|def_id| {
+                            let fields = self.hir_context.get_struct_fields(def_id);
+                            fields[*idx].1.clone()  // (String name, Type, bool) → take the Type
+                        })
+                        .unwrap_or(Type::VOID);
+                }
+                mir::ProjectionElem::Index(local_idx) => {
+                    let idx_ptr = self.locals.get(local_idx).unwrap();
+                    let idx_val = self.builder.build_load(*idx_ptr, "idx_val").into_int_value();
+                    
+                    if let ir::types::Type::ARRAY(_, _) = current_ty {
+                        let zero = self.context.i64_type().const_zero();
+                        ptr = unsafe { self.builder.build_gep(ptr, &[zero, idx_val], "arr_idx") };
+                    } else {
+                        ptr = unsafe { self.builder.build_gep(ptr, &[idx_val], "ptr_idx") };
+                    }
+                }
+            }
+        }
+
+        Ok(ptr)
     }
 }
