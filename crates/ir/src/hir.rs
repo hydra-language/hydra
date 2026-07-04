@@ -128,7 +128,9 @@ pub enum HIRStmt {
     VarDecl {
         def_id: DefID,
         init: Option<HIRExpr>,
+        span: Span,
     },
+
     Expr(HIRExpr),
 }
 
@@ -188,7 +190,7 @@ impl fmt::Display for HIRBlock {
 impl fmt::Display for HIRStmt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HIRStmt::VarDecl { def_id, init } => {
+            HIRStmt::VarDecl { def_id, init, .. } => {
                 write!(f, "let {}", def_id)?;
                 if let Some(expr) = init {
                     write!(f, " = {};", expr)?;

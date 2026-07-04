@@ -33,6 +33,7 @@ pub enum DefKind {
 
     Struct {
         fields: Vec<(String, Type, bool)>,
+        generic_params: Vec<String>,
     },
 
     Alias {
@@ -82,5 +83,40 @@ impl HIRContext {
 
     pub fn update_def(&mut self, id: DefID, info: SymbolInfo) {
         self.definitions.insert(id, info);
+    }
+
+    pub fn get_struct_fields(&self, id: DefID) -> Vec<(String, Type, bool)> {
+        if let Some(info) = self.get_def(id) {
+            if let DefKind::Struct { fields, .. } = &info.kind {
+                return fields.clone();
+            }
+        }
+
+        panic!("struct fields not found for {}", id);
+    }
+
+    pub fn find_struct_by_name(&self, name: &str) -> Option<DefID> {
+        self.definitions.iter().find_map(|(id, info)| {
+            let path_str = info.absolute_path.join("::");
+
+            // This ensures "Shape" matches even if stored as an absolute path
+            if path_str == name || info.name == name || info.absolute_path.last().map(|s| s.as_str()) == Some(name) {
+                if let DefKind::Struct { .. } = &info.kind {
+                    return Some(*id);
+                }
+            }
+            None
+        })
+    }
+
+    pub fn find_function_by_name(&self, name: &str) -> Option<DefID> {
+        self.definitions.iter().find_map(|(id, info)| {
+            if info.absolute_path.join("::") == name {
+                if let DefKind::Function { .. } = &info.kind {
+                    return Some(*id);
+                }
+            }
+            None
+        })
     }
 }
