@@ -1,0 +1,10 @@
+[package]
+name = "borrowcheck"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mir = { path = "../mir" }
+lexer = { path = "../lexer" }
+ir = { path = "../ir" }
+errors = { path = "../errors" }
