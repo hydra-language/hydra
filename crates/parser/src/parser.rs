@@ -981,7 +981,6 @@ impl<'a> Parser<'a> {
 
     fn parse_call(&mut self) -> Result<ASTNode<'a>, HydraError> {
         let mut expr = self.parse_primary()?;
-
         loop {
             if self.match_token(TokenType::LeftParen) {
                 expr = self.finish_parse_fn_call(expr, Vec::new())?;
@@ -992,27 +991,37 @@ impl<'a> Parser<'a> {
                     target: Box::new(*target),
                 };
             } else if self.match_token(TokenType::DoubleColon) {
-                let mut generic_args = Vec::new();
-
+                // Handle turbofish-style generic arguments (e.g., path::<T>())
                 if self.match_token(TokenType::LeftAngle) {
+                    let mut generic_args = Vec::new();
                     loop {
                         generic_args.push(*self.parse_type()?);
                         if self.match_token(TokenType::RightAngle) { break; }
                         self.consume(TokenType::Comma, "expected ',' in generic args")?;
                     }
-                    self.consume(TokenType::DoubleColon, "expected '::' after generic args")?;
+
+                    self.consume(TokenType::LeftParen, "expected '(' after generic arguments")?;
+                    expr = self.finish_parse_fn_call(expr, generic_args)?;
+                } else {
+                    // Path continuation: iteratively build up the PathExpression
+                    let next_name = self.consume_identifier("expected identifier after '::'")?.clone();
+
+                    expr = match expr {
+                        ASTNode::VariableExpression { name } => {
+                            ASTNode::PathExpression { segments: vec![name, next_name] }
+                        },
+                        ASTNode::PathExpression { mut segments } => {
+                            segments.push(next_name);
+                            ASTNode::PathExpression { segments }
+                        },
+                        _ => {
+                            return Err(self.error(self.previous(), "P001", "expected a module, struct, or variable path before '::'"));
+                        }
+                    };
                 }
-
-                let method_name = self.consume_identifier("expected method name after '::'")?;
-                self.consume(TokenType::LeftParen, "expected '(' after method name")?;
-                let args = self.finish_parse_fn_call_args()?;
-
-                expr = ASTNode::MethodCallExpression {
-                    object: Box::new(expr),
-                    method: method_name,
-                    arguments: args,
-                    generic_args,
-                };
+            } else if self.allow_struct && self.check(TokenType::LeftBrace) {
+                // Catch struct initializers following a path (e.g., math::Rectangle { ... })
+                expr = self.parse_struct_initializer(expr)?;
             } else if self.match_token(TokenType::Dot) {
                 let name = if let TokenType::IDENTIFIER(_) = self.peek().token_type {
                     self.advance().clone()
@@ -1031,6 +1040,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        
         Ok(expr)
     }
 
