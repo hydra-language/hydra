@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    AggregateKind, BasicBlock, BasicBlockID, 
-    LocalDecl, LocalID, MIRFunction, Place, 
-    ProjectionElem, Rvalue, Statement, Terminator,
+    AggregateKind, BasicBlock, BasicBlockID, LocalDecl, LocalID, MIRFunction, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator
 };
 use crate::Operand;
 
@@ -114,7 +112,7 @@ impl<'a> MIRBuilder<'a> {
 
     fn lower_stmt(&mut self, stmt: &HIRStmt) {
         match stmt {
-            HIRStmt::VarDecl { def_id, init } => {
+            HIRStmt::VarDecl { def_id, init, span: decl_span } => {
                 let is_const = matches!(
                     self.context.get_def(*def_id).map(|i| &i.kind),
                     Some(DefKind::Constant { .. })
@@ -132,22 +130,26 @@ impl<'a> MIRBuilder<'a> {
                         if let Some(expr) = init {
                             if let Some(value) = fold::const_fold_hir(expr, self.context) {
                                 self.const_map.insert(*def_id, value);
+                                return;
                             }
                         }
-                        return;
                     }
-                    // non-scalar const (array, etc.) falls through to stack allocation below
                 }
 
                 let ty = init.as_ref().map(|e| e.ty.clone()).unwrap_or(Type::VOID);
                 let local_id = self.new_local(ty, false, Some(*def_id));
                 self.var_map.insert(*def_id, local_id);
+
                 if let Some(expr) = init {
                     let operand = self.lower_expr_to_operand(expr);
-                    self.push_statement(Statement::Assign(
-                        Place { local: local_id, projection: vec![] },
-                        Rvalue::Use(operand),
-                    ));
+
+                    self.push_statement(Statement {
+                        kind: crate::StatementKind::Assign(
+                            Place { local: local_id, projection: vec![] },
+                            Rvalue::Use(operand),
+                        ),
+                        span: *decl_span
+                    });
                 }
             }
 
@@ -185,21 +187,25 @@ impl<'a> MIRBuilder<'a> {
             }
 
             HIRExprKind::Assign { target, value } => {
+                // 1. lower the right-hand side first to get the value to store
                 let rval_operand = self.lower_expr_to_operand(value);
-                
-                // For now, we only handle assigning to simple variables. 
-                // Later, you'll need a `lower_expr_to_place` to handle `a[0] = 5`
-                let target_place = match &target.kind {
-                    HIRExprKind::VarRef(def_id) => {
-                        let local = *self.var_map.get(def_id).unwrap();
-                        Place { local, projection: vec![] }
-                    },
-                    _ => unimplemented!("assignment to complex places not yet supported in MIR"),
+
+                // 2. lower the left-hand side to resolve the memory location
+                let target_op = self.lower_expr_to_operand(target);
+
+                // 3. extract the Place from the evaluated target
+                let target_place = match target_op {
+                    Operand::Copy(p) | Operand::Move(p) => p,
+                    Operand::Const(_) => panic!("Cannot assign to a constant literal"),
                 };
 
-                self.push_statement(Statement::Assign(target_place, Rvalue::Use(rval_operand)));
-                
-                // Assignments evaluate to VOID, so we return a dummy unit type
+                // 4. emit the assignment using the dynamically resolved place
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(target_place, Rvalue::Use(rval_operand)),
+                    span: expr.span
+                });
+
+                // assignments evaluate to VOID, so we return a dummy unit type
                 let unit_local = self.new_local(Type::VOID, false, None);
                 Operand::Copy(Place { local: unit_local, projection: vec![] })
             }
@@ -211,10 +217,13 @@ impl<'a> MIRBuilder<'a> {
                 let temp_local = self.new_local(expr.ty.clone(), false, None);
                 let target_place = Place { local: temp_local, projection: vec![] };
 
-                self.push_statement(Statement::Assign(
-                    target_place.clone(),
-                    Rvalue::BinaryOp(*op, left_op, right_op)
-                ));
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(
+                        target_place.clone(),
+                        Rvalue::BinaryOp(*op, left_op, right_op)
+                    ),
+                    span: expr.span
+                });
 
                 Operand::Copy(target_place)
             }
@@ -224,10 +233,13 @@ impl<'a> MIRBuilder<'a> {
                 let temp_local = self.new_local(expr.ty.clone(), false, None);
                 let target_place = Place { local: temp_local, projection: vec![] };
 
-                self.push_statement(Statement::Assign(
-                    target_place.clone(),
-                    Rvalue::UnaryOp(*op, inner_op)
-                ));
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(
+                        target_place.clone(),
+                        Rvalue::UnaryOp(*op, inner_op)
+                    ),
+                    span: expr.span
+                });
 
                 Operand::Copy(target_place)
             }
@@ -237,10 +249,13 @@ impl<'a> MIRBuilder<'a> {
                 let temp_local = self.new_local(expr.ty.clone(), false, None);
                 let target_place = Place { local: temp_local, projection: vec![] };
 
-                self.push_statement(Statement::Assign(
-                    target_place.clone(),
-                    Rvalue::Cast(*kind, inner_op, expr.ty.clone())
-                ));
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(
+                        target_place.clone(),
+                        Rvalue::Cast(*kind, inner_op, expr.ty.clone())
+                    ),
+                    span: expr.span
+                });
 
                 Operand::Copy(target_place)
             }
@@ -248,13 +263,15 @@ impl<'a> MIRBuilder<'a> {
             HIRExprKind::Return(ret_expr_opt) => {
                 if let Some(ret_expr) = ret_expr_opt {
                     let ret_operand = self.lower_expr_to_operand(ret_expr);
-                    // _0 is always the return value in MIR
-                    self.push_statement(Statement::Assign(
-                        Place { local: LocalID(0), projection: vec![] },
-                        Rvalue::Use(ret_operand)
-                    ));
-                }
-                
+                    self.push_statement(Statement {
+                        kind: StatementKind::Assign(
+                            Place { local: LocalID(0), projection: vec![] },
+                            Rvalue::Use(ret_operand)
+                        ),
+                        span: ret_expr.span
+                    });
+                } 
+
                 self.terminate_block(Terminator::Return);
                 
                 // Since `return` diverges, it doesn't matter what we return here.
@@ -266,6 +283,13 @@ impl<'a> MIRBuilder<'a> {
             }
 
             HIRExprKind::Call { callee, args, .. } => {
+                let info = self.context.get_def(*callee).expect("ICE: function definition not found");
+                let callee_name = if info.absolute_path.is_empty() {
+                    info.name.clone()
+                } else {
+                    info.absolute_path.join("::")
+                };
+
                 let mut lowered_args = Vec::new();
                 for arg in args {
                     lowered_args.push(self.lower_expr_to_operand(arg));
@@ -276,7 +300,7 @@ impl<'a> MIRBuilder<'a> {
                 let success_block = self.new_block();
 
                 self.terminate_block(Terminator::Call {
-                    callee: *callee,
+                    callee: callee_name,
                     args: lowered_args,
                     destination: destination.clone(),
                     target: success_block,
@@ -419,10 +443,13 @@ impl<'a> MIRBuilder<'a> {
                 };
 
                 // Emit the Aggregate instruction
-                self.push_statement(Statement::Assign(
-                    target_place.clone(),
-                    Rvalue::Aggregate(AggregateKind::Array(inner_ty), lowered_elements)
-                ));
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(
+                        target_place.clone(),
+                        Rvalue::Aggregate(AggregateKind::Array(inner_ty), lowered_elements)
+                    ),
+                    span: expr.span
+                });
 
                 Operand::Copy(target_place)
             }
@@ -445,12 +472,15 @@ impl<'a> MIRBuilder<'a> {
                     Operand::Move(Place { local, projection }) if projection.is_empty() => local,
                     _ => {
                         let idx_temp = self.new_local(index.ty.clone(), false, None);
-                        self.push_statement(Statement::Assign(
-                            Place { local: idx_temp, projection: vec![] },
-                            Rvalue::Use(index_op)
-                        ));
+                        self.push_statement(Statement {
+                            kind: StatementKind::Assign(
+                                Place { local: idx_temp, projection: vec![] },
+                                Rvalue::Use(index_op)
+                            ),
+                            span: index.span
+                        });
                         idx_temp
-                    }
+                    }               
                 };
 
                 // 4. Push the index projection onto the array's place
@@ -470,12 +500,14 @@ impl<'a> MIRBuilder<'a> {
                 let target_place = match target_op {
                     Operand::Copy(p) | Operand::Move(p) => p,
                     Operand::Const(c) => {
-                        // Spill constant to a temp so we have an addressable place
                         let temp = self.new_local(target.ty.clone(), false, None);
-                        self.push_statement(Statement::Assign(
-                            Place { local: temp, projection: vec![] },
-                            Rvalue::Use(Operand::Const(c)),
-                        ));
+                        self.push_statement(Statement {
+                            kind: StatementKind::Assign(
+                                Place { local: temp, projection: vec![] },
+                                Rvalue::Use(Operand::Const(c)),
+                            ),
+                            span: target.span
+                        });
                         Place { local: temp, projection: vec![] }
                     }
                 };
@@ -483,10 +515,13 @@ impl<'a> MIRBuilder<'a> {
                 let temp_local = self.new_local(expr.ty.clone(), false, None);
                 let out_place = Place { local: temp_local, projection: vec![] };
 
-                self.push_statement(Statement::Assign(
-                    out_place.clone(),
-                    Rvalue::Ref(*is_mut, target_place),
-                ));
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(
+                        out_place.clone(),
+                        Rvalue::Ref(*is_mut, target_place),
+                    ),
+                    span: expr.span
+                });
 
                 Operand::Copy(out_place)
             }
@@ -511,7 +546,50 @@ impl<'a> MIRBuilder<'a> {
                 }
             }
 
-            _ => unimplemented!("mir lowering for {} not yet written", expr.kind)
+            HIRExprKind::StructInit { def_id, values } => {
+                let mut field_operands = Vec::new();
+
+                for field_expr in values {
+                    let operand = self.lower_expr_to_operand(field_expr);
+                    field_operands.push(operand);
+                }
+
+                // create a temporary variable to hold the newly constructed struct
+                let temp_local = self.new_local(expr.ty.clone(), false, None);
+                let target_place = Place { local: temp_local, projection: vec![] };
+
+                // emit the Aggregate instruction
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(
+                        target_place.clone(),
+                        Rvalue::Aggregate(AggregateKind::Struct(*def_id), field_operands)
+                    ),
+                    span: expr.span
+                });
+
+                Operand::Copy(target_place)
+            }
+
+            HIRExprKind::FieldAccess { object, field_index } => {
+                // 1. lower the base expression (e.g., `self`) to an operand
+                let base_op = self.lower_expr_to_operand(object);
+
+                // 2. extract the Place from the operand
+                let mut place = match base_op {
+                    Operand::Copy(p) | Operand::Move(p) => p,
+                    Operand::Const(_) => panic!("Cannot access field of a constant directly"),
+                };
+
+                // 3. append the field access to the projection list.
+                place.projection.push(ProjectionElem::Field(*field_index));
+
+                // 4. return as a copy or move depending on the field's type
+                if self.is_copy_type(&expr.ty) {
+                    Operand::Copy(place)
+                } else {
+                    Operand::Move(place)
+                }
+            }
         }
     }
 

@@ -2,6 +2,7 @@ pub mod builder;
 
 use std::fmt;
 
+use errors::error;
 use ir::types::Type;
 use ir::context::DefID;
 use ir::hir::{HIRBinOp, HIRUnaryOp, CastKind};
@@ -58,11 +59,17 @@ pub enum ProjectionElem {
 
 // Statements execute sequentially and alter memory/locals
 #[derive(Debug, Clone)]
-pub enum Statement {
+pub enum StatementKind {
     Assign(Place, Rvalue),
     Drop(Place),
-    // Later, you can add things like StorageLive(LocalID) for borrow checking!
 }
+
+#[derive(Debug, Clone)]
+pub struct Statement {
+    pub kind: StatementKind,
+    pub span: error::Span,
+}
+
 
 // Rvalues (Right-values) are operations that compute a value
 #[derive(Debug, Clone)]
@@ -105,7 +112,7 @@ pub enum Terminator {
     // Function calls are terminators in MIR! 
     // This allows for explicit unwinding/panic handling later.
     Call {
-        callee: DefID,
+        callee: String,
         args: Vec<Operand>,
         destination: Place,     // Where the return value gets stored
         target: BasicBlockID,   // Where to go after the call finishes
@@ -156,9 +163,9 @@ impl fmt::Display for MIRFunction {
 
 impl fmt::Display for Statement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Statement::Assign(place, rval) => write!(f, "{} = {}", place, rval),
-            Statement::Drop(place) => write!(f, "drop({})", place),
+        match &self.kind {
+            StatementKind::Assign(place, rval) => write!(f, "{} = {}", place, rval),
+            StatementKind::Drop(place) => write!(f, "drop({})", place),
         }
     }
 }
@@ -166,9 +173,7 @@ impl fmt::Display for Statement {
 impl fmt::Display for Place {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for proj in &self.projection {
-            if let ProjectionElem::Deref = proj {
-                write!(f, "*")?;
-            }
+            if let ProjectionElem::Deref = proj { write!(f, "*")?; }
         }
 
         write!(f, "_{}", self.local.0)?;
@@ -176,8 +181,8 @@ impl fmt::Display for Place {
         for proj in &self.projection {
             match proj {
                 ProjectionElem::Deref => {}
-                ProjectionElem::Field(..) => {}
-                ProjectionElem::Index(..) => {}
+                ProjectionElem::Field(idx) => write!(f, ".{}", idx)?,
+                ProjectionElem::Index(local) => write!(f, "[_{}]", local.0)?,
             }
         }
 
@@ -205,7 +210,7 @@ impl fmt::Display for Rvalue {
             },
             Rvalue::BinaryOp(op, lhs, rhs) => write!(f, "{} {} {}", lhs, op, rhs),
             Rvalue::UnaryOp(op, operand) => write!(f, "{}{}", op, operand),
-            Rvalue::Cast(kind, operand, ty) => write!(f, "{} as {}", operand, ty),
+            Rvalue::Cast(_kind, operand, ty) => write!(f, "{} as {}", operand, ty),
             Rvalue::Aggregate(_, _) => write!(f, "aggregate(...)"),
         }
     }
