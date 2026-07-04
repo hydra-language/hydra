@@ -16,11 +16,12 @@ pub struct Analyzer {
     pub scope: Scope,
     pub context: HIRContext,
     pub global_symbols: HashMap<Vec<String>, DefID>,
-    pub impl_registry: HashMap<Type, HashMap<String, DefID>>,
+    pub impl_registry: HashMap<String, HashMap<String, DefID>>,
     pub(crate) current_return_type: Option<Type>,
     pub(crate) current_module: Vec<String>,
     pub(crate) current_struct: Option<String>,
-    pub(crate) current_source: String
+    pub(crate) current_source: String,
+    pub(crate) current_generics: Vec<String>,
 }
 
 impl Analyzer {
@@ -163,10 +164,15 @@ impl Analyzer {
                 match node {
                     ASTNode::FunctionDeclaration { name, parameters, return_type, body, is_extern, generic_params, annotations, .. } => {
                         self.enter_scope();
+
+                        let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
+                        self.current_generics.extend(param_names.clone());
+
                         let rt = match self.lower_type(*return_type.clone()) {
                             Ok(t) => t,
                             Err(e) => { errors.push(e); Type::VOID }
                         };
+
                         self.current_return_type = Some(rt.clone());
 
                         let mut ir_params = Vec::new();
@@ -212,12 +218,18 @@ impl Analyzer {
                             is_intrinsic,
                             generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect(),
                         });
+
+                        self.current_generics.truncate(self.current_generics.len() - param_names.len());
                         self.leave_scope();
                         self.current_return_type = None;
                     }
 
-                    ASTNode::StructDeclaration { name, fields, constants, .. } => {
+                    ASTNode::StructDeclaration { name, fields, constants, generic_params, .. } => {
                         self.current_struct = Some(name.lexeme.to_string());
+
+                        let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
+                        self.current_generics.extend(param_names.clone());
+
                         let mut struct_path = self.current_module.clone();
                         struct_path.push(name.lexeme.to_string());
 
@@ -274,13 +286,17 @@ impl Analyzer {
                             name: name.lexeme.to_string(),
                             span: name.span,
                             absolute_path: struct_path.clone(),
-                            kind: DefKind::Struct { fields: symbol_fields }
+                            kind: DefKind::Struct { 
+                                fields: symbol_fields, 
+                                generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect() 
+                            }
                         };
 
                         let def_id = *self.global_symbols.get(&struct_path).unwrap();
                         self.context.update_def(def_id, info);
 
                         self.current_struct = None;
+                        self.current_generics.truncate(self.current_generics.len() - param_names.len());
                     }
 
                     ASTNode::VariableDeclaration { name, initializer, type_annotation, .. } => {
@@ -301,30 +317,74 @@ impl Analyzer {
                         }
                     }
 
-                    ASTNode::ExtensionDeclaration { target, constants, methods, .. } => {
+                    ASTNode::ExtensionDeclaration { target, constants, methods, generic_params, .. } => {
+                        let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
+                        self.current_generics.extend(param_names.clone());
+
                         let target_type = self.lower_type(*target.clone()).unwrap_or(Type::VOID);
                         let target_path = match &target_type {
                             Type::STRUCT(full_path) => full_path.split("::").map(|s| s.to_string()).collect(),
+
+                            Type::GENERIC_INSTANCE(base, _) => {
+                                if let Type::STRUCT(full_path) = &**base {
+                                    full_path.split("::").map(|s| s.to_string()).collect()
+                                } else {
+                                    self.current_module.clone()
+                                }
+                            },
+
                             _ => {
                                 let target_name = match &**target {
                                     ASTNode::TypeIdentifier { type_token } => type_token.lexeme.to_string(),
+
+                                    ASTNode::GenericType { base, .. } => {
+                                        if let ASTNode::TypeIdentifier { type_token } = &**base {
+                                            type_token.lexeme.to_string()
+                                        } else { String::new() }
+                                    }
+
                                     _ => String::new(),
                                 };
+
                                 let mut p = self.current_module.clone();
-                                if !target_name.is_empty() { p.push(target_name); }
+                                if !target_name.is_empty() {
+                                    p.push(target_name); 
+                                }
+
                                 p
                             }
                         };
                         
-                        let type_methods = self.impl_registry.get(&target_type).cloned().unwrap_or_default();
-                        
+                        let struct_name = match &target_type {
+                            Type::STRUCT(name) => name.clone(),
+                            Type::GENERIC_INSTANCE(base, _) => {
+                                if let Type::STRUCT(name) = base.as_ref() { name.clone() }
+                                else { String::new() }
+                            }
+                            _ => String::new(),
+                        };
+                        let type_methods = self.impl_registry.get(&struct_name).cloned().unwrap_or_default(); 
+
                         for method in methods {
-                            if let ASTNode::FunctionDeclaration { name: m_name, parameters, return_type, body, generic_params, annotations, is_extern, .. } = method {
+                            if let ASTNode::FunctionDeclaration { 
+                                name: m_name, 
+                                parameters, 
+                                return_type, 
+                                body, 
+                                generic_params: m_generic_params, 
+                                annotations, is_extern, .. 
+                            } = method 
+                            {
                                 self.enter_scope();
+
+                                let m_param_names: Vec<String> = m_generic_params.iter().map(|t| t.lexeme.to_string()).collect();
+                                self.current_generics.extend(m_param_names.clone());
+
                                 let rt = match self.lower_type(*return_type.clone()) {
                                     Ok(t) => t,
                                     Err(e) => { errors.push(e); Type::VOID }
                                 };
+
                                 self.current_return_type = Some(rt.clone());
 
                                 let mut ir_params = Vec::new();
@@ -373,6 +433,7 @@ impl Analyzer {
 
                                 self.leave_scope();
                                 self.current_return_type = None;
+                                self.current_generics.truncate(self.current_generics.len() - m_param_names.len());
                             }
                         }
 
@@ -409,6 +470,8 @@ impl Analyzer {
                                 }
                             }
                         }
+
+                        self.current_generics.truncate(self.current_generics.len() - param_names.len());
                     }
 
                     ASTNode::IncludeStatement { .. } => {} 
@@ -437,16 +500,22 @@ impl Analyzer {
         name.split("::").map(|s| s.to_string()).collect()
     }
 
+
     fn register_global_item(&mut self, prefix: &[String], node: &ASTNode, errors: &mut Vec<HydraError>) {
         match node {
             ASTNode::FunctionDeclaration { name, parameters, return_type, generic_params, annotations, .. } => {
                 let mut path = prefix.to_vec();
                 path.push(name.lexeme.to_string());
 
+                let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
+                self.current_generics.extend(param_names.clone());
+
                 let param_types: Vec<Type> = parameters.iter()
                     .map(|(_, ty_node)| self.lower_type(*ty_node.clone()).unwrap_or(Type::VOID))
                     .collect();
                 let ret_type = self.lower_type(*return_type.clone()).unwrap_or(Type::VOID);
+
+                self.current_generics.truncate(self.current_generics.len() - param_names.len());
 
                 let info = SymbolInfo {
                     name: name.lexeme.to_string(),
@@ -464,18 +533,22 @@ impl Analyzer {
                 if let Err(msg) = self.scope.define(name.lexeme.to_string(), def_id) {
                     errors.push(self.error("S018", msg, name.span));
                 }
+
                 self.global_symbols.insert(path, def_id);
             }
 
-            ASTNode::StructDeclaration { name, constants, .. } => {
+            ASTNode::StructDeclaration { name, constants, generic_params, .. } => {
                 let mut struct_path = prefix.to_vec();
                 struct_path.push(name.lexeme.to_string());
+
+                let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
+                self.current_generics.extend(param_names.clone());
 
                 let info = SymbolInfo {
                     name: name.lexeme.to_string(),
                     span: name.span,
                     absolute_path: struct_path.clone(),
-                    kind: DefKind::Struct { fields: vec![] }
+                    kind: DefKind::Struct { fields: vec![], generic_params: vec![] }
                 };
 
                 let def_id = self.context.insert_def(info);
@@ -506,6 +579,8 @@ impl Analyzer {
                         self.global_symbols.insert(c_path, c_def_id);
                     }
                 }
+
+                self.current_generics.truncate(self.current_generics.len() - param_names.len());
             }
 
             ASTNode::VariableDeclaration { name, type_annotation, is_const, .. } => {
@@ -536,46 +611,90 @@ impl Analyzer {
                 self.global_symbols.insert(path, def_id);
             }
 
-            ASTNode::ExtensionDeclaration { target, methods, constants, .. } => {
+            ASTNode::ExtensionDeclaration { target, methods, constants, generic_params, .. } => {
+                let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
+                self.current_generics.extend(param_names.clone());
+
                 let target_type = self.lower_type(*target.clone()).unwrap_or(Type::VOID);
                 let target_path = match &target_type {
                     Type::STRUCT(full_path) => full_path.split("::").map(|s| s.to_string()).collect(),
+
+                    Type::GENERIC_INSTANCE(base, _) => {
+                        if let Type::STRUCT(full_path) = &**base {
+                            full_path.split("::").map(|s| s.to_string()).collect()
+                        } else {
+                            prefix.to_vec()
+                        }
+                    },
+
                     _ => {
                         let target_name = match &**target {
                             ASTNode::TypeIdentifier { type_token } => type_token.lexeme.to_string(),
+
+                            ASTNode::GenericType { base, .. } => {
+                                if let ASTNode::TypeIdentifier { type_token } = &**base {
+                                    type_token.lexeme.to_string()
+                                } else { String::new() }
+                            }
+
                             _ => String::new(),
                         };
+
                         let mut p = prefix.to_vec();
                         if !target_name.is_empty() { p.push(target_name); }
+
                         p
                     }
                 };
 
                 let mut lowered_methods = Vec::new();
                 for method in methods {
-                    if let ASTNode::FunctionDeclaration { name: m_name, parameters, return_type, generic_params, annotations, .. } = method {
+                    if let ASTNode::FunctionDeclaration { name: m_name, parameters, return_type, generic_params: m_generic_params, annotations, .. } = method {
+                        let m_param_names: Vec<String> = m_generic_params.iter().map(|t| t.lexeme.to_string()).collect();
+                        self.current_generics.extend(m_param_names.clone());
+
                         let param_types: Vec<Type> = parameters.iter()
                             .map(|(_, ty_node)| self.lower_type(*ty_node.clone()).unwrap_or(Type::VOID))
                             .collect();
                         let ret_type = self.lower_type(*return_type.clone()).unwrap_or(Type::VOID);
 
+                        self.current_generics.truncate(self.current_generics.len() - m_param_names.len());
+
+                        let mut m_path = target_path.clone();
+                        m_path.push(m_name.lexeme.to_string());
+
                         let m_info = SymbolInfo {
                             name: m_name.lexeme.to_string(),
                             span: m_name.span,
-                            absolute_path: vec![],
+                            absolute_path: m_path,
                             kind: DefKind::Function {
                                 params: param_types,
                                 annotations: annotations.clone(),
                                 return_type: ret_type,
-                                generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect(),
+                                generic_params: {
+                                    let mut gp = param_names.clone(); // extension's <T>
+                                    gp.extend(m_param_names.iter().cloned()); // method's own <U> if any
+                                    gp
+                                },
                             }
                         };
+
                         let m_def_id = self.context.insert_def(m_info);
                         lowered_methods.push((m_name.lexeme.to_string(), m_def_id));
                     }
                 }
 
-                let type_methods = self.impl_registry.entry(target_type).or_default();
+                let struct_name = match &target_type {
+                    Type::STRUCT(name) => name.clone(),
+                    Type::GENERIC_INSTANCE(base, _) => {
+                        if let Type::STRUCT(name) = base.as_ref() { name.clone() }
+                        else { String::new() }
+                    }
+                    _ => String::new(),
+                };
+
+                let type_methods = self.impl_registry.entry(struct_name).or_default();
+
                 for (m_name, m_def_id) in lowered_methods {
                     type_methods.insert(m_name, m_def_id);
                 }
@@ -598,11 +717,14 @@ impl Analyzer {
                                     value: ir::Constant::Float(0.0, expected_ty),
                                 }
                             };
+
                             let c_def_id = self.context.insert_def(c_info);
                             self.global_symbols.insert(c_path, c_def_id);
                         }
                     }
                 }
+
+                self.current_generics.truncate(self.current_generics.len() - param_names.len());
             }
             _ => {}
         }

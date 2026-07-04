@@ -45,7 +45,7 @@ impl Analyzer {
                 let def_id = self.context.insert_def(info);
                 self.scope.define(name.lexeme.to_string(), def_id).map_err(|e| self.error("S002", e, name.span))?;
                 
-                Ok(HIRStmt::VarDecl { def_id, init: Some(init_expr) })
+                Ok(HIRStmt::VarDecl { def_id, init: Some(init_expr), span: name.span })
             },
 
             ASTNode::AssignmentExpression { .. } => {
@@ -146,7 +146,11 @@ impl Analyzer {
                 let var_def_id = self.context.insert_def(info);
                 self.scope.define(var_name.clone(), var_def_id).unwrap();
 
-                let init_stmt = HIRStmt::VarDecl { def_id: var_def_id, init: Some(start_expr.clone()) };
+                let init_stmt = HIRStmt::VarDecl { 
+                    def_id: var_def_id, 
+                    init: Some(start_expr.clone()), 
+                    span: variable.span 
+                };
 
                 let op = if is_inclusive { HIRBinOp::Gt } else { HIRBinOp::Ge };
                 let check_cond = HIRExpr {
@@ -205,16 +209,33 @@ impl Analyzer {
                 }))
             },
 
-            // --- THE MISSING FOREACH DESUGARING ---
             ASTNode::ForEach { item, iterable, body } => {
                 let iter_expr = self.lower_expression(*iterable)?;
                 let (inner_ty, array_len) = match &iter_expr.ty {
                     Type::ARRAY(inner, size) => (*inner.clone(), *size as i64),
                     _ => return Err(self.error("S014", "foreach requires an array", item.span)),
                 };
-                
+
                 self.enter_scope();
-                
+
+                // 1. CREATE HIDDEN ARRAY TEMPORARY: Evaluate iterable ONCE before the loop
+                let arr_name = format!("_iter_arr_{}", item.span.line);
+                let arr_info = SymbolInfo {
+                    name: arr_name.clone(),
+                    span: item.span,
+                    absolute_path: vec![arr_name.clone()],
+                    kind: DefKind::Variable { ty: iter_expr.ty.clone(), is_mutable: false }
+                };
+                let arr_def = self.context.insert_def(arr_info);
+                self.scope.define(arr_name.clone(), arr_def).unwrap();
+
+                let init_arr = HIRStmt::VarDecl { 
+                    def_id: arr_def, 
+                    init: Some(iter_expr.clone()),
+                    span: item.span
+                };
+
+                // 2. CREATE INDEX TEMPORARY
                 let idx_name = format!("_idx_{}", item.span.line);
                 let idx_info = SymbolInfo {
                     name: idx_name.clone(),
@@ -224,14 +245,16 @@ impl Analyzer {
                 };
                 let idx_def = self.context.insert_def(idx_info);
                 self.scope.define(idx_name.clone(), idx_def).unwrap();
-                
+
                 let init_idx = HIRStmt::VarDecl { 
                     def_id: idx_def, 
-                    init: Some(HIRExpr { kind: HIRExprKind::IntLiteral(0), ty: Type::I32, span: item.span }) 
+                    init: Some(HIRExpr { kind: HIRExprKind::IntLiteral(0), ty: Type::I32, span: item.span }),
+                    span: item.span
                 };
-                
+
                 let mut loop_stmts = Vec::new();
-                
+
+                // 3. LOOP BREAK CONDITION
                 let break_cond = HIRExpr {
                     kind: HIRExprKind::Binary {
                         op: HIRBinOp::Ge,
@@ -241,7 +264,7 @@ impl Analyzer {
                     ty: Type::BOOL,
                     span: item.span
                 };
-                
+
                 let break_if = HIRExpr {
                     kind: HIRExprKind::If {
                         cond: Box::new(break_cond),
@@ -260,7 +283,8 @@ impl Analyzer {
                 };
 
                 loop_stmts.push(HIRStmt::Expr(break_if));
-                
+
+                // 4. BIND CURRENT ITEM USING VarRef TO HIDDEN ARRAY
                 let item_info = SymbolInfo {
                     name: item.lexeme.to_string(),
                     span: item.span,
@@ -269,24 +293,28 @@ impl Analyzer {
                 };
                 let item_def = self.context.insert_def(item_info);
                 self.scope.define(item.lexeme.to_string(), item_def).unwrap();
-                
+
                 let init_item = HIRStmt::VarDecl {
                     def_id: item_def,
                     init: Some(HIRExpr {
                         kind: HIRExprKind::ArrayAccess {
-                            array: Box::new(iter_expr.clone()),
+                            // FAST: We use VarRef to the cached array instead of evaluating the tree!
+                            array: Box::new(HIRExpr { kind: HIRExprKind::VarRef(arr_def), ty: iter_expr.ty, span: item.span }),
                             index: Box::new(HIRExpr { kind: HIRExprKind::VarRef(idx_def), ty: Type::I32, span: item.span })
                         },
                         ty: inner_ty.clone(),
                         span: item.span
-                    })
+                    }),
+                    span: item.span
                 };
                 loop_stmts.push(init_item);
-                
+
+                // 5. LOOP BODY
                 for stmt in body {
                     loop_stmts.push(self.lower_statement(stmt)?);
                 }
-                
+
+                // 6. INCREMENT INDEX
                 let inc_idx = HIRExpr {
                     kind: HIRExprKind::Assign {
                         target: Box::new(HIRExpr { kind: HIRExprKind::VarRef(idx_def), ty: Type::I32, span: item.span }),
@@ -304,23 +332,23 @@ impl Analyzer {
                     span: item.span
                 };
                 loop_stmts.push(HIRStmt::Expr(inc_idx));
-                
+
                 let loop_expr = HIRExpr {
                     kind: HIRExprKind::Loop(Box::new(HIRBlock { stmts: loop_stmts, span: item.span })),
                     ty: Type::VOID,
                     span: item.span
                 };
-                
+
                 self.leave_scope();
-                
+
+                // 7. RETURN BLOCK CONTAINING PRE-LOOP INITS AND THE LOOP ITSELF
                 Ok(HIRStmt::Expr(HIRExpr {
-                    kind: HIRExprKind::Block(HIRBlock { stmts: vec![init_idx, HIRStmt::Expr(loop_expr)], span: item.span }),
+                    kind: HIRExprKind::Block(HIRBlock { stmts: vec![init_arr, init_idx, HIRStmt::Expr(loop_expr)], span: item.span }),
                     ty: Type::VOID,
                     span: item.span
                 }))
             },
 
-            // --- THE RESTORED CONDITIONAL BREAKS ---
             ASTNode::Break { condition } => {
                 let break_expr = HIRExpr { kind: HIRExprKind::Break, ty: Type::VOID, span };
                 if let Some(cond_node) = condition {

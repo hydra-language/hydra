@@ -32,12 +32,23 @@ impl Analyzer {
                 Ok(Type::POINTER(Box::new(inner_type)))
             }
 
-            ASTNode::GenericType { base, args: _ } => {
-                self.lower_type(*base)
+            ASTNode::GenericType { base, args } => {
+                let base_ty = self.lower_type(*base)?;
+
+                let mut lowered_args = Vec::new();
+                for arg in args {
+                    lowered_args.push(self.lower_type(arg)?);
+                }
+
+                Ok(Type::GENERIC_INSTANCE(Box::new(base_ty), lowered_args))
             }
 
             ASTNode::TypeIdentifier { type_token } => {
                 let name = type_token.lexeme.to_string();
+
+                if self.current_generics.contains(&name) {
+                    return Ok(Type::GENERIC(name));
+                }
 
                 match name.as_str() {
                     "i8" => Ok(Type::I8), 

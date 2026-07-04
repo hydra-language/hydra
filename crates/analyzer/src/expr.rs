@@ -303,20 +303,26 @@ impl Analyzer {
 
             ASTNode::MemberExpression { object, property } => {
                 let lhs = self.lower_expr_with_type(*object, None)?;
+                
                 let actual_type = match &lhs.ty {
                     Type::REF(inner) | Type::CONST_REF(inner) => inner.as_ref(),
                     _ => &lhs.ty
                 };
                 
-                match &actual_type {
+                let lookup_type = match actual_type {
+                    Type::GENERIC_INSTANCE(base, _) => base.as_ref(),
+                    other => other,
+                };
+
+                match lookup_type {
                     Type::STRUCT(name) => {
                         if let Some(def_id) = self.scope.resolve(name, &self.context) {
                             if let Some(info) = self.context.get_def(def_id) {
                                 if let DefKind::Struct { fields, .. } = &info.kind {
                                     if let Some(idx) = fields.iter().position(|(field_name, _, _)| field_name == &property.lexeme) {
                                         let (_, field_type, _) = &fields[idx];
+
                                         return Ok(HIRExpr {
-                                            // Directly encode the integer offset, not the string!
                                             kind: HIRExprKind::FieldAccess { object: Box::new(lhs), field_index: idx },
                                             ty: field_type.clone(),
                                             span
@@ -327,8 +333,10 @@ impl Analyzer {
                         } else {
                             return Err(self.error("S002", format!("ICE: absolute struct '{}' not found in global_symbols during field access", name), span));
                         }
+
                         Err(self.error("S005", format!("struct '{}' has no field '{}'", name, property.lexeme), property.span))
                     },
+
                     Type::ARRAY(_, size) if property.lexeme == "len" => Ok(HIRExpr { kind: HIRExprKind::IntLiteral(*size as i64), ty: Type::I32, span }),
                     _ => Err(self.error("S005", format!("'{}' has no property '{}'", lhs.ty, property.lexeme), property.span))
                 }
@@ -337,16 +345,26 @@ impl Analyzer {
             ASTNode::MethodCallExpression { object, method, arguments, generic_args } => {
                 let method_name = method.lexeme;
                 let span = method.span;
-                
+
                 let lhs_expr = self.lower_expr_with_type(*object.clone(), None)?;
                 let actual_type = match &lhs_expr.ty {
                     Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) => inner.as_ref().clone(),
                     _ => lhs_expr.ty.clone()
                 };
 
+                let lookup_type = match &actual_type {
+                    Type::GENERIC_INSTANCE(base, _) => *base.clone(),
+                    other => other.clone(),
+                };
+
                 let method_def_id = {
-                    let type_methods = self.impl_registry.get(&actual_type)
+                    let struct_name = match &lookup_type {
+                        Type::STRUCT(name) => name.clone(),
+                        _ => return Err(self.error("S005", format!("type '{}' has no methods", actual_type), span)),
+                    };
+                    let type_methods = self.impl_registry.get(&struct_name)
                         .ok_or_else(|| self.error("S005", format!("type '{}' has no methods", actual_type), span))?;
+
                     *type_methods.get(method_name)
                         .ok_or_else(|| self.error("S005", format!("method '{}' not found", method_name), span))?
                 };
@@ -361,25 +379,37 @@ impl Analyzer {
                 let expected_self_ty = param_types.first().ok_or_else(|| self.error("S004", "method expects self", span))?;
 
                 let self_arg = match (expected_self_ty, &lhs_expr.ty) {
-                    (Type::REF(inner), actual) |
-                    (Type::CONST_REF(inner), actual) if inner.as_ref() == actual => {
-                        let ty = lhs_expr.ty.clone();
+                    (Type::REF(inner), actual) | (Type::CONST_REF(inner), actual) 
+                    if inner.as_ref() == actual => 
+                    {
+                        let is_mut = matches!(expected_self_ty, Type::REF(_));
+
+                        let ty = if is_mut {
+                            Type::REF(Box::new(lhs_expr.ty.clone()))
+                        } else {
+                            Type::CONST_REF(Box::new(lhs_expr.ty.clone()))
+                        };
+
                         HIRExpr {
-                            kind: HIRExprKind::Unary { op: HIRUnaryOp::AddrOf, operand: Box::new(lhs_expr) },
-                            ty: Type::REF(Box::new(ty)),
+                            kind: HIRExprKind::Borrow { is_mut, target: Box::new(lhs_expr) },
+                            ty,
                             span
                         }
                     },
+
                     _ => lhs_expr
                 };
+
                 args.push(self_arg);
 
                 for arg_node in arguments {
                     let expected_ty = param_types.get(args.len());
                     let mut lowered_arg = self.lower_expr_with_type(arg_node, expected_ty)?;
+
                     if let Some(target) = expected_ty {
                         lowered_arg = self.coerce_primitive(lowered_arg, target);
                     }
+
                     args.push(lowered_arg);
                 }
 
@@ -426,21 +456,12 @@ impl Analyzer {
                             .map(|t| t.lexeme.to_string())
                             .collect();
 
-                        println!("DEBUG: Prefix to resolve: {:?}", prefix_strings);
-                        let resolved_id = self.scope.resolve(&prefix_strings[0], &self.context);
-                        println!("DEBUG: Resolved variable ID: {:?}", resolved_id);
-
-                        if let Some(id) = resolved_id {
-                            let info = self.context.get_def(id).unwrap();
-                            println!("DEBUG: Variable Info: {:?}", info);
-                        }
-
                         let absolute_prefix = self.scope.resolve_path(&prefix_strings, &self.context);
                         
                         if let Some(def_id) = self.global_symbols.get(&absolute_prefix) {
                             if let Some(info) = self.context.get_def(*def_id) {
                                 if matches!(info.kind, DefKind::Struct { .. }) {
-                                    let struct_ty = Type::STRUCT(absolute_prefix.join("::"));
+                                    let struct_ty = absolute_prefix.join("::");
                                     if let Some(type_methods) = self.impl_registry.get(&struct_ty) {
                                         if let Some(m_def_id) = type_methods.get(method_name) {
                                             resolved_def_id = Some(*m_def_id);
@@ -459,8 +480,13 @@ impl Analyzer {
                                             Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) => inner.as_ref().clone(),
                                             _ => prefix_ty.clone()
                                         };
+
+                                        let struct_key = match &actual_ty {
+                                            Type::STRUCT(name) => name.clone(),
+                                            _ => String::new(),
+                                        };
                                         
-                                        if let Some(type_methods) = self.impl_registry.get(&actual_ty) {
+                                        if let Some(type_methods) = self.impl_registry.get(&struct_key) {
                                             if let Some(m_def_id) = type_methods.get(method_name) {
                                                 let prefix_tokens = segments[..segments.len() - 1].to_vec();
                                                 let self_node = if prefix_tokens.len() == 1 {
@@ -516,7 +542,10 @@ impl Analyzer {
 
                 let mut args = Vec::new();
                 for (i, node) in arguments.into_iter().enumerate() {
-                    let expected = param_types.get(i);
+                    let expected = param_types.get(i).and_then(|t| {
+                        // Don't use generic params as type hints — they're not concrete
+                        if matches!(t, Type::GENERIC(_)) { None } else { Some(t) }
+                    });
                     let mut arg = self.lower_expr_with_type(node, expected)?;
                     if let Some(target) = expected { arg = self.coerce_primitive(arg, target); }
                     args.push(arg);
@@ -590,26 +619,39 @@ impl Analyzer {
             ASTNode::UnaryExpression { operator, right } => {
                 let rhs = self.lower_expr_with_type(*right, expected)?;
                 match operator.token_type {
-                    TokenType::Minus => Ok(HIRExpr { kind: HIRExprKind::Unary { op: HIRUnaryOp::Neg, operand: Box::new(rhs.clone()) }, ty: rhs.ty, span }),
-                    TokenType::ExclamationMark => Ok(HIRExpr { kind: HIRExprKind::Unary { op: HIRUnaryOp::Not, operand: Box::new(rhs) }, ty: Type::BOOL, span }),
-                    TokenType::Ampersand => Ok(HIRExpr { 
-                        kind: HIRExprKind::Unary {
-                            op: HIRUnaryOp::AddrOf, 
-                            operand: Box::new(rhs.clone()) 
-                        }, 
-                        ty: Type::REF(Box::new(rhs.ty)), span }
-                    ),
+                    TokenType::Minus => Ok(HIRExpr {
+                        kind: HIRExprKind::Unary { op: HIRUnaryOp::Neg, operand: Box::new(rhs.clone()) },
+                        ty: rhs.ty, span
+                    }),
+
+                    TokenType::ExclamationMark => Ok(HIRExpr {
+                        kind: HIRExprKind::Unary { op: HIRUnaryOp::Not, operand: Box::new(rhs) },
+                        ty: Type::BOOL, span
+                    }),
+
+                    TokenType::Ampersand => {
+                        let ty = Type::CONST_REF(Box::new(rhs.ty.clone()));
+                        Ok(HIRExpr {
+                            kind: HIRExprKind::Borrow { is_mut: false, target: Box::new(rhs) },
+                            ty, span
+                        })
+                    },
+
                     TokenType::Star => {
                         let inner_ty = match &rhs.ty {
                             Type::REF(t) | Type::CONST_REF(t) | Type::POINTER(t) => *t.clone(),
                             _ => return Err(self.error("S001", format!("cannot dereference '{}'", rhs.ty), operator.span)),
                         };
-                        Ok(HIRExpr { kind: HIRExprKind::Unary { op: HIRUnaryOp::Deref, operand: Box::new(rhs) }, ty: inner_ty, span })
+
+                        Ok(HIRExpr {
+                            kind: HIRExprKind::Dereference { target: Box::new(rhs) },
+                            ty: inner_ty, span
+                        })
                     },
+
                     _ => Err(self.error("S003", format!("unknown unary op: {}", operator.lexeme), operator.span))
                 }
             },
-
             _ => Err(self.error("S006", format!("expression not supported: {:?}", node), span)),
         }
     }

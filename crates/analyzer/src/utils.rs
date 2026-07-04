@@ -41,6 +41,26 @@ impl Analyzer {
             ASTNode::TypeIdentifier { type_token } => type_token.clone(),
             ASTNode::ReturnStatement { value } => self.get_token_from_node(value),
 
+            ASTNode::BorrowExpression { right, .. } => self.get_token_from_node(right),
+            ASTNode::DereferenceExpression { right } => self.get_token_from_node(right),
+            ASTNode::StructInitializer { name, .. } => self.get_token_from_node(name),
+            ASTNode::ArrayInitializer { token, .. } => token.clone(),
+            ASTNode::ArrayAccess { array, .. } => self.get_token_from_node(array),
+            ASTNode::MethodCallExpression { method, .. } => method.clone(),
+            ASTNode::IfStatement { condition, .. } => self.get_token_from_node(condition),
+            ASTNode::WhileLoop { condition, .. } => self.get_token_from_node(condition),
+            ASTNode::ForLoop { variable, .. } => variable.clone(),
+            ASTNode::ForEach { item, .. } => item.clone(),
+            ASTNode::CastExpression { value, .. } => self.get_token_from_node(value),
+            ASTNode::ExtensionDeclaration { target, .. } => self.get_token_from_node(target),
+            ASTNode::FunctionDeclaration { name, .. } => name.clone(),
+            ASTNode::StructDeclaration { name, .. } => name.clone(),
+            ASTNode::Break { .. } | ASTNode::Continue { .. } => Token {
+                token_type: TokenType::EOF,
+                lexeme: "",
+                span: Span::default(),
+            },
+
             _ => Token {
                 token_type: TokenType::EOF,
                 lexeme: "",

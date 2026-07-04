@@ -5,5 +5,7 @@ pub mod types;
 pub mod utils;
 pub mod analyzer;
 pub mod fold;
+pub mod monomorphizer;
 
 pub use analyzer::Analyzer;
+
