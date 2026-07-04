@@ -7,13 +7,14 @@ edition = "2024"
 inkwell = { version = "0.2.0", features = ["llvm14-0"] }
 clap = { version = "4.3", features = ["derive"] }
 
+errors = { path = "../crates/errors/" }
 lexer = { path = "../crates/lexer" }
 parser = { path = "../crates/parser/" }
+analyzer = { path = "../crates/analyzer" }
 ir = { path = "../crates/ir" }
 mir = { path = "../crates/mir" }
-analyzer = { path = "../crates/analyzer" }
+borrowcheck = { path = "../crates/borrowcheck" }
 codegen = { path = "../crates/codegen/" }
-errors = { path = "../crates/errors/" }
 
 [[bin]]
 name = "hydrac"

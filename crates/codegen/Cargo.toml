@@ -7,8 +7,5 @@ edition = "2021"
 inkwell = { version = "0.2.0", features = ["llvm14-0"] }
 lexer = { path = "../lexer" }
 parser = { path = "../parser" }
+mir = { path = "../mir/" }
 ir = { path = "../ir/" }
-
-[lib]
-name = "codegen"
-path = "src/mod.rs"
