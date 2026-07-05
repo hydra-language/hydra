@@ -97,6 +97,7 @@ impl<'a> MIRBuilder<'a> {
             arg_count: hir_fn.params.len(),
             locals: self.locals,
             basic_blocks: self.basic_blocks,
+            is_inline: hir_fn.is_inline,
         }
     }
 

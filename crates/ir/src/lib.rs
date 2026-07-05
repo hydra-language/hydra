@@ -28,7 +28,7 @@ pub struct Program {
     pub globals: Vec<(String, Type, Expr)>
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Constant {
     Int(i64, Type),
     Float(f64, Type),

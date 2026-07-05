@@ -19,6 +19,7 @@ pub struct HIRFunction {
     pub body: HIRBlock,
     pub is_extern: bool,
     pub is_intrinsic: bool,
+    pub is_inline: bool,
     pub generic_params: Vec<String>,
 }
 

@@ -445,7 +445,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_function_rest(&mut self, extension_target: Option<Box<ASTNode<'a>>>, is_pub: bool) 
+    fn parse_function_rest(&mut self, extension_target: Option<Box<ASTNode<'a>>>, is_pub: bool, annotations: Vec<Annotation>) 
         -> Result<ASTNode<'a>, HydraError> 
     {
         let name = self.consume_identifier("expected function name")?;
@@ -508,7 +508,7 @@ impl<'a> Parser<'a> {
 
         Ok(ASTNode::FunctionDeclaration { 
             name,
-            annotations: Vec::new(),
+            annotations: annotations,
             generic_params,
             parameters: params, 
             return_type, 
@@ -629,6 +629,8 @@ impl<'a> Parser<'a> {
         let mut methods = Vec::new();
 
         while !self.check(TokenType::RightBrace) && !self.is_at_end() {
+            let annotations = self.parse_annotations()?;
+
             let is_member_pub = self.match_token(TokenType::PUB);
 
             if self.match_token(TokenType::CONST) {
@@ -649,7 +651,7 @@ impl<'a> Parser<'a> {
                     initializer: Box::new(value),
                 });
             } else if self.match_token(TokenType::FN) {
-                methods.push(self.parse_function_rest(Some(target.clone()), is_member_pub)?);
+                methods.push(self.parse_function_rest(Some(target.clone()), is_member_pub, annotations)?);
             } else {
                 return Err(self.error(self.peek(), "P009", "only constants and functions are allowed inside extension blocks"));
             }
@@ -991,7 +993,6 @@ impl<'a> Parser<'a> {
                     target: Box::new(*target),
                 };
             } else if self.match_token(TokenType::DoubleColon) {
-                // Handle turbofish-style generic arguments (e.g., path::<T>())
                 if self.match_token(TokenType::LeftAngle) {
                     let mut generic_args = Vec::new();
                     loop {
@@ -1003,7 +1004,6 @@ impl<'a> Parser<'a> {
                     self.consume(TokenType::LeftParen, "expected '(' after generic arguments")?;
                     expr = self.finish_parse_fn_call(expr, generic_args)?;
                 } else {
-                    // Path continuation: iteratively build up the PathExpression
                     let next_name = self.consume_identifier("expected identifier after '::'")?.clone();
 
                     expr = match expr {
@@ -1014,13 +1014,16 @@ impl<'a> Parser<'a> {
                             segments.push(next_name);
                             ASTNode::PathExpression { segments }
                         },
-                        _ => {
-                            return Err(self.error(self.previous(), "P001", "expected a module, struct, or variable path before '::'"));
+
+                        other => {
+                            ASTNode::MemberExpression {
+                                object: Box::new(other),
+                                property: next_name
+                            }
                         }
                     };
                 }
             } else if self.allow_struct && self.check(TokenType::LeftBrace) {
-                // Catch struct initializers following a path (e.g., math::Rectangle { ... })
                 expr = self.parse_struct_initializer(expr)?;
             } else if self.match_token(TokenType::Dot) {
                 let name = if let TokenType::IDENTIFIER(_) = self.peek().token_type {
@@ -1135,19 +1138,33 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_include(&mut self) -> Result<Vec<ASTNode<'a>>, HydraError> {
-        let path = self.parse_primary()?; 
-
+        let path = self.parse_module_path()?;
         let mut alias = None;
         if self.match_token(TokenType::AS) {
             alias = Some(self.consume_identifier("expected alias name after 'as'")?.clone());
         }
-
         self.consume(TokenType::Semicolon, "expected ';' after include statement")?;
-
         Ok(vec![ASTNode::IncludeStatement {
             path: Box::new(path),
             alias
         }])
+    }
+
+    fn parse_module_path(&mut self) -> Result<ASTNode<'a>, HydraError> {
+        let first = self.consume_identifier("expected identifier in include path")?.clone();
+        let mut segments = vec![first];
+
+        while self.check(TokenType::DoubleColon) {
+            self.advance();
+            let seg = self.consume_identifier("expected identifier after '::' in path")?.clone();
+            segments.push(seg);
+        }
+
+        if segments.len() == 1 {
+            Ok(ASTNode::VariableExpression { name: segments.remove(0) })
+        } else {
+            Ok(ASTNode::PathExpression { segments })
+        }
     }
 
     fn parse_module(&mut self) -> Result<ASTNode<'a>, HydraError> {
@@ -1175,7 +1192,9 @@ impl<'a> Parser<'a> {
         let mut annotations = Vec::new();
 
         while self.match_token(TokenType::Hash) {
-            let name_token = self.consume_identifier("expected annotation name after '#'")?;
+            self.consume(TokenType::LeftBracket, "expected '[' after '#' for attributes")?;
+            
+            let name_token = self.consume_identifier("expected annotation name")?;
             let name = name_token.lexeme.to_string();
 
             let mut args = Vec::new();
@@ -1199,6 +1218,8 @@ impl<'a> Parser<'a> {
 
                 self.consume(TokenType::RightParen, "expected ')' after annotation arguments")?;
             }
+            
+            self.consume(TokenType::RightBracket, "expected ']' to close attribute")?;
 
             annotations.push(Annotation {
                 name,

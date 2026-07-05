@@ -1,18 +1,19 @@
 use std::{env, fs, path::{Path, PathBuf}, process::{self, Command}};
-use borrowcheck::borrowcheck;
 use clap::{CommandFactory, Parser as ClapParser, ValueEnum};
 use inkwell::{OptimizationLevel, context::Context};
+
 use parser::program::Program;
-use analyzer::{Analyzer, monomorphizer::{self, Monomorphizer}};
+use analyzer::{Analyzer, monomorphizer::Monomorphizer};
+use mir::{builder::MIRBuilder, MIRProgram, optimizer::Optimizer};
+use borrowcheck::borrowcheck::BorrowChecker;
 use codegen::CodeGen;
-use mir::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum EmitStage {
-    TOKENS,
     AST,
     HIR,
     MIR,
+    MIROpt,
     IR,
     IROpt,
     ASM,
@@ -24,7 +25,7 @@ struct Cli {
     #[arg(value_name = "INPUT")]
     input: Option<String>,
 
-    #[arg(long, value_enum, value_delimiter = ',', help = "emit up to a specific compilation stage")]
+    #[arg(long, value_enum, value_delimiter = ',', help = "comma separated list of stages to emit")]
     emit: Option<Vec<EmitStage>>,
 
     #[arg(long, help = "build with maximum optimizations")]
@@ -36,6 +37,13 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
+
+    if cli.input.is_none() {
+        Cli::command().print_help().unwrap();
+        println!();
+        process::exit(1);
+    }
+
     let emit_list: Vec<EmitStage> = cli.emit.clone().unwrap_or_default();
 
     let opt_level = if cli.release {
@@ -43,12 +51,6 @@ fn main() {
     } else {
         OptimizationLevel::None
     };
-
-    if cli.input.is_none() {
-        Cli::command().print_help().unwrap();
-        println!();
-        process::exit(1);
-    }
 
     let input = cli.input.unwrap();
     let input_path = Path::new(&input);
@@ -60,7 +62,7 @@ fn main() {
     match input_path.extension().and_then(|e| e.to_str()) {
         Some("hydra") => {}
         _ => {
-            eprintln!("error: '{}' is not a hydra file", input);
+            eprintln!("[ERROR] '{}' is not a hydra file", input);
             process::exit(1);
         }
     }
@@ -68,22 +70,16 @@ fn main() {
     let contents = match fs::read_to_string(&input) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("error: failed while reading '{}': {}", input, e);
+            eprintln!("[ERROR] failed while reading '{}': {}", input, e);
             process::exit(1);
         }
     };
 
-    // ---------------- LOAD & PARSE PROGRAM ----------------
-
+    // --- PHASE 1: PARSER ---
     let program = Program::build(input_path).unwrap_or_else(|e| {
-        eprintln!("build error: {}", e.message);
+        eprintln!("[ERROR] build error: {}", e.message);
         process::exit(1);
     });
-
-    if emit_list.contains(&EmitStage::TOKENS) {
-        println!("info: skipping token dump (tokens are now handled internally by modules).");
-        if cli.emit.is_some() { return; }
-    }
         
     if emit_list.contains(&EmitStage::AST) {
         let fname = input_path.with_extension("nodes");
@@ -95,12 +91,10 @@ fn main() {
             }
         }
         fs::write(&fname, all_asts).unwrap();
-        println!("info: AST written to: {}", fname.display());
-        if cli.emit.is_some() { return; }
+        println!("[INFO] AST nodes written to: {}", fname.display());
     }
 
-    // ---------------- ANALYZE ----------------
-
+    // --- PHASE 2: SEMANTIC ANALYSIS ---
     let mut analyzer = Analyzer::new();
     let hir = analyzer.analyze(&program).unwrap_or_else(|errors| {
         for e in errors {
@@ -115,31 +109,35 @@ fn main() {
             &fname,
             hir.functions.iter().map(|f| format!("{}", f)).collect::<Vec<_>>().join("\n\n"),
         ).unwrap();
-        println!("info: HIR written to: {}", fname.display());
+        println!("[INFO] HIR written to: {}", fname.display());
     }
 
+    // --- PHASE 3: MONOMORPHIZATION ---
     let monomorphizer = Monomorphizer::new(&mut analyzer.context, hir);
     let specialized_program = monomorphizer.run();
 
+    // --- PHASE 4: MIR LOWERING ---
     let mut mir_functions = Vec::new();
     for hir_fn in &specialized_program.functions {
-        let builder = mir::builder::MIRBuilder::new(&analyzer.context);
+        let builder = MIRBuilder::new(&analyzer.context);
         mir_functions.push(builder.build_function(hir_fn.clone()));
     }
+    
+    let mut mir_program = MIRProgram { functions: mir_functions };
 
     if emit_list.contains(&EmitStage::MIR) {
         let fname = input_path.with_extension("mir");
         fs::write(
             &fname,
-            mir_functions.iter().map(|f| format!("{}", f)).collect::<Vec<_>>().join("\n\n"),
+            mir_program.functions.iter().map(|f| format!("{}", f)).collect::<Vec<_>>().join("\n\n"),
         ).unwrap();
-        println!("info: MIR written to: {}", fname.display());
-        if cli.emit.is_some() { return; }
+        println!("[INFO] MIR written to: {}", fname.display());
     }
 
+    // --- PHASE 5: BORROW CHECKING ---
     let mut has_borrow_errors = false;
-    for mir_fn in &mir_functions {
-        let mut checker = borrowcheck::BorrowChecker::new(mir_fn, &analyzer.context);
+    for mir_fn in &mir_program.functions {
+        let mut checker = BorrowChecker::new(mir_fn, &analyzer.context);
         if let Err(errors) = checker.check() {
             has_borrow_errors = true;
             for error in errors {
@@ -152,43 +150,80 @@ fn main() {
         process::exit(1);
     }
 
-    // ---------------- CODEGEN ----------------
+    // --- PHASE 6: MIR OPTIMIZATION ---
+    if cli.release || emit_list.contains(&EmitStage::MIROpt) {
+        Optimizer::optimize(&mut mir_program);
+    }
 
+    if emit_list.contains(&EmitStage::MIROpt) {
+        let fname = input_path.with_extension("opt.mir");
+        fs::write(
+            &fname,
+            mir_program.functions.iter().map(|f| format!("{}", f)).collect::<Vec<_>>().join("\n\n"),
+        ).unwrap();
+        println!("[INFO] Optimized MIR written to: {}", fname.display());
+    }
+
+    // --- STOP CHECK (FRONTEND ONLY) ---
+    // If the user only requested frontend AST/MIR dumps, we halt here before allocating the LLVM Context
+    let needs_backend = emit_list.contains(&EmitStage::IR) 
+                     || emit_list.contains(&EmitStage::IROpt) 
+                     || emit_list.contains(&EmitStage::ASM)
+                     || cli.emit.is_none(); // Full compilation requires backend
+
+    if !needs_backend {
+        return;
+    }
+
+    // --- PHASE 7: CODEGEN (LLVM IR) ---
     let context = Context::create();
     let mut codegen = CodeGen::new(&context, &analyzer.context, &module_name);
-    let mir_program = mir::MIRProgram { functions: mir_functions };
-
+    
     codegen.generate(&mir_program).unwrap_or_else(|e| {
-        eprintln!("codegen error: {}", e);
+        eprintln!("[ERROR] codegen error: {}", e);
         process::exit(1);
     });
 
     if emit_list.contains(&EmitStage::IR) {
         let fname = input_path.with_extension("pre.ll");
         codegen.module.print_to_file(&fname).unwrap();
-        println!("info: LLVM ir written to: {}", fname.display());
-        if cli.emit.is_some() { return; }
+        println!("[INFO] LLVM ir written to: {}", fname.display());
+    }
+
+    // --- PHASE 8: IR OPTIMIZATION ---
+    let mut ir_optimized = false;
+    if cli.release || emit_list.contains(&EmitStage::IROpt) {
+        CodeGen::run_ir_passes(&codegen.module);
+        ir_optimized = true;
     }
 
     if emit_list.contains(&EmitStage::IROpt) {
-        CodeGen::run_ir_passes(&codegen.module);
         let fname = input_path.with_extension("opt.ll");
         codegen.module.print_to_file(&fname).unwrap();
-        println!("info: optimized LLVM ir written to: {}", fname.display());
-        if cli.emit.is_some() { return; }
+        println!("[INFO] optimized LLVM ir written to: {}", fname.display());
     }
 
+    // --- PHASE 9: ASSEMBLY ---
     if emit_list.contains(&EmitStage::ASM) {
         let fname = input_path.with_extension("s");
         CodeGen::emit_asm(&codegen.module, &codegen.triple, opt_level, &fname);
-        println!("info: assembly written to: {}", fname.display());
-        if cli.emit.is_some() { return; }
+        println!("[INFO] assembly written to: {}", fname.display());
     }
 
+    // --- FINAL STOP CHECK ---
+    // If we emitted anything via the `--emit` flag, we STOP before binary linking.
+    if cli.emit.is_some() {
+        return;
+    }
+
+    // --- PHASE 10: OBJECT COMPILATION & LINKING ---
     let obj_file = PathBuf::from(format!("{}.o", module_name));
-    if cli.release {
+    
+    // Safety check just in case it skipped phase 8 somehow
+    if cli.release && !ir_optimized {
         CodeGen::run_ir_passes(&codegen.module);
     }
+    
     CodeGen::emit_object(&codegen.module, &codegen.triple, opt_level, &obj_file);
 
     let exe_name = if cfg!(target_os = "windows") {
@@ -213,7 +248,7 @@ fn main() {
         };
 
         if !start_s.exists() {
-            eprintln!("runtime start file not found: {}", start_s.display());
+            eprintln!("[ERROR] runtime start file not found: {}", start_s.display());
             process::exit(1);
         }
 

@@ -207,6 +207,7 @@ impl Analyzer {
                         
                         let fn_def_id = *self.global_symbols.get(&full_path).unwrap();
                         let is_intrinsic = annotations.iter().any(|a| a.name == "intrinsic");
+                        let is_inline = annotations.iter().any(|a| a.name == "inline");
 
                         functions.push(HIRFunction {
                             name: full_path.join("::"), 
@@ -216,6 +217,7 @@ impl Analyzer {
                             body: HIRBlock { stmts: ir_body, span: name.span },
                             is_extern: *is_extern,
                             is_intrinsic,
+                            is_inline,
                             generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect(),
                         });
 
@@ -418,6 +420,7 @@ impl Analyzer {
                                 m_path.push(m_name.lexeme.to_string());
 
                                 let is_intrinsic = annotations.iter().any(|a| a.name == "intrinsic");
+                                let is_inline = annotations.iter().any(|a| a.name == "inline");
                                 let m_def_id = *type_methods.get(m_name.lexeme).unwrap(); // Fetch DefId assigned in Pass 1
 
                                 functions.push(HIRFunction {
@@ -428,6 +431,7 @@ impl Analyzer {
                                     body: HIRBlock { stmts: ir_body, span: m_name.span },
                                     is_extern: *is_extern,
                                     is_intrinsic,
+                                    is_inline,
                                     generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect(),
                                 });
 

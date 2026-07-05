@@ -1,4 +1,5 @@
 pub mod builder;
+pub mod optimizer;
 
 use std::fmt;
 
@@ -28,6 +29,7 @@ pub struct MIRFunction {
     pub arg_count: usize,
     pub locals: Vec<LocalDecl>,
     pub basic_blocks: Vec<BasicBlock>,
+    pub is_inline: bool,
 }
 
 #[derive(Debug, Clone)]
