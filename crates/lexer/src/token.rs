@@ -59,6 +59,7 @@ pub enum TokenType {
     MODULE,
     TYPEDEF,                // for aliasing predefined types and others
     TRAIT,
+    WHERE,
     ANYSIZE,                // comptime generic used in function parameters of arrays
     ANYTYPE,                // comptime generic used in function parameters, return types and struct fields
     EXTERN,                 // extern

@@ -1,3 +1,5 @@
+use core::hash;
+
 use super::token::{Token, TokenType};
 use errors::error::{HydraError, Span};
 
@@ -346,6 +348,8 @@ impl<'a> Lexer<'a> {
             "fn" => TokenType::FN,
             "struct" => TokenType::STRUCT,
             "extension" => TokenType::EXTENSION,
+            "trait" => TokenType::TRAIT,
+            "where" => TokenType::WHERE,
             "return" => TokenType::RETURN,
             "in" => TokenType::IN,
             "as" => TokenType::AS,
@@ -361,7 +365,6 @@ impl<'a> Lexer<'a> {
             "include" => TokenType::INCLUDE,
             "mod" => TokenType::MODULE,
             "typedef" => TokenType::TYPEDEF,
-            "trait" => TokenType::TRAIT,
             "anysize" => TokenType::ANYSIZE,
             "anytype" => TokenType::ANYTYPE,
             "extern" => TokenType::EXTERN,
