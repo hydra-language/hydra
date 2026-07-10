@@ -73,7 +73,6 @@ impl<'c> CodeGen<'c> {
 
         for (def_id, info) in &self.hir_context.definitions {
             if let DefKind::Struct { fields, .. } = &info.kind {
-                eprintln!("DEBUG struct in context: {} fields={:?}", info.name, fields);
                 struct_defs.push((info.name.clone(), *def_id, fields.clone()));
             }
         }
