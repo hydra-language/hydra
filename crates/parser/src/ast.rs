@@ -38,7 +38,7 @@ pub enum Type<'a> {
 
     Path {
         id: NodeID,
-        arguments: Vec<Token<'a>>,
+        segments: Vec<Token<'a>>,
     },
 
     Generic {
@@ -213,5 +213,6 @@ pub struct ExtensionDecl<'a> {
 pub struct IncludeDecl<'a> {
     pub id: NodeID,
     pub path: Type<'a>, // Using a Type::Path 
+    pub symbols: Option<Vec<Token<'a>>>,
     pub alias: Option<Token<'a>>,
 }

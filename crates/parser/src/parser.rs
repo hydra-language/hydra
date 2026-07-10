@@ -1,26 +1,24 @@
 use lexer::{Token, TokenType};
-use crate::{ASTNode, Annotation};
+use crate::ast::*;
 use errors::error::HydraError;
-
-#[derive(PartialEq, PartialOrd, Clone, Copy)]
-pub enum StructSection {
-    NONE = 0,
-    FIELDS = 1,
-    CONSTANTS = 2,
-    METHODS = 3,
-}
 
 pub struct Parser<'a> {
     tokens: Vec<Token<'a>>,
     current: usize,
     errors: Vec<HydraError>,
+    
+    // used to generate unique ids for every syntax node 
+    // so the semantic analyzer can build side-tables later.
+    next_node_id: u32,
+    
+    // used to prevent parsing struct initializers inside if-conditions
     allow_struct: bool,
 }
 
 impl<'a> Parser<'a> {
 
     // ========================================================================
-    // 1. LIFECYCLE & ENTRY POINT
+    // 1. LIFECYLE AND ENTRY POINT
     // ========================================================================
 
     pub fn new(tokens: Vec<Token<'a>>) -> Self {
@@ -28,29 +26,38 @@ impl<'a> Parser<'a> {
             tokens, 
             current: 0,
             errors: Vec::new(),
+            next_node_id: 1, // start at 1 so 0 can be reserved for invalid/null if needed
             allow_struct: true,
         }
+    }
+
+    // create new node id for each ast node
+    fn next_node_id(&mut self) -> NodeID {
+        let id = self.next_node_id;
+        self.next_node_id += 1;
+        NodeID(id)
     }
 
     fn error(&self, token: &Token<'a>, code: &'static str, message: impl Into<String>) -> HydraError {
         HydraError::new(code, message, token.span)
     }
 
-    pub fn parse(&mut self) -> Result<Vec<ASTNode<'a>>, Vec<HydraError>> {
-        let mut statements = Vec::new();
+    // the main entry point for the compiler. a file is just a list of items.
+    pub fn parse(&mut self) -> Result<Vec<Item<'a>>, Vec<HydraError>> {
+        let mut items = Vec::new();
 
         while !self.is_at_end() {
-            match self.parse_declaration() {
-                Ok(stmts) => statements.extend(stmts),
+            match self.parse_item() {
+                Ok(item) => items.push(item),
                 Err(e) => {
                     self.errors.push(e);
-                    self.synchronize();
+                    self.synchronize_item();
                 }
             }
         }
 
         if self.errors.is_empty() {
-            Ok(statements)
+            Ok(items)
         } else {
             Err(self.errors.clone())
         }
@@ -59,483 +66,116 @@ impl<'a> Parser<'a> {
     // ========================================================================
     // 2. ERROR SYNCHRONIZATION
     // ========================================================================
-    fn synchronize(&mut self) {
+
+    // skip tokens until a keyword that looks like the start of a new item is found
+    fn synchronize_item(&mut self) {
+        self.advance();
+
+        while !self.is_at_end() {
+            match self.peek().token_type {
+                TokenType::FN | TokenType::STRUCT | TokenType::TRAIT | 
+                TokenType::EXTENSION | TokenType::INCLUDE | TokenType::PUB => return,
+                _ => {}
+            }
+            self.advance();
+        }
+    }
+
+    // skips to next statement inside block in event of error
+    fn synchronize_stmt(&mut self) {
         self.advance();
 
         while !self.is_at_end() {
             if self.previous().token_type == TokenType::Semicolon {
                 return;
             }
-
-            // If we see a keyword that starts a statement, we assume we are back on track
             match self.peek().token_type {
-                TokenType::FN | TokenType::LET | TokenType::CONST | 
-                TokenType::FOR | TokenType::IF | TokenType::WHILE | TokenType::RETURN => return,
-                
+                TokenType::LET | TokenType::CONST | TokenType::FOR | 
+                TokenType::IF | TokenType::WHILE | TokenType::RETURN => return,
                 _ => {}
             }
-
             self.advance();
         }
     }
 
     // ========================================================================
-    // 3. DECLARATION DISPATCHER
+    // 3. TOP LEVEL DECLARATIONS
     // ========================================================================
 
-    fn parse_declaration(&mut self) -> Result<Vec<ASTNode<'a>>, HydraError> {
+    fn parse_item(&mut self) -> Result<Item<'a>, HydraError> {
         if self.match_token(TokenType::INCLUDE) {
             return self.parse_include();
         }
 
+        let annotations = self.parse_annotations()?;
         let is_pub = self.match_token(TokenType::PUB);
 
-        if self.match_token(TokenType::MODULE) {
-            return Ok(vec![self.parse_module(is_pub)?]);
-        }
-
-        let annotations = self.parse_annotations()?;
-
-        let stmt = if self.match_token(TokenType::LET) || self.match_token(TokenType::CONST) {
-            if is_pub {
-                return Err(self.error(self.previous(), "P010", "pub not supported on variables"));
-            }
-
-            self.parse_variable()
-        } else if self.match_token(TokenType::FN) {
-            self.parse_function(annotations, is_pub)
-        } else if self.match_token(TokenType::STRUCT) {
-            self.parse_struct(is_pub)
+        if self.match_token(TokenType::STRUCT) {
+            self.parse_struct(is_pub, annotations)
+        } else if self.match_token(TokenType::TRAIT) {
+            self.parse_trait(is_pub, annotations)
         } else if self.match_token(TokenType::EXTENSION) {
             if is_pub {
                 return Err(self.error(self.previous(), "P010", "pub cannot be attached to an extension block"));
             }
-
-            self.parse_extension(is_pub)
-        } else if self.match_token(TokenType::RETURN) {
-            self.parse_return()
-        } else if self.match_token(TokenType::IF) {
-            self.parse_if()
-        } else if self.match_token(TokenType::FOR) {
-            self.parse_for()
-        } else if self.match_token(TokenType::FOREACH) {
-            self.parse_foreach()
-        } else if self.match_token(TokenType::WHILE) {
-            self.parse_while()
-        } else if self.match_token(TokenType::BREAK) {
-            self.parse_break()
-        } else if self.match_token(TokenType::CONTINUE) {
-            self.parse_continue()
+            self.parse_extension(annotations)
+        } else if self.match_token(TokenType::FN) {
+            let func = self.parse_function_decl(is_pub, annotations, false)?;
+            Ok(Item::Function(func))
         } else if self.match_token(TokenType::EXTERN) {
-            self.parse_extern(is_pub)
+            self.consume(TokenType::FN, "expected 'fn' after 'extern'")?;
+            let func = self.parse_function_decl(is_pub, annotations, true)?;
+            Ok(Item::Function(func))
         } else {
-            self.parse_statement()
-        }?;
-
-        Ok(vec![stmt])
-    }
-
-    // ========================================================================
-    // 4. STATEMENTS & DECLARATIONS (Ordered: Basic -> Complex)
-    // ========================================================================
-
-    fn parse_variable(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let is_const = self.previous().token_type == TokenType::CONST;
-        let name = self.consume(TokenType::IDENTIFIER("".to_string()), "variable name")?.clone();
-
-        let mut type_annotation = None;
-        
-        if self.match_token(TokenType::Colon) {
-            type_annotation = Some(self.parse_type()?);
+            // if we hit this, the user typed something like a floating variable or expression
+            Err(self.error(self.peek(), "P013", "expected a top-level item (struct, fn, trait, or extension)"))
         }
-        self.consume(TokenType::Equal, "'=' after variable name")?;
-
-        let initializer = self.parse_expression()?;
-        self.consume(TokenType::Semicolon, "';' at the end of line")?;
-
-        Ok(ASTNode::VariableDeclaration {
-            is_pub: false,
-            is_const,
-            name,
-            type_annotation,
-            initializer: Box::new(initializer),
-        })
     }
 
-    fn parse_return(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let value = self.parse_expression()?;
+    fn parse_include(&mut self) -> Result<Item<'a>, HydraError> {
+        let id = self.next_node_id();
+        let first_token = self.consume_identifier("expected module path")?.clone();
+        let mut segments = vec![first_token];
 
-        self.consume(TokenType::Semicolon, "';' after return value")?;
-
-        Ok(ASTNode::ReturnStatement {
-            value: Box::new(value),
-        })
-    }
-
-    fn parse_break(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let mut condition = None;
-
-        if self.match_token(TokenType::IF) {
-            let has_paren = self.match_token(TokenType::LeftParen);
-
-            condition = Some(Box::new(self.parse_expression()?));
-            
-            if has_paren {
-                self.consume(TokenType::RightParen, "')' after condition")?;
+        while self.check(TokenType::DoubleColon) {
+            if self.check_at(1, TokenType::LeftBrace) {
+                break;
             }
+            self.advance();
+            segments.push(self.consume_identifier("expected identifier after '::'")?.clone());
         }
 
-        self.consume(TokenType::Semicolon, "';' after break")?;
+        let path = Type::Path { id: self.next_node_id(), segments };
 
-        Ok(ASTNode::Break { condition })
-    }
-
-    fn parse_continue(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let mut condition = None;
-
-        if self.match_token(TokenType::IF) {
-            let has_paren = self.match_token(TokenType::LeftParen);
-
-            condition = Some(Box::new(self.parse_expression()?));
-            
-            if has_paren {
-                self.consume(TokenType::RightParen, "')' after condition")?;
-            }
-        }
-
-        self.consume(TokenType::Semicolon, "';' after continue")?;
-
-        Ok(ASTNode::Continue { condition })
-    }
-
-    fn parse_statement(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let expr = self.parse_expression()?;
-        self.consume(TokenType::Semicolon, "';' after expression")?;
-
-        Ok(expr)
-    }
-
-    fn parse_block(&mut self) -> Vec<ASTNode<'a>> {
-        if let Err(e) = self.consume(TokenType::LeftBrace, "'{' to start block") {
-            self.errors.push(e);
-
-            return Vec::new();
-        }
-
-        let mut statements = Vec::new();
-
-        while !self.check(TokenType::RightBrace) && !self.is_at_end() {
-            match self.parse_declaration() {
-                Ok(stmts) => statements.extend(stmts),
-                Err(e) => {
-                    self.errors.push(e);
-                    self.synchronize();
+        let mut symbols = None;
+        if self.match_token(TokenType::DoubleColon) {
+            self.consume(TokenType::LeftBrace, "expected '{' for selective include")?;
+            let mut syms = Vec::new();
+            if !self.check(TokenType::RightBrace) {
+                loop {
+                    syms.push(self.consume_identifier("expected symbol name")?.clone());
+                    if !self.match_token(TokenType::Comma) { break; }
                 }
             }
+            self.consume(TokenType::RightBrace, "expected '}' after symbols")?;
+            symbols = Some(syms);
         }
 
-        if let Err(e) = self.consume(TokenType::RightBrace, "'}' to end block") {
-            self.errors.push(e);
+        let mut alias = None;
+        if symbols.is_none() && self.match_token(TokenType::AS) {
+            alias = Some(self.consume_identifier("expected alias name after 'as'")?.clone());
         }
 
-        statements
+        self.consume(TokenType::Semicolon, "expected ';' after include statement")?;
+
+        Ok(Item::Include(IncludeDecl { id, path, symbols, alias }))
     }
 
-    fn parse_if(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let has_paren = self.match_token(TokenType::LeftParen);
-
-        if !has_paren { self.allow_struct = false; }
-        let condition = self.parse_expression()?;
-        if !has_paren { self.allow_struct = true; }
-
-        if has_paren {
-            self.consume(TokenType::RightParen, "')' after if condition")?;
-        }
-
-        let then_branch = self.parse_block();
-
-        let else_branch = if self.match_token(TokenType::ELSE) {
-            if self.match_token(TokenType::IF) {
-                let nested_if = self.parse_if()?;
-                Some(vec![nested_if])
-            } else {
-                Some(self.parse_block())
-            }
-        } else {
-            None
-        };
-
-        Ok(ASTNode::IfStatement {
-            condition: Box::new(condition),
-            then_branch,
-            else_branch
-        })
-    }
-
-    fn parse_while(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let has_paren = self.match_token(TokenType::LeftParen);        
-        
-        if !has_paren { self.allow_struct = false; }
-        let condition = self.parse_expression()?;
-        if !has_paren { self.allow_struct = true; }
-
-        if has_paren {
-            self.consume(TokenType::RightParen, "expected ')' after while condition")?;
-        }
-
-        let body = self.parse_block();
-
-        Ok(ASTNode::WhileLoop {
-            condition: Box::new(condition),
-            body
-        })
-    }
-
-    fn parse_for(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let has_paren = self.match_token(TokenType::LeftParen);
-
-        if !has_paren { self.allow_struct = false; }
-        let variable = self.consume(TokenType::IDENTIFIER("".to_string()), "loop variable name")?.clone();
-        self.consume(TokenType::IN, "'in' after loop variable")?;
-
-        let start = self.parse_expression()?;
-
-        let is_inclusive = if self.match_token(TokenType::DoubleDotEqual) {
-            true
-        } else if self.match_token(TokenType::DoubleDot) {
-            false
-        } else {
-            return Err(self.error(self.peek(), "P002", format!("expected .. or ..=, but found `{}`", self.peek().lexeme)));
-        };
-
-        let end = self.parse_expression()?;
-        if !has_paren { self.allow_struct = true; }
-
-        if has_paren {
-            self.consume(TokenType::RightParen, "')' after range")?;
-        }
-
-        let body = self.parse_block();
-
-        Ok(ASTNode::ForLoop {
-            variable,
-            start: Box::new(start),
-            end: Box::new(end),
-            is_inclusive,
-            body
-        })
-    }
-    
-    fn parse_foreach(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let has_paren = self.match_token(TokenType::LeftParen);
-
-        if !has_paren { 
-            self.allow_struct = false; 
-        }
-
-        let item_name = self.consume(TokenType::IDENTIFIER("".to_string()), "item name")?.clone();
-        self.consume(TokenType::IN, "'in' after item name")?;
-
-        let iterable = self.parse_expression()?;
-
-        if !has_paren {
-            self.allow_struct = true;
-        }
-
-        if has_paren {
-            self.consume(TokenType::RightParen, "')' after iterable")?;
-        }
-
-        let body = self.parse_block();
-
-        Ok(ASTNode::ForEach {
-            item: item_name,
-            iterable: Box::new(iterable),
-            body
-        })
-    }
-
-    fn parse_function(&mut self, annotations: Vec<Annotation>, is_pub: bool) -> Result<ASTNode<'a>, HydraError> {
-        let name = self.consume(TokenType::IDENTIFIER("".to_string()), "function name")?.clone();
-
+    fn parse_struct(&mut self, is_pub: bool, _annotations: Vec<Annotation>) -> Result<Item<'a>, HydraError> {
+        let id = self.next_node_id();
+        let name = self.consume_identifier("expected struct name")?.clone();
         let generic_params = self.parse_generic_params()?;
-
-        self.consume(TokenType::LeftParen, "'(' after function name")?;
-
-        let mut parameters = Vec::new();
-        if !self.check(TokenType::RightParen) {
-            loop {
-                let param_name = self.consume(TokenType::IDENTIFIER("".to_string()), "parameter name")?.clone();
-                self.consume(TokenType::Colon, "':' after parameter name")?;
-
-                let param_type = self.parse_type()?;
-                parameters.push((param_name.clone(), param_type.clone()));
-
-                if !self.match_token(TokenType::Comma) {
-                    break;
-                }
-            }
-        }
-        self.consume(TokenType::RightParen, "')' after parameters")?;
-        self.consume(TokenType::Arrow, "'->' after ')'")?;
-
-        let return_type = self.parse_type()?;
-
-        let is_bodyless = annotations.iter()
-            .any(|a| matches!(a.name.as_str(), "intrinsic" | "builtin")
-        );
-
-        let body = if is_bodyless {
-            self.consume(TokenType::Semicolon, "expected ';' after intrinsic function declaration")?;
-            Vec::new()
-        } else {
-            self.parse_block()
-        };
-
-        Ok(ASTNode::FunctionDeclaration {
-            name: name.clone(),
-            annotations,
-            generic_params,
-            parameters,
-            return_type,
-            body,
-            is_extern: false,
-            is_pub
-        })
-    }
-
-    fn parse_extern(&mut self, is_pub: bool) -> Result<ASTNode<'a>, HydraError> {
-        self.consume(TokenType::FN, "expected 'fn' after 'extern'")?;
-
-        let name = self.consume(TokenType::IDENTIFIER("".to_string()), "function name")?.clone();
-        let generic_params = self.parse_generic_params()?;
-
-        self.consume(TokenType::LeftParen, "'(' after function name")?;
-
-        let mut parameters = Vec::new();
-        if !self.check(TokenType::RightParen) {
-            loop {
-                let param_name = self.consume(TokenType::IDENTIFIER("".to_string()), "parameter name")?.clone();
-                self.consume(TokenType::Colon, "':' after parameter name")?;
-                let param_type = self.parse_type()?;
-
-                parameters.push((param_name, param_type));
-
-                if !self.match_token(TokenType::Comma) {
-                    break;
-                }
-            }
-        }
-
-        self.consume(TokenType::RightParen, "')' after parameters")?;
-        self.consume(TokenType::Arrow, "-> after ')'")?;
-
-        let return_type = self.parse_type()?;
-        self.consume(TokenType::Semicolon, "expected ';' after extern declaration")?;
-
-        Ok(ASTNode::FunctionDeclaration {
-            name,
-            annotations: Vec::new(),
-            generic_params,
-            parameters,
-            return_type,
-            body: Vec::new(),
-            is_extern: true,
-            is_pub
-        })
-    }
-
-    fn parse_function_rest(&mut self, extension_target: Option<Box<ASTNode<'a>>>, is_pub: bool, annotations: Vec<Annotation>) 
-        -> Result<ASTNode<'a>, HydraError> 
-    {
-        let name = self.consume_identifier("expected function name")?;
-        let generic_params = self.parse_generic_params()?;
-
-        self.consume(TokenType::LeftParen, "expected '(' after function name")?;
-
-        let mut params = Vec::new();
-        if !self.check(TokenType::RightParen) {
-            loop {
-                let is_shorthand = self.check(TokenType::Ampersand);
-                let is_value_ref = !is_shorthand && self.peek().lexeme == "self";
-
-                if is_shorthand || is_value_ref {
-                    let mut is_mut = false;
-
-                    if is_shorthand {
-                        self.advance(); // consume '&'
-                        is_mut = self.match_token(TokenType::MUT); // check for 'mut'
-                    }
-
-                    let self_token = self.consume_identifier("expected 'self'")?;
-                    if self_token.lexeme != "self" {
-                        return Err(self.error(&self_token, "P002", format!("expected 'self', but found `{}`", self_token.lexeme)));
-                    }
-
-                    let target_type = extension_target.as_ref().unwrap();
-
-                    let self_type = if is_shorthand {
-                        Box::new(
-                            ASTNode::Reference {
-                                is_mut, 
-                                inner: target_type.clone() 
-                            }
-                        )
-                    } else {
-                        target_type.clone()
-                    };
-
-                    params.push((self_token, self_type));
-                } else {
-                    let param_name = self.consume_identifier("expected parameter name")?;
-                    self.consume(TokenType::Colon, "expected ':' after parameter name")?;
-                    let param_type = self.parse_type()?;
-
-                    params.push((param_name, param_type));
-                }
-
-                if !self.match_token(TokenType::Comma) {
-                    break;
-                }
-            }
-        }
-
-        self.consume(TokenType::RightParen, "expected ')' after parameters")?;
-        self.consume(TokenType::Arrow, "expected '->' before return type")?;
-
-        let return_type = self.parse_type()?;
-        let body = self.parse_block();
-
-        Ok(ASTNode::FunctionDeclaration { 
-            name,
-            annotations: annotations,
-            generic_params,
-            parameters: params, 
-            return_type, 
-            body,
-            is_extern: false,
-            is_pub
-        })
-    }
-
-    fn parse_generic_params(&mut self) -> Result<Vec<Token<'a>>, HydraError> {
-        let mut params = Vec::new();
-        if self.match_token(TokenType::LeftAngle) { // <
-            loop {
-                params.push(self.consume_identifier("expected generic parameter name")?);
-                
-                if self.match_token(TokenType::RightAngle) { // >
-                    break;
-                }
-                self.consume(TokenType::Comma, "expected comma between generic parameters")?;
-            }
-        }
-        Ok(params)
-    }
-
-    fn parse_struct(&mut self, is_pub: bool) -> Result<ASTNode<'a>, HydraError> {
-        let name = self.consume_identifier("expected struct name")?;
-        let generic_params = self.parse_generic_params()?;
+        let where_clause = self.parse_where_clause()?;
 
         self.consume(TokenType::LeftBrace, "expected '{' before struct body")?;
 
@@ -543,85 +183,67 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
 
         while !self.check(TokenType::RightBrace) && !self.is_at_end() {
-            let is_member_pub = self.match_token(TokenType::PUB);
+            let _is_member_pub = self.match_token(TokenType::PUB); // ignoring for now, could add to field tuple later
 
             if self.match_token(TokenType::CONST) {
-                let constant_name = self.consume_identifier("expected constant name")?;
-                self.consume(TokenType::Colon, "expected ':' after constant name")?;
-
-                let constant_type = self.parse_type()?;
-                self.consume(TokenType::Equal, "expected '=' in constant declaration")?;
-
-                let value = self.parse_expression()?;
-                self.consume(TokenType::Semicolon, "expected ';' after constant")?;
-
-                constants.push(ASTNode::VariableDeclaration {
-                    is_pub: is_member_pub,
-                    is_const: true,
-                    name: constant_name,
-                    type_annotation: Some(constant_type),
-                    initializer: Box::new(value),
-                });
+                let constant_node = self.parse_variable_decl(true)?;
+                constants.push(constant_node);
             } else if self.check(TokenType::FN) {
                 return Err(self.error(self.peek(), "P011", "functions are not allowed in struct bodies")
                     .with_help("use an 'extension' block to implement functions for this struct"));
             } else {
                 let field_name = self.consume_identifier("expected field name")?.clone();
                 self.consume(TokenType::Colon, "expected ':'")?;
-
                 let field_type = self.parse_type()?;
                 self.consume(TokenType::Semicolon, "expected ';'")?;
-
                 fields.push((field_name, field_type));
             }
         }
 
         self.consume(TokenType::RightBrace, "expected '}' after struct body")?;
 
-        Ok(ASTNode::StructDeclaration {
-            name,
-            generic_params,
-            constants,
-            fields,
-            is_pub
-        })
+        Ok(Item::Struct(StructDecl {
+            id, name, generic_params, where_clause, constants, fields, is_pub
+        }))
     }
 
-    fn parse_struct_initializer(&mut self, name: ASTNode<'a>) -> Result<ASTNode<'a>, HydraError> {
-        self.consume(TokenType::LeftBrace, "expected '{' for struct initializer")?;
-        let mut fields = Vec::new();
+    fn parse_trait(&mut self, is_pub: bool, _annotations: Vec<Annotation>) -> Result<Item<'a>, HydraError> {
+        let id = self.next_node_id();
+        let name = self.consume_identifier("expected trait name")?.clone();
 
-        if !self.check(TokenType::RightBrace) {
-            loop {
-                self.consume(TokenType::Dot, "expected '.' before field name")?;
-                let field_name = self.consume_identifier("field name")?.clone();
-                self.consume(TokenType::Equal, "expected '=' after field name")?;
-                let value = self.parse_expression()?;
-                fields.push((field_name, Box::new(value)));
+        self.consume(TokenType::LeftBrace, "expected '{' before trait body")?;
+        let mut methods = Vec::new();
 
-                if !self.match_token(TokenType::Comma) { break; }
-                if self.check(TokenType::RightBrace) { break; }
-            }
+        while !self.check(TokenType::RightBrace) && !self.is_at_end() {
+            let annotations = self.parse_annotations()?;
+            let is_method_pub = self.match_token(TokenType::PUB);
+            
+            self.consume(TokenType::FN, "expected 'fn' for trait method")?;
+            
+            // tell parse_function_decl this is a trait method so it expects no body
+            let method = self.parse_function_decl(is_method_pub, annotations, true)?;
+            methods.push(method);
         }
 
-        self.consume(TokenType::RightBrace, "expected '}' to close struct initializer")?;
+        self.consume(TokenType::RightBrace, "expected '}' after trait body")?;
 
-        Ok(ASTNode::StructInitializer { 
-            name: Box::new(name), 
-            fields 
-        })
+        Ok(Item::Trait(TraitDecl { id, name, methods, is_pub }))
     }
 
-    fn parse_extension(&mut self, _is_pub: bool) -> Result<ASTNode<'a>, HydraError> {
+    fn parse_extension(&mut self, _annotations: Vec<Annotation>) -> Result<Item<'a>, HydraError> {
+        let id = self.next_node_id();
         let generic_params = self.parse_generic_params()?;
 
-        let mut target = self.parse_type()?;
-        let mut trait_target = None;
+        let mut target_type = self.parse_type()?;
+        let mut target_trait = None;
 
+        // if 'on' first type was actually the trait
         if self.match_token(TokenType::ON) {
-            trait_target = Some(target);
-            target = self.parse_type()?;
+            target_trait = Some(target_type);
+            target_type = self.parse_type()?;
         }
+
+        let where_clause = self.parse_where_clause()?;
 
         self.consume(TokenType::LeftBrace, "expected '{' before extension body")?;
 
@@ -629,29 +251,15 @@ impl<'a> Parser<'a> {
         let mut methods = Vec::new();
 
         while !self.check(TokenType::RightBrace) && !self.is_at_end() {
-            let annotations = self.parse_annotations()?;
-
+            let method_annotations = self.parse_annotations()?;
             let is_member_pub = self.match_token(TokenType::PUB);
 
             if self.match_token(TokenType::CONST) {
-                let name = self.consume_identifier("expected constant name")?;
-                self.consume(TokenType::Colon, "expected ':' after constant name")?;
-
-                let const_type = self.parse_type()?;
-                self.consume(TokenType::Equal, "expected '=' in constant declaration")?;
-
-                let value = self.parse_expression()?;
-                self.consume(TokenType::Semicolon, "expected ';' after constant")?;
-
-                constants.push(ASTNode::VariableDeclaration {
-                    is_pub: is_member_pub,
-                    is_const: true,
-                    name,
-                    type_annotation: Some(const_type),
-                    initializer: Box::new(value),
-                });
+                let constant_node = self.parse_variable_decl(true)?;
+                constants.push(constant_node);
             } else if self.match_token(TokenType::FN) {
-                methods.push(self.parse_function_rest(Some(target.clone()), is_member_pub, annotations)?);
+                // extension methods have bodies, so pass false for 'is_extern_or_trait'
+                methods.push(self.parse_function_decl(is_member_pub, method_annotations, false)?);
             } else {
                 return Err(self.error(self.peek(), "P009", "only constants and functions are allowed inside extension blocks"));
             }
@@ -659,50 +267,246 @@ impl<'a> Parser<'a> {
 
         self.consume(TokenType::RightBrace, "expected '}' after extension body")?;
 
-        Ok(ASTNode::ExtensionDeclaration {
-            trait_target,
-            target, 
-            generic_params,
-            constants, 
-            methods 
+        Ok(Item::Extension(ExtensionDecl {
+            id, target_trait, target_type, generic_params, where_clause, constants, methods 
+        }))
+    }
+
+    // standard fns, externs and trait methods
+    fn parse_function_decl(&mut self, is_pub: bool, annotations: Vec<Annotation>, is_extern_or_trait: bool) 
+        -> Result<FunctionDecl<'a>, HydraError> 
+    {
+        let id = self.next_node_id();
+        let name = self.consume_identifier("expected function name")?.clone();
+        let generic_params = self.parse_generic_params()?;
+
+        self.consume(TokenType::LeftParen, "expected '(' after function name")?;
+        let mut parameters = Vec::new();
+        
+        if !self.check(TokenType::RightParen) {
+            loop {
+                // shorthand check for `&self` or `&mut self` or `self`
+                let is_shorthand = self.check(TokenType::Ampersand);
+                let is_value_ref = !is_shorthand && self.peek().lexeme == "self";
+
+                if is_shorthand || is_value_ref {
+                    let mut is_mut = false;
+                    if is_shorthand {
+                        self.advance(); // consume '&'
+                        is_mut = self.match_token(TokenType::MUT);
+                    }
+
+                    let self_token = self.consume_identifier("expected 'self'")?.clone();
+                    if self_token.lexeme != "self" {
+                        return Err(self.error(&self_token, "P002", format!("expected 'self', found `{}`", self_token.lexeme)));
+                    }
+
+                    // for `self`, putting a generic Type::Path of "Self" as the type. 
+                    // semantic analyzer will resolve "Self" properly later
+                    let self_type = Type::Path {
+                        id: self.next_node_id(),
+                        segments: vec![Token { token_type: TokenType::IDENTIFIER("Self".to_string()), lexeme: "Self", span: self_token.span }]
+                    };
+
+                    let final_type = if is_shorthand {
+                        Type::Borrow { id: self.next_node_id(), is_mut, inner: Box::new(self_type) }
+                    } else {
+                        self_type
+                    };
+
+                    parameters.push((self_token, final_type));
+                } else {
+                    let param_name = self.consume_identifier("expected parameter name")?.clone();
+                    self.consume(TokenType::Colon, "expected ':' after parameter name")?;
+                    let param_type = self.parse_type()?;
+                    parameters.push((param_name, param_type));
+                }
+
+                if !self.match_token(TokenType::Comma) { break; }
+            }
+        }
+
+        self.consume(TokenType::RightParen, "expected ')' after parameters")?;
+        
+        let mut return_type = None;
+        if self.match_token(TokenType::Arrow) {
+            return_type = Some(self.parse_type()?);
+        }
+
+        let where_clause = self.parse_where_clause()?;
+
+        let is_bodyless = is_extern_or_trait || annotations.iter().any(|a| matches!(a.name.as_str(), "intrinsic" | "builtin"));
+
+        let body = if is_bodyless {
+            self.consume(TokenType::Semicolon, "expected ';' after bodyless function declaration")?;
+            None
+        } else {
+            Some(self.parse_block()?)
+        };
+
+        Ok(FunctionDecl {
+            id, 
+            name, 
+            annotations, 
+            generic_params, 
+            parameters, 
+            return_type, 
+            where_clause, 
+            body, 
+            is_extern: is_extern_or_trait, 
+            is_pub
         })
     }
 
     // ========================================================================
-    // 5. TYPE PARSING
+    // 4. STATEMENTS AND BLOCKS
     // ========================================================================
 
-    fn parse_type(&mut self) -> Result<Box<ASTNode<'a>>, HydraError> {
-        if self.match_token(TokenType::LeftBracket) {
-            let start_token = self.previous().clone();
+    fn parse_block(&mut self) -> Result<Block<'a>, HydraError> {
+        let id = self.next_node_id();
+        self.consume(TokenType::LeftBrace, "expected '{' to start block")?;
 
+        let mut statements = Vec::new();
+
+        while !self.check(TokenType::RightBrace) && !self.is_at_end() {
+            match self.parse_stmt() {
+                Ok(stmt) => statements.push(stmt),
+                Err(e) => {
+                    self.errors.push(e);
+                    self.synchronize_stmt();
+                }
+            }
+        }
+
+        self.consume(TokenType::RightBrace, "expected '}' to end block")?;
+
+        Ok(Block { id, statements })
+    }
+
+    fn parse_stmt(&mut self) -> Result<Stmt<'a>, HydraError> {
+        if self.match_token(TokenType::LET) {
+            self.parse_variable_decl(false)
+        } else if self.match_token(TokenType::CONST) {
+            self.parse_variable_decl(true)
+        } else if self.match_token(TokenType::RETURN) {
+            self.parse_return_stmt()
+        } else if self.match_token(TokenType::BREAK) {
+            self.parse_break_stmt()
+        } else if self.match_token(TokenType::CONTINUE) {
+            self.parse_continue_stmt()
+        } else {
+            // fallback to expression statement
+            let expr = self.parse_expression()?;
+            self.consume(TokenType::Semicolon, "expected ';' after expression")?;
+            Ok(Stmt::Expr(Box::new(expr)))
+        }
+    }
+
+    fn parse_variable_decl(&mut self, is_const: bool) -> Result<Stmt<'a>, HydraError> {
+        let id = self.next_node_id();
+        let name = self.consume_identifier("expected variable name")?.clone();
+
+        let mut type_annotation = None;
+        if self.match_token(TokenType::Colon) {
+            type_annotation = Some(self.parse_type()?);
+        }
+        
+        self.consume(TokenType::Equal, "expected '=' after variable name")?;
+        let initializer = self.parse_expression()?;
+        self.consume(TokenType::Semicolon, "expected ';' at the end of declaration")?;
+
+        Ok(Stmt::VariableDecl {
+            id, is_const, name, type_annotation, initializer: Box::new(initializer)
+        })
+    }
+
+    fn parse_return_stmt(&mut self) -> Result<Stmt<'a>, HydraError> {
+        let id = self.next_node_id();
+        let mut value = None;
+
+        if !self.check(TokenType::Semicolon) {
+            value = Some(Box::new(self.parse_expression()?));
+        }
+
+        self.consume(TokenType::Semicolon, "expected ';' after return value")?;
+
+        Ok(Stmt::Return { id, value })
+    }
+
+    fn parse_break_stmt(&mut self) -> Result<Stmt<'a>, HydraError> {
+        let id = self.next_node_id();
+        let mut condition = None;
+
+        if self.match_token(TokenType::IF) {
+            let has_paren = self.match_token(TokenType::LeftParen);
+            condition = Some(Box::new(self.parse_expression()?));
+            if has_paren {
+                self.consume(TokenType::RightParen, "expected ')' after condition")?;
+            }
+        }
+
+        self.consume(TokenType::Semicolon, "expected ';' after break")?;
+        Ok(Stmt::Break { id, condition })
+    }
+
+    fn parse_continue_stmt(&mut self) -> Result<Stmt<'a>, HydraError> {
+        let id = self.next_node_id();
+        let mut condition = None;
+
+        if self.match_token(TokenType::IF) {
+            let has_paren = self.match_token(TokenType::LeftParen);
+            condition = Some(Box::new(self.parse_expression()?));
+            if has_paren {
+                self.consume(TokenType::RightParen, "expected ')' after condition")?;
+            }
+        }
+
+        self.consume(TokenType::Semicolon, "expected ';' after continue")?;
+        Ok(Stmt::Continue { id, condition })
+    }
+
+    // ========================================================================
+    // 5. TYPES
+    // ========================================================================
+
+    fn parse_type(&mut self) -> Result<Type<'a>, HydraError> {
+        if self.match_token(TokenType::LeftBracket) {
+            let id = self.next_node_id();
+            let start_token = self.previous().clone();
             let element_type = self.parse_type()?;
 
-            self.consume(TokenType::Comma,"',' to separate type and array size")?;
+            // check if it's a slice e.g., `[i32]`
+            if self.match_token(TokenType::RightBracket) {
+                return Ok(Type::Slice {
+                    id,
+                    element_type: Box::new(element_type),
+                    token: start_token,
+                });
+            }
 
-            let size_expr = self.parse_primary()?;
-            self.consume(TokenType::RightBracket, "']' to close the array")?;
+            // otherwise it's an array e.g., `[i32, 4]`
+            self.consume(TokenType::Comma, "expected ',' to separate type and array size")?;
+            let size_expr = self.parse_expression()?;
+            self.consume(TokenType::RightBracket, "expected ']' to close the array")?;
 
-            return Ok(Box::new(ASTNode::ArrayType {
-                element_type,
+            return Ok(Type::Array {
+                id,
+                element_type: Box::new(element_type),
                 size: Box::new(size_expr),
                 token: start_token,
-            }));
+            });
         }
 
         if self.match_token(TokenType::Ampersand) {
+            let id = self.next_node_id();
             let is_mut = self.match_token(TokenType::MUT);
             let inner = self.parse_type()?;
 
-            return Ok(Box::new(
-                ASTNode::Reference {
-                    is_mut, 
-                    inner 
-                }
-            ));
+            return Ok(Type::Borrow { id, is_mut, inner: Box::new(inner) });
         }
 
         if self.match_token(TokenType::Star) {
+            let id = self.next_node_id();
             let is_mut = if self.match_token(TokenType::MUT) {
                 true
             } else if self.match_token(TokenType::CONST) {
@@ -712,8 +516,7 @@ impl<'a> Parser<'a> {
             };
 
             let inner = self.parse_type()?;
-            
-            return Ok(Box::new(ASTNode::RawPointer { is_mut, inner }));
+            return Ok(Type::RawPointer { id, is_mut, inner: Box::new(inner) });
         }
 
         let current_token = self.peek();
@@ -729,13 +532,9 @@ impl<'a> Parser<'a> {
             USIZE | U8 | U16 | U32 | U64 |
             F32 | F64 | CHAR | BOOL => {
                 let first_token = self.advance().clone();
-                let mut type_node;
+                let mut segments = vec![first_token];
 
-                // --- NEW SEGMENTS LOGIC GOES HERE ---
-                // (Note: adjust `DoubleColon` to whatever your `::` token is named)
                 if self.match_token(TokenType::DoubleColon) {
-                    let mut segments = vec![first_token];
-
                     loop {
                         let next_token = self.advance().clone();
                         if let TokenType::IDENTIFIER(_) = next_token.token_type {
@@ -744,41 +543,28 @@ impl<'a> Parser<'a> {
                             return Err(self.error(&next_token, "P000", "expected identifier after '::'"));
                         }
 
-                        if !self.match_token(TokenType::DoubleColon) {
-                            break;
-                        }
+                        if !self.match_token(TokenType::DoubleColon) { break; }
                     }
-
-                    type_node = ASTNode::PathExpression { segments };
-                } else {
-                    // Fallback to standard single identifier
-                    type_node = ASTNode::TypeIdentifier { type_token: first_token };
                 }
-                // ------------------------------------
 
-                // Generic parsing remains exactly the same! 
-                // Because we set `type_node` above, `base` will now capture the PathExpression 
-                // if it exists, allowing things like `std::vec::Vec<i32>`
+                let mut type_node = Type::Path { id: self.next_node_id(), segments };
+
                 if self.match_token(TokenType::LeftAngle) {
                     let mut args = Vec::new();
-
                     loop {
-                        args.push(*self.parse_type()?);
-
-                        if self.match_token(TokenType::RightAngle) {
-                            break;
-                        }
-
+                        args.push(self.parse_type()?);
+                        if self.match_token(TokenType::RightAngle) { break; }
                         self.consume(TokenType::Comma, "expected ',' between generic types")?;
                     }
 
-                    type_node = ASTNode::GenericType { 
+                    type_node = Type::Generic { 
+                        id: self.next_node_id(), 
                         base: Box::new(type_node), 
                         args 
                     };
                 }
 
-                Ok(Box::new(type_node))
+                Ok(type_node)
             }
 
             _ => Err(self.error(current_token, "P000", "expected a type name or array type")
@@ -787,442 +573,50 @@ impl<'a> Parser<'a> {
     }
 
     // ========================================================================
-    // 6. EXPRESSION PARSING (Precedence: Lowest -> Highest)
+    // 6. GENERICS AND TRAIT BOUNDS
     // ========================================================================
 
-    fn parse_expression(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        self.parse_assignment()
+    fn parse_generic_params(&mut self) -> Result<Vec<GenericParam<'a>>, HydraError> {
+        let mut params = Vec::new();
+        if self.match_token(TokenType::LeftAngle) { 
+            loop {
+                let name = self.consume_identifier("expected generic parameter name")?.clone();
+                params.push(GenericParam { id: self.next_node_id(), name });
+                
+                if self.match_token(TokenType::RightAngle) { break; }
+                self.consume(TokenType::Comma, "expected comma between generic parameters")?;
+            }
+        }
+        Ok(params)
     }
 
-    fn parse_assignment(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let target = self.parse_logical_or()?; 
+    fn parse_where_clause(&mut self) -> Result<Option<WhereClause<'a>>, HydraError> {
+        if !self.match_token(TokenType::WHERE) {
+            return Ok(None);
+        }
 
-        if self.match_token(TokenType::Equal) ||
-            self.match_token(TokenType::PlusEqual) ||
-            self.match_token(TokenType::MinusEqual) ||
-            self.match_token(TokenType::StarEqual) ||
-            self.match_token(TokenType::ForwardSlashEqual) ||
-            self.match_token(TokenType::ModuloEqual)
-        {
-            let operator = self.previous().clone();
-            let value = self.parse_assignment()?;
+        let mut predicates = Vec::new();
+        loop {
+            let target_type = self.parse_type()?;
+            self.consume(TokenType::Colon, "expected ':' after type in where clause")?;
             
-            return Ok(ASTNode::AssignmentExpression {
-                target: Box::new(target),
-                operator,
-                value: Box::new(value)
-            });
-        }
-
-        Ok(target)
-    }
-
-    fn parse_logical_or(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let mut node = self.parse_logical_and()?;
-
-        while self.match_token(TokenType::DoublePipe) {
-            let operator = self.previous().clone();
-            let right = self.parse_logical_and()?;
-
-            node = ASTNode::BinaryExpression {
-                left: Box::new(node),
-                operator,
-                right: Box::new(right),
-            };
-        }
-
-        Ok(node)
-    }
-
-    fn parse_logical_and(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let mut node = self.parse_equality()?;
-
-        while self.match_token(TokenType::DoubleAmpersand) {
-            let operator = self.previous().clone();
-            let right = self.parse_equality()?;
-
-            node = ASTNode::BinaryExpression {
-                left: Box::new(node),
-                operator,
-                right: Box::new(right),
-            };
-        }
-
-        Ok(node)
-    }
-
-    fn parse_equality(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let mut node = self.parse_comparison()?;
-
-        while self.match_token(TokenType::DoubleEqual) || self.match_token(TokenType::ExclamEqual) {
-            let operator = self.previous().clone();
-            let right = self.parse_comparison()?;
-
-            node = ASTNode::BinaryExpression {
-                left: Box::new(node),
-                operator,
-                right: Box::new(right),
-            };
-        }
-
-        Ok(node)
-    }
-
-    fn parse_comparison(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let mut node = self.parse_additive()?;
-
-        while self.match_token(TokenType::LeftAngle) || self.match_token(TokenType::LessEqual) ||
-            self.match_token(TokenType::RightAngle) || self.match_token(TokenType::GreaterEqual)
-        {
-            let operator = self.previous().clone();
-            let right = self.parse_additive()?;
-
-            node = ASTNode::BinaryExpression { 
-                left: Box::new(node),
-                operator,
-                right: Box::new(right)
-            };
-        }
-
-        Ok(node)
-    }
-
-    fn parse_additive(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let mut node = self.parse_multiplicative()?;
-
-        loop {
-            let operator = if self.match_token(TokenType::Plus) ||
-                        self.match_token(TokenType::Minus) 
-            {
-                Some(self.previous().clone())
-            } else {
-                None
-            };
-
-            if let Some(op) = operator {
-                let right = self.parse_multiplicative()?;
-
-                node = ASTNode::BinaryExpression {
-                    left: Box::new(node),
-                    operator: op,
-                    right: Box::new(right)
-                };
-            } else {
-                break;
-            }
-        }
-
-        Ok(node)
-    }
-
-    fn parse_multiplicative(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let mut node = self.parse_unary()?;
-
-        loop {
-            let operator = if self.match_token(TokenType::Star) || 
-                        self.match_token(TokenType::ForwardSlash) || 
-                        self.match_token(TokenType::Modulo) 
-            {
-                Some(self.previous().clone())   
-            } else {
-                None
-            };
-
-            if let Some(op) = operator {
-                let right = self.parse_unary()?;
-
-                node = ASTNode::BinaryExpression {
-                    left: Box::new(node),
-                    operator: op,
-                    right: Box::new(right),
-                };
-            } else {
-                break;
-            }
-        }
-
-        Ok(node)
-    }
-
-    fn parse_unary(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        // borrowing
-        if self.match_token(TokenType::Ampersand) {
-            let is_mut = self.match_token(TokenType::MUT);
-            let right = self.parse_unary()?;
-
-            return Ok(ASTNode::BorrowExpression {
-                is_mut,
-                right: Box::new(right),
-            });
-        }
-
-        // dereference
-        if self.match_token(TokenType::Star) {
-            let right = self.parse_unary()?;
-
-            return Ok(ASTNode::DereferenceExpression {
-                right: Box::new(right)
-            });
-        }
-
-        // unary ops
-        if self.match_token(TokenType::ExclamationMark) ||
-           self.match_token(TokenType::Minus) 
-        {
-            let operator = self.previous().clone();
-            let right = self.parse_unary()?;
-
-            return Ok(ASTNode::UnaryExpression {
-                operator,
-                right: Box::new(right),
-            });
-        }
-
-        self.parse_call()
-    }
-
-    fn parse_call(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let mut expr = self.parse_primary()?;
-        loop {
-            if self.match_token(TokenType::LeftParen) {
-                expr = self.finish_parse_fn_call(expr, Vec::new())?;
-            } else if self.match_token(TokenType::AS) {
-                let target = self.parse_type()?;
-                expr = ASTNode::CastExpression {
-                    value: Box::new(expr),
-                    target: Box::new(*target),
-                };
-            } else if self.match_token(TokenType::DoubleColon) {
-                if self.match_token(TokenType::LeftAngle) {
-                    let mut generic_args = Vec::new();
-                    loop {
-                        generic_args.push(*self.parse_type()?);
-                        if self.match_token(TokenType::RightAngle) { break; }
-                        self.consume(TokenType::Comma, "expected ',' in generic args")?;
-                    }
-
-                    self.consume(TokenType::LeftParen, "expected '(' after generic arguments")?;
-                    expr = self.finish_parse_fn_call(expr, generic_args)?;
-                } else {
-                    let next_name = self.consume_identifier("expected identifier after '::'")?.clone();
-
-                    expr = match expr {
-                        ASTNode::VariableExpression { name } => {
-                            ASTNode::PathExpression { segments: vec![name, next_name] }
-                        },
-                        ASTNode::PathExpression { mut segments } => {
-                            segments.push(next_name);
-                            ASTNode::PathExpression { segments }
-                        },
-
-                        other => {
-                            ASTNode::MemberExpression {
-                                object: Box::new(other),
-                                property: next_name
-                            }
-                        }
-                    };
-                }
-            } else if self.allow_struct && self.check(TokenType::LeftBrace) {
-                expr = self.parse_struct_initializer(expr)?;
-            } else if self.match_token(TokenType::Dot) {
-                let name = if let TokenType::IDENTIFIER(_) = self.peek().token_type {
-                    self.advance().clone()
-                } else {
-                    return Err(self.error(self.peek(), "P001", "expected property name after '.'"));
-                };
-                expr = ASTNode::MemberExpression { object: Box::new(expr), property: name };
-            } else if self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) {
-                expr = ASTNode::PostfixUnaryExpression { operator: self.previous().clone(), left: Box::new(expr) };
-            } else if self.match_token(TokenType::LeftBracket) {
-                let token = self.previous().clone();
-                let index = self.parse_expression()?;
-                self.consume(TokenType::RightBracket, "']' after array index")?;
-                expr = ASTNode::ArrayAccess { array: Box::new(expr), index: Box::new(index), token };
-            } else {
-                break;
-            }
-        }
-        
-        Ok(expr)
-    }
-
-    fn finish_parse_fn_call(&mut self, callee: ASTNode<'a>, generic_args: Vec<ASTNode<'a>>) -> Result<ASTNode<'a>, HydraError> {
-        let arguments = self.finish_parse_fn_call_args()?;
-        Ok(ASTNode::FunctionCallExpression { callee: Box::new(callee), arguments, generic_args })
-    }
-
-    fn finish_parse_fn_call_args(&mut self) -> Result<Vec<ASTNode<'a>>, HydraError> {
-        let mut args = Vec::new();
-
-        if !self.check(TokenType::RightParen) {
+            let mut bound_traits = Vec::new();
             loop {
-                args.push(self.parse_expression()?);
-                if !self.match_token(TokenType::Comma) {
-                    break;
-                }
-            }
-        }
-
-        self.consume(TokenType::RightParen, "expected ')' after arguments")?;
-
-        Ok(args)
-    }
-
-    fn parse_primary(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let current_token = &self.tokens[self.current];
-
-        use TokenType::*;
-        match &current_token.token_type {
-            IntLiteral(_) | FloatLiteral(_) | StringLiteral(_) | CharLiteral(_)| BoolLiteral(_) | ANYSIZE => {
-                self.advance();
-                Ok(ASTNode::Expression { token: self.previous().clone() })
+                bound_traits.push(self.parse_type()?);
+                if !self.match_token(TokenType::Plus) { break; }
             }
 
-            IDENTIFIER(_) => {
-                let name_token = self.advance().clone();
-                let path_node = ASTNode::VariableExpression { name: name_token };
+            predicates.push(WherePredicate { 
+                id: self.next_node_id(), 
+                target_type, 
+                bound_traits 
+            });
 
-                if self.allow_struct && self.check(TokenType::LeftBrace) {
-                    return self.parse_struct_initializer(path_node);
-                }
-
-                Ok(path_node)
-            }
-
-            LeftParen => {
-                self.advance();
-                let expr = self.parse_expression()?; 
-                self.consume(TokenType::RightParen, "')' after expression")?;
-                Ok(expr)
-            }
-
-            LeftBrace => self.parse_array_initializer(),
-
-            Star | ForwardSlash | Plus | Modulo => {
-                Err(self.error(current_token, "P004", format!("unexpected operator `{}` found here", current_token.lexeme)))
-            },
-
-            ISIZE | I8 | I16 | I32 | I64 | USIZE | U8 | U16 | U32 | U64 | F32 | F64 | CHAR | BOOL => {
-                let token = self.advance().clone();
-                Ok(ASTNode::TypeIdentifier { type_token: token })
-            }
-
-            _ => Err(self.error(current_token, "P000", "expected a value (number, string, or boolean)"))
-        }
-    }
-
-    fn parse_array_initializer(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let start_token = self.consume(TokenType::LeftBrace, "'{' to start array initializer")?.clone();
-        let mut elements = Vec::new();
-
-        if !self.check(TokenType::RightBrace) {
-            loop {
-                elements.push(self.parse_expression()?);
-
-                if !self.match_token(TokenType::Comma) {
-                    break;
-                }
-
-                if self.check(TokenType::RightBrace) {
-                    break;
-                }
-            }
-        }
-        self.consume(TokenType::RightBrace, "'}' to close array initializer")?;
-
-        Ok(ASTNode::ArrayInitializer {
-            elements,
-            token: start_token
-        })
-    }
-
-    fn parse_include(&mut self) -> Result<Vec<ASTNode<'a>>, HydraError> {
-        let first_token = self.consume_identifier("expected module path")?.clone();
-        let mut segments = vec![first_token];
-
-        while self.check(TokenType::DoubleColon) {
-            if self.check_at(1, TokenType::LeftBrace) {
-                break;
-            }
-
-            self.advance();
-            segments.push(self.consume_identifier("expected identifier after '::'")?.clone());
+            if !self.match_token(TokenType::Comma) { break; }
+            if self.check(TokenType::LeftBrace) || self.check(TokenType::Semicolon) { break; }
         }
 
-        let path = if segments.len() == 1 {
-            Box::new(ASTNode::VariableExpression { name: segments[0].clone() })
-        } else {
-            Box::new(ASTNode::PathExpression { segments })
-        };
-
-        let mut symbols = None;
-        if self.match_token(TokenType::DoubleColon) {
-            self.consume(TokenType::LeftBrace, "expected '{' for selective include")?;
-
-            let mut syms = Vec::new();
-            if !self.check(TokenType::RightBrace) {
-                loop {
-                    syms.push(self.consume_identifier("expected symbol name")?.clone());
-                    if !self.match_token(TokenType::Comma) { break; }
-                }
-            }
-
-            self.consume(TokenType::RightBrace, "expected '}' after symbols")?;
-            symbols = Some(syms);
-        }
-
-        let mut alias = None;
-        if symbols.is_none() && self.match_token(TokenType::AS) {
-            alias = Some(self.consume_identifier("expected alias name after 'as'")?.clone());
-        }
-
-        self.consume(TokenType::Semicolon, "expected ';' after include statement")?;
-
-        Ok(vec![ASTNode::IncludeStatement {
-            path,
-            symbols,
-            alias
-        }])
-    }
-
-    fn parse_module_path(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        let first = self.consume_identifier("expected identifier in include path")?.clone();
-        let mut segments = vec![first];
-
-        while self.check(TokenType::DoubleColon) {
-            self.advance();
-            let seg = self.consume_identifier("expected identifier after '::' in path")?.clone();
-            segments.push(seg);
-        }
-
-        if segments.len() == 1 {
-            Ok(ASTNode::VariableExpression { name: segments.remove(0) })
-        } else {
-            Ok(ASTNode::PathExpression { segments })
-        }
-    }
-
-    fn parse_module(&mut self, is_pub: bool) -> Result<ASTNode<'a>, HydraError> {
-        let first_token = self.consume_identifier("expected module name")?.clone();
-        let mut segments = vec![first_token];
-
-        while self.match_token(TokenType::DoubleColon) {
-            segments.push(self.consume_identifier("expected identifier after '::'")?.clone());
-        }
-
-        self.consume(TokenType::Semicolon, "expected ';' after module declaration")?;
-
-        let name_node = if segments.len() == 1 {
-            Box::new(ASTNode::VariableExpression { name: segments[0].clone() })
-        } else {
-            Box::new(ASTNode::PathExpression { segments })
-        };
-
-        Ok(ASTNode::ModuleDeclaration {
-            name: name_node,
-            is_pub
-        })
+        Ok(Some(WhereClause { predicates }))
     }
 
     fn parse_annotations(&mut self) -> Result<Vec<Annotation>, HydraError> {
@@ -1247,34 +641,509 @@ impl<'a> Parser<'a> {
                             return Err(self.error(&arg_token, "P002", "expected string literal in annotation arguments"));
                         }
 
-                        if !self.match_token(TokenType::Comma) {
-                            break;
-                        }
+                        if !self.match_token(TokenType::Comma) { break; }
                     }
                 }
-
                 self.consume(TokenType::RightParen, "expected ')' after annotation arguments")?;
             }
             
             self.consume(TokenType::RightBracket, "expected ']' to close attribute")?;
-
-            annotations.push(Annotation {
-                name,
-                args
-            });
+            annotations.push(Annotation { name, args });
         }
 
         Ok(annotations)
     }
 
     // ========================================================================
-    // 7. HELPERS
+    // 7. EXPRESSIONS
+    // ========================================================================
+
+    fn parse_expression(&mut self) -> Result<Expr<'a>, HydraError> {
+        self.parse_assignment()
+    }
+
+    fn parse_assignment(&mut self) -> Result<Expr<'a>, HydraError> {
+        let target = self.parse_logical_or()?; 
+
+        if self.match_token(TokenType::Equal) ||
+            self.match_token(TokenType::PlusEqual) ||
+            self.match_token(TokenType::MinusEqual) ||
+            self.match_token(TokenType::StarEqual) ||
+            self.match_token(TokenType::ForwardSlashEqual) ||
+            self.match_token(TokenType::ModuloEqual)
+        {
+            let id = self.next_node_id();
+            let operator = self.previous().clone();
+            let value = self.parse_assignment()?;
+            
+            return Ok(Expr::Assignment {
+                id,
+                target: Box::new(target),
+                operator,
+                value: Box::new(value)
+            });
+        }
+
+        Ok(target)
+    }
+
+    fn parse_logical_or(&mut self) -> Result<Expr<'a>, HydraError> {
+        let mut node = self.parse_logical_and()?;
+
+        while self.match_token(TokenType::DoublePipe) {
+            let id = self.next_node_id();
+            let operator = self.previous().clone();
+            let right = self.parse_logical_and()?;
+
+            node = Expr::Binary {
+                id, left: Box::new(node), operator, right: Box::new(right),
+            };
+        }
+
+        Ok(node)
+    }
+
+    fn parse_logical_and(&mut self) -> Result<Expr<'a>, HydraError> {
+        let mut node = self.parse_equality()?;
+
+        while self.match_token(TokenType::DoubleAmpersand) {
+            let id = self.next_node_id();
+            let operator = self.previous().clone();
+            let right = self.parse_equality()?;
+
+            node = Expr::Binary {
+                id, left: Box::new(node), operator, right: Box::new(right),
+            };
+        }
+
+        Ok(node)
+    }
+
+    fn parse_equality(&mut self) -> Result<Expr<'a>, HydraError> {
+        let mut node = self.parse_comparison()?;
+
+        while self.match_token(TokenType::DoubleEqual) || self.match_token(TokenType::ExclamEqual) {
+            let id = self.next_node_id();
+            let operator = self.previous().clone();
+            let right = self.parse_comparison()?;
+
+            node = Expr::Binary {
+                id, left: Box::new(node), operator, right: Box::new(right),
+            };
+        }
+
+        Ok(node)
+    }
+
+    fn parse_comparison(&mut self) -> Result<Expr<'a>, HydraError> {
+        let mut node = self.parse_additive()?;
+
+        while self.match_token(TokenType::LeftAngle) || self.match_token(TokenType::LessEqual) ||
+            self.match_token(TokenType::RightAngle) || self.match_token(TokenType::GreaterEqual)
+        {
+            let id = self.next_node_id();
+            let operator = self.previous().clone();
+            let right = self.parse_additive()?;
+
+            node = Expr::Binary { 
+                id, left: Box::new(node), operator, right: Box::new(right)
+            };
+        }
+
+        Ok(node)
+    }
+
+    fn parse_additive(&mut self) -> Result<Expr<'a>, HydraError> {
+        let mut node = self.parse_multiplicative()?;
+
+        loop {
+            let operator = if self.match_token(TokenType::Plus) || self.match_token(TokenType::Minus) {
+                Some(self.previous().clone())
+            } else {
+                None
+            };
+
+            if let Some(op) = operator {
+                let id = self.next_node_id();
+                let right = self.parse_multiplicative()?;
+                node = Expr::Binary {
+                    id, left: Box::new(node), operator: op, right: Box::new(right)
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(node)
+    }
+
+    fn parse_multiplicative(&mut self) -> Result<Expr<'a>, HydraError> {
+        let mut node = self.parse_unary()?;
+
+        loop {
+            let operator = if self.match_token(TokenType::Star) || 
+                        self.match_token(TokenType::ForwardSlash) || 
+                        self.match_token(TokenType::Modulo) 
+            {
+                Some(self.previous().clone())   
+            } else {
+                None
+            };
+
+            if let Some(op) = operator {
+                let id = self.next_node_id();
+                let right = self.parse_unary()?;
+                node = Expr::Binary {
+                    id, left: Box::new(node), operator: op, right: Box::new(right),
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(node)
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr<'a>, HydraError> {
+        // borrowing
+        if self.match_token(TokenType::Ampersand) {
+            let id = self.next_node_id();
+            let is_mut = self.match_token(TokenType::MUT);
+            let right = self.parse_unary()?;
+
+            return Ok(Expr::Borrow {
+                id, is_mut, right: Box::new(right),
+            });
+        }
+
+        // dereference
+        if self.match_token(TokenType::Star) {
+            let id = self.next_node_id();
+            let right = self.parse_unary()?;
+
+            return Ok(Expr::Dereference {
+                id, right: Box::new(right)
+            });
+        }
+
+        // unary ops
+        if self.match_token(TokenType::ExclamationMark) || self.match_token(TokenType::Minus) {
+            let id = self.next_node_id();
+            let operator = self.previous().clone();
+            let right = self.parse_unary()?;
+
+            return Ok(Expr::Unary {
+                id, operator, right: Box::new(right),
+            });
+        }
+
+        self.parse_call()
+    }
+
+    fn parse_call(&mut self) -> Result<Expr<'a>, HydraError> {
+        let mut expr = self.parse_primary()?;
+        
+        loop {
+            if self.match_token(TokenType::LeftParen) {
+                let id = self.next_node_id();
+                let arguments = self.finish_parse_fn_call_args()?;
+                expr = Expr::FunctionCall { id, callee: Box::new(expr), arguments, generic_args: Vec::new() };
+            } else if self.match_token(TokenType::AS) {
+                let id = self.next_node_id();
+                let target = self.parse_type()?;
+                expr = Expr::Cast { id, value: Box::new(expr), target: Box::new(target) };
+            } else if self.match_token(TokenType::DoubleColon) {
+                if self.match_token(TokenType::LeftAngle) {
+                    let id = self.next_node_id();
+                    let mut generic_args = Vec::new();
+                    loop {
+                        generic_args.push(self.parse_type()?);
+                        if self.match_token(TokenType::RightAngle) { break; }
+                        self.consume(TokenType::Comma, "expected ',' in generic args")?;
+                    }
+
+                    self.consume(TokenType::LeftParen, "expected '(' after generic arguments")?;
+                    let arguments = self.finish_parse_fn_call_args()?;
+                    expr = Expr::FunctionCall { id, callee: Box::new(expr), arguments, generic_args };
+                } else {
+                    let next_name = self.consume_identifier("expected identifier after '::'")?.clone();
+
+                    expr = match expr {
+                        Expr::Variable { name, .. } => {
+                            Expr::Path { id: self.next_node_id(), segments: vec![name, next_name] }
+                        },
+                        Expr::Path { mut segments, .. } => {
+                            segments.push(next_name);
+                            Expr::Path { id: self.next_node_id(), segments }
+                        },
+                        other => {
+                            Expr::Member { id: self.next_node_id(), object: Box::new(other), property: next_name }
+                        }
+                    };
+                }
+            } else if self.allow_struct && self.check(TokenType::LeftBrace) {
+                expr = self.parse_struct_initializer(expr)?;
+            } else if self.match_token(TokenType::Dot) {
+                let id = self.next_node_id();
+                let name = if let TokenType::IDENTIFIER(_) = self.peek().token_type {
+                    self.advance().clone()
+                } else {
+                    return Err(self.error(self.peek(), "P001", "expected property name after '.'"));
+                };
+
+                // check if it's a method call like `obj::method()`
+                if self.check(TokenType::LeftParen) || self.check(TokenType::DoubleColon) {
+                    // if there are generic args, we expect `::`
+                    let mut generic_args = Vec::new();
+                    if self.match_token(TokenType::DoubleColon) {
+                        self.consume(TokenType::LeftAngle, "expected '<' after '::' for method generics")?;
+                        loop {
+                            generic_args.push(self.parse_type()?);
+                            if self.match_token(TokenType::RightAngle) { break; }
+                            self.consume(TokenType::Comma, "expected ',' in generic args")?;
+                        }
+                    }
+                    
+                    self.consume(TokenType::LeftParen, "expected '(' after method name")?;
+                    let arguments = self.finish_parse_fn_call_args()?;
+                    expr = Expr::MethodCall { id, object: Box::new(expr), method: name, arguments, generic_args };
+                } else {
+                    // standard field access
+                    expr = Expr::Member { id, object: Box::new(expr), property: name };
+                }
+            } else if self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) {
+                let id = self.next_node_id();
+                expr = Expr::PostfixUnary { id, operator: self.previous().clone(), left: Box::new(expr) };
+            } else if self.match_token(TokenType::LeftBracket) {
+                let id = self.next_node_id();
+                let token = self.previous().clone();
+                let index = self.parse_expression()?;
+                self.consume(TokenType::RightBracket, "expected ']' after array index")?;
+                expr = Expr::ArrayAccess { id, array: Box::new(expr), index: Box::new(index), token };
+            } else {
+                break;
+            }
+        }
+        
+        Ok(expr)
+    }
+
+    fn finish_parse_fn_call_args(&mut self) -> Result<Vec<Expr<'a>>, HydraError> {
+        let mut args = Vec::new();
+
+        if !self.check(TokenType::RightParen) {
+            loop {
+                args.push(self.parse_expression()?);
+                if !self.match_token(TokenType::Comma) { break; }
+            }
+        }
+
+        self.consume(TokenType::RightParen, "expected ')' after arguments")?;
+        Ok(args)
+    }
+
+    fn parse_struct_initializer(&mut self, name_expr: Expr<'a>) -> Result<Expr<'a>, HydraError> {
+        let id = self.next_node_id();
+        self.consume(TokenType::LeftBrace, "expected '{' for struct initializer")?;
+        let mut fields = Vec::new();
+
+        if !self.check(TokenType::RightBrace) {
+            loop {
+                self.consume(TokenType::Dot, "expected '.' before field name")?;
+                let field_name = self.consume_identifier("field name")?.clone();
+                self.consume(TokenType::Equal, "expected '=' after field name")?;
+                let value = self.parse_expression()?;
+                fields.push((field_name, Box::new(value)));
+
+                if !self.match_token(TokenType::Comma) { break; }
+                if self.check(TokenType::RightBrace) { break; }
+            }
+        }
+
+        self.consume(TokenType::RightBrace, "expected '}' to close struct initializer")?;
+
+        Ok(Expr::StructInitializer { id, name: Box::new(name_expr), fields })
+    }
+
+    fn parse_primary(&mut self) -> Result<Expr<'a>, HydraError> {
+        // check for control flow expressions first 
+        if self.match_token(TokenType::IF) { return self.parse_if(); }
+        if self.match_token(TokenType::WHILE) { return self.parse_while(); }
+        if self.match_token(TokenType::FOR) { return self.parse_for(); }
+        if self.match_token(TokenType::FOREACH) { return self.parse_foreach(); }
+
+        let id = self.next_node_id();
+        let current_token = &self.tokens[self.current];
+
+        use TokenType::*;
+        match &current_token.token_type {
+            IntLiteral(_) | FloatLiteral(_) | StringLiteral(_) | CharLiteral(_)| BoolLiteral(_) | ANYSIZE => {
+                self.advance();
+                Ok(Expr::Literal { id, token: self.previous().clone() })
+            }
+
+            IDENTIFIER(_) => {
+                let name_token = self.advance().clone();
+                let path_node = Expr::Variable { id, name: name_token };
+
+                // this safely falls through if we're not allowing struct initializers
+                if self.allow_struct && self.check(TokenType::LeftBrace) {
+                    return self.parse_struct_initializer(path_node);
+                }
+
+                Ok(path_node)
+            }
+
+            LeftParen => {
+                self.advance();
+                let expr = self.parse_expression()?; 
+                self.consume(TokenType::RightParen, "expected ')' after expression")?;
+                Ok(expr)
+            }
+
+            LeftBrace => self.parse_array_initializer(),
+
+            Star | ForwardSlash | Plus | Modulo => {
+                Err(self.error(current_token, "P004", format!("unexpected operator `{}` found here", current_token.lexeme)))
+            },
+
+            // these act as path bases for static methods or constraints
+            ISIZE | I8 | I16 | I32 | I64 | USIZE | U8 | U16 | U32 | U64 | F32 | F64 | CHAR | BOOL => {
+                let token = self.advance().clone();
+                Ok(Expr::Variable { id, name: token })
+            }
+
+            _ => Err(self.error(current_token, "P000", "expected a value (number, string, or boolean)"))
+        }
+    }
+
+    fn parse_array_initializer(&mut self) -> Result<Expr<'a>, HydraError> {
+        let id = self.next_node_id();
+        let start_token = self.consume(TokenType::LeftBrace, "expected '{' to start array initializer")?.clone();
+        let mut elements = Vec::new();
+
+        if !self.check(TokenType::RightBrace) {
+            loop {
+                elements.push(self.parse_expression()?);
+                if !self.match_token(TokenType::Comma) { break; }
+                if self.check(TokenType::RightBrace) { break; }
+            }
+        }
+        self.consume(TokenType::RightBrace, "expected '}' to close array initializer")?;
+
+        Ok(Expr::ArrayInitializer { id, elements, token: start_token })
+    }
+
+    fn parse_if(&mut self) -> Result<Expr<'a>, HydraError> {
+        let id = self.next_node_id();
+        let has_paren = self.match_token(TokenType::LeftParen);
+
+        if !has_paren { self.allow_struct = false; }
+        let condition = self.parse_expression()?;
+        if !has_paren { self.allow_struct = true; }
+
+        if has_paren {
+            self.consume(TokenType::RightParen, "expected ')' after if condition")?;
+        }
+
+        let then_branch = self.parse_block()?;
+
+        let else_branch = if self.match_token(TokenType::ELSE) {
+            if self.match_token(TokenType::IF) {
+                // to support `else if`, wrap nested if inside a block
+                let nested_if_id = self.next_node_id();
+                let nested_if = self.parse_if()?;
+
+                Some(Block {
+                    id: nested_if_id,
+                    statements: vec![Stmt::Expr(Box::new(nested_if))]
+                })
+            } else {
+                Some(self.parse_block()?)
+            }
+        } else {
+            None
+        };
+
+        Ok(Expr::If { id, condition: Box::new(condition), then_branch, else_branch })
+    }
+
+    fn parse_while(&mut self) -> Result<Expr<'a>, HydraError> {
+        let id = self.next_node_id();
+        let has_paren = self.match_token(TokenType::LeftParen);        
+        
+        if !has_paren { self.allow_struct = false; }
+        let condition = self.parse_expression()?;
+        if !has_paren { self.allow_struct = true; }
+
+        if has_paren {
+            self.consume(TokenType::RightParen, "expected ')' after while condition")?;
+        }
+
+        let body = self.parse_block()?;
+
+        Ok(Expr::While { id, condition: Box::new(condition), body })
+    }
+
+    fn parse_for(&mut self) -> Result<Expr<'a>, HydraError> {
+        let id = self.next_node_id();
+        let has_paren = self.match_token(TokenType::LeftParen);
+
+        if !has_paren { self.allow_struct = false; }
+        let variable = self.consume(TokenType::IDENTIFIER("".to_string()), "expected loop variable name")?.clone();
+        self.consume(TokenType::IN, "expected 'in' after loop variable")?;
+
+        let start = self.parse_expression()?;
+
+        let is_inclusive = if self.match_token(TokenType::DoubleDotEqual) {
+            true
+        } else if self.match_token(TokenType::DoubleDot) {
+            false
+        } else {
+            return Err(self.error(self.peek(), "P002", format!("expected .. or ..=, but found `{}`", self.peek().lexeme)));
+        };
+
+        let end = self.parse_expression()?;
+        if !has_paren { self.allow_struct = true; }
+
+        if has_paren {
+            self.consume(TokenType::RightParen, "expected ')' after range")?;
+        }
+
+        let body = self.parse_block()?;
+
+        Ok(Expr::For { id, variable, start: Box::new(start), end: Box::new(end), is_inclusive, body })
+    }
+    
+    fn parse_foreach(&mut self) -> Result<Expr<'a>, HydraError> {
+        let id = self.next_node_id();
+        let has_paren = self.match_token(TokenType::LeftParen);
+
+        if !has_paren { self.allow_struct = false; }
+
+        let item_name = self.consume(TokenType::IDENTIFIER("".to_string()), "expected item name")?.clone();
+        self.consume(TokenType::IN, "expected 'in' after item name")?;
+
+        let iterable = self.parse_expression()?;
+
+        if !has_paren { self.allow_struct = true; }
+
+        if has_paren {
+            self.consume(TokenType::RightParen, "expected ')' after iterable")?;
+        }
+
+        let body = self.parse_block()?;
+
+        Ok(Expr::ForEach { id, item: item_name, iterable: Box::new(iterable), body })
+    }
+
+    // ========================================================================
+    // 8. HELPERS
     // ========================================================================
 
     fn match_token(&mut self, token: TokenType) -> bool {
         if self.check(token) {
             self.advance();
-
             true
         } else {
             false
@@ -1297,29 +1166,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_standard_param(&mut self) -> Result<(Token<'a>, Box<ASTNode<'a>>), HydraError> {
-        let param_name = self.consume_identifier("expected parameter name")?;
-        self.consume(TokenType::Colon, "expected ':' after parameter name")?;
-        let param_type = self.parse_type()?;
-        Ok((param_name, param_type))
-    }
-
     fn check_at(&self, offset: usize, token_type: TokenType) -> bool {
         let pos = self.current + offset;
+
         if pos >= self.tokens.len() || self.tokens[pos].token_type == TokenType::EOF {
             return false;
         }
 
         std::mem::discriminant(&self.tokens[pos].token_type) == std::mem::discriminant(&token_type)
-    }
-
-    /// Checks the string lexeme at a specific offset from current
-    fn check_lexeme_at(&self, offset: usize, lexeme: &str) -> bool {
-        let pos = self.current + offset;
-        if pos >= self.tokens.len() || self.tokens[pos].token_type == TokenType::EOF {
-            return false;
-        }
-        self.tokens[pos].lexeme == lexeme
     }
 
     fn peek(&self) -> &Token<'a> {
@@ -1330,7 +1184,6 @@ impl<'a> Parser<'a> {
         if self.is_at_end() {
             return false;
         }
-
         use TokenType::*;
         match (&self.tokens[self.current].token_type, &token) {
             (IDENTIFIER(_), IDENTIFIER(_)) => true,
@@ -1345,7 +1198,6 @@ impl<'a> Parser<'a> {
         if !self.is_at_end() {
             self.current += 1;
         }
-
         self.previous()
     }
 

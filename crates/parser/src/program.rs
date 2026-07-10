@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
 
-use crate::ASTNode;
+use crate::ast::*;
 use crate::parser::Parser;
 use errors::error::{HydraError, Span};
 use lexer::Lexer;
 
 pub struct Program<'a> {
-    pub modules: HashMap<Vec<String>, (&'a str, Vec<ASTNode<'a>>)>
+    pub modules: HashMap<Vec<String>, (&'a str, Vec<Item<'a>>)>
 }
 
 impl<'a> Program<'a> {
@@ -72,19 +72,15 @@ impl<'a> Program<'a> {
 
         let mut sub_modules: Vec<(Vec<String>, Span)> = Vec::new();
         
+        // scan for include statements instead of the removed module declaration.
         for node in &ast {
-            if let ASTNode::ModuleDeclaration { name, .. } = node {
-                let (path_strings, span) = match &**name {
-                    ASTNode::PathExpression { segments } => {
-                        let strings: Vec<String> = segments.iter().map(|s| s.lexeme.to_string()).collect();
-                        (strings, segments[0].span)
-                    },
-                    ASTNode::VariableExpression { name: token } => {
-                        (vec![token.lexeme.to_string()], token.span)
-                    },
-                    _ => continue, // Ignore invalid module name nodes (should be caught by parser)
-                };
-                sub_modules.push((path_strings, span));
+            if let Item::Include(include_decl) = node {
+                if let Type::Path { segments, .. } = &include_decl.path {
+                    let strings: Vec<String> = segments.iter().map(|s| s.lexeme.to_string()).collect();
+                    if !strings.is_empty() {
+                        sub_modules.push((strings, segments[0].span));
+                    }
+                }
             }
         }
 
