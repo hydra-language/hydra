@@ -40,6 +40,7 @@ impl Analyzer {
                     span: name.span,
                     absolute_path: vec![name.lexeme.to_string()],
                     kind,
+                    is_pub: false
                 };
                 
                 let def_id = self.context.insert_def(info);
@@ -141,7 +142,8 @@ impl Analyzer {
                     name: var_name.clone(),
                     span: variable.span,
                     absolute_path: vec![var_name.clone()],
-                    kind: DefKind::Variable { ty: start_expr.ty.clone(), is_mutable: true }
+                    kind: DefKind::Variable { ty: start_expr.ty.clone(), is_mutable: true },
+                    is_pub: false
                 };
                 let var_def_id = self.context.insert_def(info);
                 self.scope.define(var_name.clone(), var_def_id).unwrap();
@@ -224,7 +226,8 @@ impl Analyzer {
                     name: arr_name.clone(),
                     span: item.span,
                     absolute_path: vec![arr_name.clone()],
-                    kind: DefKind::Variable { ty: iter_expr.ty.clone(), is_mutable: false }
+                    kind: DefKind::Variable { ty: iter_expr.ty.clone(), is_mutable: false },
+                    is_pub: false
                 };
                 let arr_def = self.context.insert_def(arr_info);
                 self.scope.define(arr_name.clone(), arr_def).unwrap();
@@ -241,7 +244,8 @@ impl Analyzer {
                     name: idx_name.clone(),
                     span: item.span,
                     absolute_path: vec![idx_name.clone()],
-                    kind: DefKind::Variable { ty: Type::I32, is_mutable: true }
+                    kind: DefKind::Variable { ty: Type::I32, is_mutable: true },
+                    is_pub: false
                 };
                 let idx_def = self.context.insert_def(idx_info);
                 self.scope.define(idx_name.clone(), idx_def).unwrap();
@@ -289,7 +293,8 @@ impl Analyzer {
                     name: item.lexeme.to_string(),
                     span: item.span,
                     absolute_path: vec![item.lexeme.to_string()],
-                    kind: DefKind::Variable { ty: inner_ty.clone(), is_mutable: false }
+                    kind: DefKind::Variable { ty: inner_ty.clone(), is_mutable: false },
+                    is_pub: false
                 };
                 let item_def = self.context.insert_def(item_info);
                 self.scope.define(item.lexeme.to_string(), item_def).unwrap();

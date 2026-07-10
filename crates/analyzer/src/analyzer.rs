@@ -46,6 +46,19 @@ impl Analyzer {
         let mut structs = Vec::new();
         let mut globals = Vec::new();
 
+        for (module_name, module) in &program.modules {
+            let path_prefix = module_name.clone(); 
+
+            self.current_module = path_prefix.clone();
+            self.current_source = module.0.to_string();
+
+            for node in &module.1 {
+                self.register_global_item(&path_prefix, node, &mut errors);
+            }
+        }
+
+        if !errors.is_empty() { return Err(errors); }
+
         let mut root_module_name = String::new();
         for (name, module) in &program.modules {
             for node in &module.1 {
@@ -75,9 +88,9 @@ impl Analyzer {
             self.current_source = module.0.to_string();
 
             for node in &module.1 {
-                if let ASTNode::IncludeStatement { path, alias } = node {
-                    // Extract the string segments natively from the AST Node
-                    let (target_path, end_span) = match &**path {
+                if let ASTNode::IncludeStatement { path, symbols, alias } = node {
+                    // Extract the base path (e.g., "std::random")
+                    let (base_path, end_span) = match &**path {
                         ASTNode::VariableExpression { name } => {
                             (vec![name.lexeme.to_string()], name.span)
                         },
@@ -85,22 +98,46 @@ impl Analyzer {
                             let strings = segments.iter().map(|t| t.lexeme.to_string()).collect();
                             (strings, segments.last().unwrap().span)
                         },
-                        _ => continue, // Should be caught by parser, but safe fallback
+                        _ => continue,
                     };
 
-                    let local_name = alias.as_ref()
-                        .map(|t| t.lexeme.to_string())
-                        .unwrap_or_else(|| target_path.last().unwrap().clone());
-                    
-                    let info = SymbolInfo {
-                        name: local_name.clone(),
-                        span: alias.as_ref().map(|t| t.span).unwrap_or(end_span),
-                        absolute_path: target_path.clone(),
-                        kind: DefKind::Alias { target_path },
-                    };
-                    
-                    let def_id = self.context.insert_def(info);
-                    self.scope.define(local_name, def_id).ok();
+                    if let Some(syms) = symbols {
+                        // Handle: include std::random::{Random, seed};
+                        for sym in syms {
+                            let local_name = sym.lexeme.to_string();
+
+                            // Build the absolute path to the specific symbol
+                            let mut full_target_path = base_path.clone();
+                            full_target_path.push(local_name.clone());
+
+                            let info = SymbolInfo {
+                                name: local_name.clone(),
+                                span: sym.span,
+                                absolute_path: full_target_path.clone(),
+                                kind: DefKind::Alias { target_path: full_target_path },
+                                is_pub: false,
+                            };
+
+                            let def_id = self.context.insert_def(info);
+                            self.scope.define(local_name, def_id).ok();
+                        }
+                    } else {
+                        // Handle: include std::random; OR include std::random as rng;
+                        let local_name = alias.as_ref()
+                            .map(|t| t.lexeme.to_string())
+                            .unwrap_or_else(|| base_path.last().unwrap().clone());
+
+                        let info = SymbolInfo {
+                            name: local_name.clone(),
+                            span: alias.as_ref().map(|t| t.span).unwrap_or(end_span),
+                            absolute_path: base_path.clone(),
+                            kind: DefKind::Alias { target_path: base_path },
+                            is_pub: false,
+                        };
+
+                        let def_id = self.context.insert_def(info);
+                        self.scope.define(local_name, def_id).ok();
+                    }
                 }
             }
 
@@ -128,35 +165,74 @@ impl Analyzer {
 
             // 1. Register Local Includes/Aliases
             for node in &module.1 {
-                if let ASTNode::IncludeStatement { path, alias } = node {
-                    // Extract the string segments natively from the AST Node
-                    let (target_path, end_span) = match &**path {
+                if let ASTNode::IncludeStatement { path, symbols, alias } = node {
+                    // Extract the base path (e.g., "std::random")
+                    let (base_path, end_span) = match &**path {
                         ASTNode::VariableExpression { name } => {
                             (vec![name.lexeme.to_string()], name.span)
                         },
-
                         ASTNode::PathExpression { segments } => {
                             let strings = segments.iter().map(|t| t.lexeme.to_string()).collect();
                             (strings, segments.last().unwrap().span)
                         },
-
-                        _ => continue, // Should be caught by parser, but safe fallback
+                        _ => continue,
                     };
 
-                    let local_name = alias.as_ref()
-                        .map(|t| t.lexeme.to_string())
-                        .unwrap_or_else(|| target_path.last().unwrap().clone());
-                    
-                    let info = SymbolInfo {
-                        name: local_name.clone(),
-                        span: alias.as_ref().map(|t| t.span).unwrap_or(end_span),
-                        absolute_path: target_path.clone(),
-                        kind: DefKind::Alias { target_path },
-                    };
-                    
-                    let def_id = self.context.insert_def(info);
-                    self.scope.define(local_name, def_id).ok();
-                }
+                    if let Some(syms) = symbols {
+                        // Handle: include std::random::{Random, seed};
+                        for sym in syms {
+                            let local_name = sym.lexeme.to_string();
+
+                            // Build the absolute path to the specific symbol
+                            let mut full_target_path = base_path.clone();
+                            full_target_path.push(local_name.clone());
+
+                            if let Some(&target_def_id) = self.global_symbols.get(&full_target_path) {
+                                let target_info = self.context.get_def(target_def_id).unwrap();
+
+                                if !target_info.is_pub && self.current_module != base_path {
+                                    errors.push(self.error(
+                                        "S020",
+                                        format!("'{}' is private and cannot be included", local_name),
+                                        sym.span
+                                    ).with_help(format!("declare it as 'pub' in '{}'", base_path.join("::"))));
+                                    
+                                    continue;
+                                }
+                            } else {
+                                errors.push(self.error("S021", format!("unresolved import `{}`", local_name), sym.span));
+                                continue;
+                            }
+
+                            let info = SymbolInfo {
+                                name: local_name.clone(),
+                                span: sym.span,
+                                absolute_path: full_target_path.clone(),
+                                kind: DefKind::Alias { target_path: full_target_path },
+                                is_pub: false
+                            };
+
+                            let def_id = self.context.insert_def(info);
+                            self.scope.define(local_name, def_id).ok();
+                        }
+                    } else {
+                        // Handle: include std::random; OR include std::random as rng;
+                        let local_name = alias.as_ref()
+                            .map(|t| t.lexeme.to_string())
+                            .unwrap_or_else(|| base_path.last().unwrap().clone());
+
+                        let info = SymbolInfo {
+                            name: local_name.clone(),
+                            span: alias.as_ref().map(|t| t.span).unwrap_or(end_span),
+                            absolute_path: base_path.clone(),
+                            kind: DefKind::Alias { target_path: base_path },
+                            is_pub: false,
+                        };
+
+                        let def_id = self.context.insert_def(info);
+                        self.scope.define(local_name, def_id).ok();
+                    }
+                }            
             }
 
             // 2. Lower Bodies
@@ -186,7 +262,8 @@ impl Analyzer {
                                 name: p_name.lexeme.to_string(),
                                 span: p_name.span,
                                 absolute_path: vec![p_name.lexeme.to_string()],
-                                kind: DefKind::Variable { ty: p_ty.clone(), is_mutable: true }
+                                kind: DefKind::Variable { ty: p_ty.clone(), is_mutable: true },
+                                is_pub: false,
                             };
                             let def_id = self.context.insert_def(info);
                             self.scope.define(p_name.lexeme.to_string(), def_id).ok();
@@ -226,7 +303,7 @@ impl Analyzer {
                         self.current_return_type = None;
                     }
 
-                    ASTNode::StructDeclaration { name, fields, constants, generic_params, .. } => {
+                    ASTNode::StructDeclaration { name, fields, constants, generic_params, is_pub, .. } => {
                         self.current_struct = Some(name.lexeme.to_string());
 
                         let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
@@ -291,7 +368,8 @@ impl Analyzer {
                             kind: DefKind::Struct { 
                                 fields: symbol_fields, 
                                 generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect() 
-                            }
+                            },
+                            is_pub: *is_pub, // Preserving visibility across the update
                         };
 
                         let def_id = *self.global_symbols.get(&struct_path).unwrap();
@@ -400,7 +478,8 @@ impl Analyzer {
                                         name: p_name.lexeme.to_string(),
                                         span: p_name.span,
                                         absolute_path: vec![p_name.lexeme.to_string()],
-                                        kind: DefKind::Variable { ty: p_ty.clone(), is_mutable: true }
+                                        kind: DefKind::Variable { ty: p_ty.clone(), is_mutable: true },
+                                        is_pub: false,
                                     };
                                     let def_id = self.context.insert_def(info);
                                     self.scope.define(p_name.lexeme.to_string(), def_id).ok();
@@ -507,7 +586,7 @@ impl Analyzer {
 
     fn register_global_item(&mut self, prefix: &[String], node: &ASTNode, errors: &mut Vec<HydraError>) {
         match node {
-            ASTNode::FunctionDeclaration { name, parameters, return_type, generic_params, annotations, .. } => {
+            ASTNode::FunctionDeclaration { name, parameters, return_type, generic_params, annotations, is_pub, .. } => {
                 let mut path = prefix.to_vec();
                 path.push(name.lexeme.to_string());
 
@@ -530,7 +609,8 @@ impl Analyzer {
                         annotations: annotations.clone(),
                         return_type: ret_type,
                         generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect(),
-                    }
+                    },
+                    is_pub: *is_pub,
                 };
 
                 let def_id = self.context.insert_def(info);
@@ -541,7 +621,7 @@ impl Analyzer {
                 self.global_symbols.insert(path, def_id);
             }
 
-            ASTNode::StructDeclaration { name, constants, generic_params, .. } => {
+            ASTNode::StructDeclaration { name, constants, generic_params, is_pub, .. } => {
                 let mut struct_path = prefix.to_vec();
                 struct_path.push(name.lexeme.to_string());
 
@@ -552,7 +632,8 @@ impl Analyzer {
                     name: name.lexeme.to_string(),
                     span: name.span,
                     absolute_path: struct_path.clone(),
-                    kind: DefKind::Struct { fields: vec![], generic_params: vec![] }
+                    kind: DefKind::Struct { fields: vec![], generic_params: vec![] },
+                    is_pub: *is_pub,
                 };
 
                 let def_id = self.context.insert_def(info);
@@ -562,7 +643,7 @@ impl Analyzer {
                 self.global_symbols.insert(struct_path.clone(), def_id);
 
                 for constant in constants {
-                    if let ASTNode::VariableDeclaration { name: c_name, type_annotation, .. } = constant {
+                    if let ASTNode::VariableDeclaration { name: c_name, type_annotation, is_pub: c_is_pub, .. } = constant {
                         let mut c_path = struct_path.clone();
                         c_path.push(c_name.lexeme.to_string());
 
@@ -576,7 +657,8 @@ impl Analyzer {
                             kind: DefKind::Constant {
                                 ty: expected_ty.clone(),
                                 value: ir::Constant::Float(0.0, expected_ty),
-                            }
+                            },
+                            is_pub: *c_is_pub,
                         };
 
                         let c_def_id = self.context.insert_def(c_info);
@@ -587,7 +669,7 @@ impl Analyzer {
                 self.current_generics.truncate(self.current_generics.len() - param_names.len());
             }
 
-            ASTNode::VariableDeclaration { name, type_annotation, is_const, .. } => {
+            ASTNode::VariableDeclaration { name, type_annotation, is_const, is_pub, .. } => {
                 let mut path = prefix.to_vec();
                 path.push(name.lexeme.to_string());
 
@@ -609,6 +691,7 @@ impl Analyzer {
                     span: name.span,
                     absolute_path: path.clone(),
                     kind,
+                    is_pub: *is_pub,
                 };
 
                 let def_id = self.context.insert_def(info);
@@ -653,7 +736,7 @@ impl Analyzer {
 
                 let mut lowered_methods = Vec::new();
                 for method in methods {
-                    if let ASTNode::FunctionDeclaration { name: m_name, parameters, return_type, generic_params: m_generic_params, annotations, .. } = method {
+                    if let ASTNode::FunctionDeclaration { name: m_name, parameters, return_type, generic_params: m_generic_params, annotations, is_pub: m_is_pub, .. } = method {
                         let m_param_names: Vec<String> = m_generic_params.iter().map(|t| t.lexeme.to_string()).collect();
                         self.current_generics.extend(m_param_names.clone());
 
@@ -680,7 +763,8 @@ impl Analyzer {
                                     gp.extend(m_param_names.iter().cloned()); // method's own <U> if any
                                     gp
                                 },
-                            }
+                            },
+                            is_pub: *m_is_pub,
                         };
 
                         let m_def_id = self.context.insert_def(m_info);
@@ -705,7 +789,7 @@ impl Analyzer {
 
                 if !target_path.is_empty() {
                     for constant in constants {
-                        if let ASTNode::VariableDeclaration { name: c_name, type_annotation, .. } = constant {
+                        if let ASTNode::VariableDeclaration { name: c_name, type_annotation, is_pub: c_is_pub, .. } = constant {
                             let mut c_path = target_path.clone();
                             c_path.push(c_name.lexeme.to_string());
 
@@ -719,7 +803,8 @@ impl Analyzer {
                                 kind: DefKind::Constant {
                                     ty: expected_ty.clone(),
                                     value: ir::Constant::Float(0.0, expected_ty),
-                                }
+                                },
+                                is_pub: *c_is_pub,
                             };
 
                             let c_def_id = self.context.insert_def(c_info);

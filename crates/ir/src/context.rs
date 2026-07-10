@@ -52,6 +52,7 @@ pub struct SymbolInfo {
     pub span: Span,
     pub absolute_path: Vec<String>,
     pub kind: DefKind,
+    pub is_pub: bool,
 }
 
 #[derive(Default)]

@@ -370,6 +370,7 @@ impl<'a> Monomorphizer<'a> {
                 fields: concrete_fields,
                 generic_params: vec![],
             },
+            is_pub: generic_info.is_pub
         };
         
         let concrete_def_id = self.context.insert_def(concrete_info);

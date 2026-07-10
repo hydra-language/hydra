@@ -88,13 +88,13 @@ impl<'a> Parser<'a> {
             return self.parse_include();
         }
 
+        let is_pub = self.match_token(TokenType::PUB);
+
         if self.match_token(TokenType::MODULE) {
-            return Ok(vec![self.parse_module()?]);
+            return Ok(vec![self.parse_module(is_pub)?]);
         }
 
         let annotations = self.parse_annotations()?;
-
-        let is_pub = self.match_token(TokenType::PUB);
 
         let stmt = if self.match_token(TokenType::LET) || self.match_token(TokenType::CONST) {
             if is_pub {
@@ -612,7 +612,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_extension(&mut self, is_pub: bool) -> Result<ASTNode<'a>, HydraError> {
+    fn parse_extension(&mut self, _is_pub: bool) -> Result<ASTNode<'a>, HydraError> {
         let generic_params = self.parse_generic_params()?;
 
         let mut target = self.parse_type()?;
@@ -1138,14 +1138,50 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_include(&mut self) -> Result<Vec<ASTNode<'a>>, HydraError> {
-        let path = self.parse_module_path()?;
+        let first_token = self.consume_identifier("expected module path")?.clone();
+        let mut segments = vec![first_token];
+
+        while self.check(TokenType::DoubleColon) {
+            if self.check_at(1, TokenType::LeftBrace) {
+                break;
+            }
+
+            self.advance();
+            segments.push(self.consume_identifier("expected identifier after '::'")?.clone());
+        }
+
+        let path = if segments.len() == 1 {
+            Box::new(ASTNode::VariableExpression { name: segments[0].clone() })
+        } else {
+            Box::new(ASTNode::PathExpression { segments })
+        };
+
+        let mut symbols = None;
+        if self.match_token(TokenType::DoubleColon) {
+            self.consume(TokenType::LeftBrace, "expected '{' for selective include")?;
+
+            let mut syms = Vec::new();
+            if !self.check(TokenType::RightBrace) {
+                loop {
+                    syms.push(self.consume_identifier("expected symbol name")?.clone());
+                    if !self.match_token(TokenType::Comma) { break; }
+                }
+            }
+
+            self.consume(TokenType::RightBrace, "expected '}' after symbols")?;
+            symbols = Some(syms);
+        }
+
         let mut alias = None;
-        if self.match_token(TokenType::AS) {
+        if symbols.is_none() && self.match_token(TokenType::AS) {
             alias = Some(self.consume_identifier("expected alias name after 'as'")?.clone());
         }
+
         self.consume(TokenType::Semicolon, "expected ';' after include statement")?;
+
         Ok(vec![ASTNode::IncludeStatement {
-            path: Box::new(path),
+            path,
+            symbols,
             alias
         }])
     }
@@ -1167,14 +1203,12 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_module(&mut self) -> Result<ASTNode<'a>, HydraError> {
-        self.consume(TokenType::MODULE, "expected 'module'")?;
-
-        let mut segments = Vec::new();
-        segments.push(self.consume(TokenType::IDENTIFIER("".to_string()), "expected module name")?.clone());
+    fn parse_module(&mut self, is_pub: bool) -> Result<ASTNode<'a>, HydraError> {
+        let first_token = self.consume_identifier("expected module name")?.clone();
+        let mut segments = vec![first_token];
 
         while self.match_token(TokenType::DoubleColon) {
-            segments.push(self.consume(TokenType::IDENTIFIER("".to_string()), "expected identifier after '::'")?.clone());
+            segments.push(self.consume_identifier("expected identifier after '::'")?.clone());
         }
 
         self.consume(TokenType::Semicolon, "expected ';' after module declaration")?;
@@ -1185,7 +1219,10 @@ impl<'a> Parser<'a> {
             Box::new(ASTNode::PathExpression { segments })
         };
 
-        Ok(ASTNode::ModuleDeclaration { name: name_node })
+        Ok(ASTNode::ModuleDeclaration {
+            name: name_node,
+            is_pub
+        })
     }
 
     fn parse_annotations(&mut self) -> Result<Vec<Annotation>, HydraError> {

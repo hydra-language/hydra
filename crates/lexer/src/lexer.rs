@@ -359,7 +359,7 @@ impl<'a> Lexer<'a> {
             "match" => TokenType::MATCH,
             "continue" => TokenType::CONTINUE,
             "include" => TokenType::INCLUDE,
-            "module" => TokenType::MODULE,
+            "mod" => TokenType::MODULE,
             "typedef" => TokenType::TYPEDEF,
             "trait" => TokenType::TRAIT,
             "anysize" => TokenType::ANYSIZE,

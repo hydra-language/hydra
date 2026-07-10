@@ -193,8 +193,12 @@ pub enum ASTNode<'a> {
 
     IncludeStatement {
         path: Box<ASTNode<'a>>,
+        symbols: Option<Vec<Token<'a>>>,
         alias: Option<Token<'a>>,
     },
 
-    ModuleDeclaration { name: Box<ASTNode<'a>> }
+    ModuleDeclaration { 
+        name: Box<ASTNode<'a>>,
+        is_pub: bool
+    }
 }

@@ -59,7 +59,9 @@ impl<'a> Program<'a> {
 
         let mut parser = Parser::new(tokens);
         let ast = match parser.parse() {
-            Ok(a) => a,
+            Ok(a) => {
+                a
+            }
             Err(errors) => {
                 for e in errors {
                     e.report(leaked_source, filename);
@@ -71,7 +73,7 @@ impl<'a> Program<'a> {
         let mut sub_modules: Vec<(Vec<String>, Span)> = Vec::new();
         
         for node in &ast {
-            if let ASTNode::ModuleDeclaration { name } = node {
+            if let ASTNode::ModuleDeclaration { name, .. } = node {
                 let (path_strings, span) = match &**name {
                     ASTNode::PathExpression { segments } => {
                         let strings: Vec<String> = segments.iter().map(|s| s.lexeme.to_string()).collect();
@@ -92,9 +94,8 @@ impl<'a> Program<'a> {
 
         for (sub_mod_path, span) in sub_modules {
             let mut next = module_path.clone();
-            next.extend(sub_mod_path.clone()); // Extend namespace with all path segments
+            next.extend(sub_mod_path.clone());
 
-            // Build the relative path (e.g., ["math", "geometry"] -> "math/geometry")
             let mut rel_path = PathBuf::new();
             for seg in &sub_mod_path {
                 rel_path.push(seg);
@@ -107,12 +108,12 @@ impl<'a> Program<'a> {
 
                 lib_path.push(".hydra");
                 lib_path.push(&rel_path);
-                lib_path.push("module.hydra");
+                lib_path.push("lib.hydra");
 
                 lib_path
             } else {
                 let single_file = current_dir.join(rel_path.with_extension("hydra"));
-                let folder_file = current_dir.join(&rel_path).join("module.hydra");
+                let folder_file = current_dir.join(&rel_path).join("lib.hydra");
 
                 if single_file.exists() {
                     single_file
