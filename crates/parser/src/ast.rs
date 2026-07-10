@@ -1,5 +1,8 @@
 use lexer::Token;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeID(pub u32);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Annotation {
     pub name: String,
@@ -7,198 +10,208 @@ pub struct Annotation {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ASTNode<'a> {
-    VariableDeclaration {
-        is_pub: bool,
+pub struct GenericParam<'a> {
+    pub id: NodeID,
+    pub name: Token<'a>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WherePredicate<'a> {
+    pub id: NodeID,
+    pub target_type: Type<'a>,
+    pub bound_traits: Vec<Type<'a>>
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhereClause<'a> {
+    pub predicates: Vec<WherePredicate<'a>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Block<'a> {
+    pub id: NodeID,
+    pub statements: Vec<Stmt<'a>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Type<'a> {
+
+    Path {
+        id: NodeID,
+        arguments: Vec<Token<'a>>,
+    },
+
+    Generic {
+        id: NodeID,
+        base: Box<Type<'a>>,
+        args: Vec<Type<'a>>,
+    },
+
+    Borrow {
+        id: NodeID,
+        is_mut: bool,
+        inner: Box<Type<'a>>,
+    },
+
+    RawPointer {
+        id: NodeID,
+        is_mut: bool,
+        inner: Box<Type<'a>>,
+    },
+
+    Array {
+        id: NodeID,
+        element_type: Box<Type<'a>>,
+        size: Box<Expr<'a>>,
+        token: Token<'a>,
+    },
+
+    Slice {
+        id: NodeID,
+        element_type: Box<Type<'a>>,
+        token: Token<'a>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expr<'a> {
+
+    /// A literal value (number, string, bool)
+    Literal { id: NodeID, token: Token<'a> },
+    
+    /// e.g., `my_var`
+    Variable { id: NodeID, name: Token<'a> },
+    
+    /// e.g., `std::random::seed`
+    Path { id: NodeID, segments: Vec<Token<'a>> },
+    
+    /// e.g., `foo()`
+    FunctionCall { id: NodeID, callee: Box<Expr<'a>>, arguments: Vec<Expr<'a>>, generic_args: Vec<Type<'a>> },
+    
+    /// e.g., `object::method()`
+    MethodCall { id: NodeID, object: Box<Expr<'a>>, method: Token<'a>, arguments: Vec<Expr<'a>>, generic_args: Vec<Type<'a>> },
+    
+    /// e.g., `a + b`
+    Binary { id: NodeID, left: Box<Expr<'a>>, operator: Token<'a>, right: Box<Expr<'a>> },
+    
+    /// e.g., `-a` or `!a`
+    Unary { id: NodeID, operator: Token<'a>, right: Box<Expr<'a>> },
+    
+    /// e.g., `a++`
+    PostfixUnary { id: NodeID, operator: Token<'a>, left: Box<Expr<'a>> },
+    
+    /// e.g., `a = b`
+    Assignment { id: NodeID, target: Box<Expr<'a>>, operator: Token<'a>, value: Box<Expr<'a>> },
+    
+    /// e.g., `&mut a`
+    Borrow { id: NodeID, is_mut: bool, right: Box<Expr<'a>> },
+    
+    /// e.g., `*a`
+    Dereference { id: NodeID, right: Box<Expr<'a>> },
+    
+    /// e.g., `object.property`
+    Member { id: NodeID, object: Box<Expr<'a>>, property: Token<'a> },
+    
+    /// e.g., `{1, 2, 3}`
+    ArrayInitializer { id: NodeID, elements: Vec<Expr<'a>>, token: Token<'a> },
+    
+    /// e.g., `arr[0]`
+    ArrayAccess { id: NodeID, array: Box<Expr<'a>>, index: Box<Expr<'a>>, token: Token<'a> },
+    
+    /// e.g., `Point { x: 1, y: 2 }`
+    StructInitializer { id: NodeID, name: Box<Expr<'a>>, fields: Vec<(Token<'a>, Box<Expr<'a>>)> },
+    
+    /// e.g., `a as i32`
+    Cast { id: NodeID, value: Box<Expr<'a>>, target: Box<Type<'a>> },
+
+    // Control Flow Expressions
+    If { id: NodeID, condition: Box<Expr<'a>>, then_branch: Block<'a>, else_branch: Option<Block<'a>> },
+    While { id: NodeID, condition: Box<Expr<'a>>, body: Block<'a> },
+    For { id: NodeID, variable: Token<'a>, start: Box<Expr<'a>>, end: Box<Expr<'a>>, is_inclusive: bool, body: Block<'a> },
+    ForEach { id: NodeID, item: Token<'a>, iterable: Box<Expr<'a>>, body: Block<'a> },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Stmt<'a> {
+    /// e.g., `let x: i32 = 5;` or `const y = 10;`
+    VariableDecl {
+        id: NodeID,
         is_const: bool,
         name: Token<'a>,
-        type_annotation: Option<Box<ASTNode<'a>>>,
-        initializer: Box<ASTNode<'a>>,
+        type_annotation: Option<Type<'a>>,
+        initializer: Box<Expr<'a>>,
     },
+    
+    /// An expression followed by a semicolon, e.g., `foo();`
+    Expr(Box<Expr<'a>>),
+    
+    /// e.g., `return 5;`
+    Return { id: NodeID, value: Option<Box<Expr<'a>>> },
+    
+    /// e.g., `break;`
+    Break { id: NodeID, condition: Option<Box<Expr<'a>>> },
+    
+    /// e.g., `continue;`
+    Continue { id: NodeID, condition: Option<Box<Expr<'a>>> },
+}
 
-    FunctionDeclaration {
-        name: Token<'a>,
-        annotations: Vec<Annotation>,
-        generic_params: Vec<Token<'a>>,
-        parameters: Vec<(Token<'a>, Box<ASTNode<'a>>)>,
-        return_type: Box<ASTNode<'a>>,
-        body: Vec<ASTNode<'a>>,
-        is_extern: bool,
-        is_pub: bool,
-    },
+#[derive(Debug, Clone, PartialEq)]
+pub enum Item<'a> {
+    Function(FunctionDecl<'a>),
+    Struct(StructDecl<'a>),
+    Trait(TraitDecl<'a>),
+    Extension(ExtensionDecl<'a>),
+    Include(IncludeDecl<'a>),
+}
 
-    ReturnStatement {
-        value: Box<ASTNode<'a>>,
-    },
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionDecl<'a> {
+    pub id: NodeID,
+    pub name: Token<'a>,
+    pub annotations: Vec<Annotation>,
+    pub generic_params: Vec<GenericParam<'a>>,
+    pub parameters: Vec<(Token<'a>, Type<'a>)>,
+    pub return_type: Option<Type<'a>>,
+    pub where_clause: Option<WhereClause<'a>>,
+    pub body: Option<Block<'a>>, // None for externs or trait definitions
+    pub is_extern: bool,
+    pub is_pub: bool,
+}
 
-    TypeIdentifier {
-        type_token: Token<'a>,
-    },
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructDecl<'a> {
+    pub id: NodeID,
+    pub name: Token<'a>,
+    pub generic_params: Vec<GenericParam<'a>>,
+    pub where_clause: Option<WhereClause<'a>>,
+    // We treat struct constants and fields separately based on your original design
+    pub constants: Vec<Stmt<'a>>, // Only VariableDecl (consts) should go here
+    pub fields: Vec<(Token<'a>, Type<'a>)>,
+    pub is_pub: bool,
+}
 
-    VariableExpression {
-        name: Token<'a>,
-    },
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitDecl<'a> {
+    pub id: NodeID,
+    pub name: Token<'a>,
+    pub methods: Vec<FunctionDecl<'a>>,
+    pub is_pub: bool,
+}
 
-    PathExpression {
-        segments: Vec<Token<'a>>,
-    },
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtensionDecl<'a> {
+    pub id: NodeID,
+    pub target_trait: Option<Type<'a>>, // e.g., Some(RandomGenerator)
+    pub target_type: Type<'a>,          // e.g., i32
+    pub generic_params: Vec<GenericParam<'a>>,
+    pub where_clause: Option<WhereClause<'a>>,
+    pub constants: Vec<Stmt<'a>>, 
+    pub methods: Vec<FunctionDecl<'a>>,
+}
 
-    FunctionCallExpression {
-        callee: Box<ASTNode<'a>>,
-        arguments: Vec<ASTNode<'a>>,
-        generic_args: Vec<ASTNode<'a>>,
-    },
-
-    BinaryExpression {
-        left: Box<ASTNode<'a>>,
-        operator: Token<'a>,
-        right: Box<ASTNode<'a>>
-    },
-
-    AssignmentExpression {
-        target: Box<ASTNode<'a>>,
-        operator: Token<'a>,
-        value: Box<ASTNode<'a>>
-    },
-
-    UnaryExpression {
-        operator: Token<'a>,
-        right: Box<ASTNode<'a>>,
-    },
-
-    PostfixUnaryExpression {
-        operator: Token<'a>,
-        left: Box<ASTNode<'a>>,
-    },
-
-    MemberExpression {
-        object: Box<ASTNode<'a>>,
-        property: Token<'a>,
-    },
-
-    ArrayType {
-        element_type: Box<ASTNode<'a>>,
-        size: Box<ASTNode<'a>>,
-        token: Token<'a>, 
-    },
-
-    ArrayInitializer {
-        elements: Vec<ASTNode<'a>>,
-        token: Token<'a>
-    },
-
-    ArrayAccess {
-        array: Box<ASTNode<'a>>,
-        index: Box<ASTNode<'a>>,
-        token: Token<'a>
-    },
-
-    Primtive {
-        token: Token<'a>,
-    },
-
-    Expression {
-        token: Token<'a>,
-    },
-
-    IfStatement {
-        condition: Box<ASTNode<'a>>,
-        then_branch: Vec<ASTNode<'a>>,
-        else_branch: Option<Vec<ASTNode<'a>>>,
-    },
-
-    Break {
-        condition: Option<Box<ASTNode<'a>>>,
-    },
-
-    Continue {
-        condition: Option<Box<ASTNode<'a>>>,
-    },
-
-    ForLoop {
-        variable: Token<'a>,
-        start: Box<ASTNode<'a>>,
-        end: Box<ASTNode<'a>>,
-        is_inclusive: bool,
-        body: Vec<ASTNode<'a>>,
-    },
-
-    ForEach {
-        item: Token<'a>,
-        iterable: Box<ASTNode<'a>>,
-        body: Vec<ASTNode<'a>>,
-    },
-
-    WhileLoop {
-        condition: Box<ASTNode<'a>>,
-        body: Vec<ASTNode<'a>>
-    },
-
-    StructDeclaration {
-        name: Token<'a>,
-        generic_params: Vec<Token<'a>>,
-        constants: Vec<ASTNode<'a>>,
-        fields: Vec<(Token<'a>, Box<ASTNode<'a>>)>,
-        is_pub: bool,
-    },
-
-    StructInitializer {
-        name: Box<ASTNode<'a>>,
-        fields: Vec<(Token<'a>, Box<ASTNode<'a>>)>,
-    },
-
-    ExtensionDeclaration {
-        trait_target: Option<Box<ASTNode<'a>>>,
-        target: Box<ASTNode<'a>>,
-        constants: Vec<ASTNode<'a>>,
-        methods: Vec<ASTNode<'a>>,
-        generic_params: Vec<Token<'a>>,
-    },
-
-    MethodCallExpression {
-        object: Box<ASTNode<'a>>,
-        method: Token<'a>,
-        arguments: Vec<ASTNode<'a>>,
-        generic_args: Vec<ASTNode<'a>>,
-    },
-
-    CastExpression {
-        value: Box<ASTNode<'a>>,
-        target: Box<ASTNode<'a>>,
-    },
-
-    Reference { 
-        is_mut: bool, 
-        inner: Box<ASTNode<'a>> 
-    },
-
-    RawPointer { 
-        is_mut: bool, 
-        inner: Box<ASTNode<'a>> 
-    },
-
-    BorrowExpression { 
-        is_mut: bool, 
-        right: Box<ASTNode<'a>> 
-    },
-
-    DereferenceExpression {
-        right: Box<ASTNode<'a>>
-    },
-
-    GenericType {
-        base: Box<ASTNode<'a>>,
-        args: Vec<ASTNode<'a>>,
-    },
-
-    IncludeStatement {
-        path: Box<ASTNode<'a>>,
-        symbols: Option<Vec<Token<'a>>>,
-        alias: Option<Token<'a>>,
-    },
-
-    ModuleDeclaration { 
-        name: Box<ASTNode<'a>>,
-        is_pub: bool
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub struct IncludeDecl<'a> {
+    pub id: NodeID,
+    pub path: Type<'a>, // Using a Type::Path 
+    pub alias: Option<Token<'a>>,
 }
