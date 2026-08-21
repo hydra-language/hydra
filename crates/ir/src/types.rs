@@ -14,6 +14,7 @@ pub enum Type {
 
     ARRAY(Box<Type>, usize),
     INFERRED_ARRAY(Box<Type>),
+    SLICE(Box<Type>),
 
     CONST_POINTER(Box<Type>),
     POINTER(Box<Type>),
@@ -132,6 +133,7 @@ impl fmt::Display for Type {
             
             Type::ARRAY(inner, size) => write!(f, "[{}, {}]", inner, size),
             Type::INFERRED_ARRAY(inner) => write!(f, "[{}]", inner),
+            Type::SLICE(inner) => write!(f, "[{}]", inner),
 
             Type::GENERIC(name) => write!(f, "{}", name),
             Type::GENERIC_INSTANCE(base, args) => {

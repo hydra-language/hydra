@@ -3,10 +3,19 @@ use clap::{CommandFactory, Parser as ClapParser, ValueEnum};
 use inkwell::{OptimizationLevel, context::Context};
 
 use parser::program::Program;
-use analyzer::{Analyzer, monomorphizer::Monomorphizer};
+
+// NEW: Import Resolver and HIRContext
+use analyzer::{Analyzer, Resolver, monomorphizer::Monomorphizer};
+use ir::context::HIRContext;
+
 use mir::{builder::MIRBuilder, MIRProgram, optimizer::Optimizer};
 use borrowcheck::borrowcheck::BorrowChecker;
 use codegen::CodeGen;
+
+const YELLOW: &str = "\x1b[33m";
+const RED: &str = "\x1b[31m";
+const GREEN: &str = "\x1b[32m";
+const RESET: &str = "\x1b[0m";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum EmitStage {
@@ -62,7 +71,7 @@ fn main() {
     match input_path.extension().and_then(|e| e.to_str()) {
         Some("hydra") => {}
         _ => {
-            eprintln!("[ERROR] '{}' is not a hydra file", input);
+            eprintln!("{}[ERROR]{} '{}' is not a hydra file", RED, RESET, input);
             process::exit(1);
         }
     }
@@ -70,14 +79,14 @@ fn main() {
     let contents = match fs::read_to_string(&input) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[ERROR] failed while reading '{}': {}", input, e);
+            eprintln!("{}[ERROR]{} failed while reading '{}': {}", RED, RESET, input, e);
             process::exit(1);
         }
     };
 
     // --- PHASE 1: PARSER ---
     let program = Program::build(input_path).unwrap_or_else(|e| {
-        eprintln!("[ERROR] build error: {}", e.message);
+        eprintln!("{}[ERROR]{} build error: {}", RED, RESET, e.message);
         process::exit(1);
     });
         
@@ -91,12 +100,26 @@ fn main() {
             }
         }
         fs::write(&fname, all_asts).unwrap();
-        println!("[INFO] AST nodes written to: {}", fname.display());
+        println!("{}[INFO]{} AST nodes written to: {}", GREEN, RESET, fname.display());
     }
 
-    // --- PHASE 2: SEMANTIC ANALYSIS ---
-    let mut analyzer = Analyzer::new();
-    let hir = analyzer.analyze(&program).unwrap_or_else(|errors| {
+    // --- PHASE 2: RESOLUTION & SEMANTIC ANALYSIS ---
+    
+    // We instantiate the context here so it lives for the entire compilation
+    let mut context = HIRContext::default(); 
+
+    // Pass 2a: Name Resolution
+    let resolver = Resolver::new(&program, &mut context);
+    let (name_resolver, global_symbols) = resolver.resolve().unwrap_or_else(|errors| {
+        for e in errors {
+            e.report(&contents, input_path.to_str().unwrap());
+        }
+        process::exit(1);
+    });
+
+    // Pass 2b: Semantic Analysis (Type Checking)
+    let analyzer = Analyzer::new(&program, &mut context, name_resolver, global_symbols);
+    let hir = analyzer.analyze().unwrap_or_else(|errors| {
         for e in errors {
             e.report(&contents, input_path.to_str().unwrap());
         }
@@ -109,17 +132,17 @@ fn main() {
             &fname,
             hir.functions.iter().map(|f| format!("{}", f)).collect::<Vec<_>>().join("\n\n"),
         ).unwrap();
-        println!("[INFO] HIR written to: {}", fname.display());
+        println!("{}[INFO]{} HIR written to: {}", GREEN, RESET, fname.display());
     }
 
     // --- PHASE 3: MONOMORPHIZATION ---
-    let monomorphizer = Monomorphizer::new(&mut analyzer.context, hir);
+    let monomorphizer = Monomorphizer::new(&mut context, hir);
     let specialized_program = monomorphizer.run();
 
     // --- PHASE 4: MIR LOWERING ---
     let mut mir_functions = Vec::new();
     for hir_fn in &specialized_program.functions {
-        let builder = MIRBuilder::new(&analyzer.context);
+        let builder = MIRBuilder::new(&context);
         mir_functions.push(builder.build_function(hir_fn.clone()));
     }
     
@@ -131,13 +154,13 @@ fn main() {
             &fname,
             mir_program.functions.iter().map(|f| format!("{}", f)).collect::<Vec<_>>().join("\n\n"),
         ).unwrap();
-        println!("[INFO] MIR written to: {}", fname.display());
+        println!("{}[INFO]{} MIR written to: {}", GREEN, RESET, fname.display());
     }
 
     // --- PHASE 5: BORROW CHECKING ---
     let mut has_borrow_errors = false;
     for mir_fn in &mir_program.functions {
-        let mut checker = BorrowChecker::new(mir_fn, &analyzer.context);
+        let mut checker = BorrowChecker::new(mir_fn, &context);
         if let Err(errors) = checker.check() {
             has_borrow_errors = true;
             for error in errors {
@@ -161,33 +184,32 @@ fn main() {
             &fname,
             mir_program.functions.iter().map(|f| format!("{}", f)).collect::<Vec<_>>().join("\n\n"),
         ).unwrap();
-        println!("[INFO] Optimized MIR written to: {}", fname.display());
+        println!("{}[INFO]{} Optimized MIR written to: {}", GREEN, RESET, fname.display());
     }
 
     // --- STOP CHECK (FRONTEND ONLY) ---
-    // If the user only requested frontend AST/MIR dumps, we halt here before allocating the LLVM Context
     let needs_backend = emit_list.contains(&EmitStage::IR) 
                      || emit_list.contains(&EmitStage::IROpt) 
                      || emit_list.contains(&EmitStage::ASM)
-                     || cli.emit.is_none(); // Full compilation requires backend
+                     || cli.emit.is_none(); 
 
     if !needs_backend {
         return;
     }
 
     // --- PHASE 7: CODEGEN (LLVM IR) ---
-    let context = Context::create();
-    let mut codegen = CodeGen::new(&context, &analyzer.context, &module_name);
+    let llvm_context = Context::create();
+    let mut codegen = CodeGen::new(&llvm_context, &context, &module_name);
     
     codegen.generate(&mir_program).unwrap_or_else(|e| {
-        eprintln!("[ERROR] codegen error: {}", e);
+        eprintln!("{}[ERROR]{} codegen error: {}", RED, RESET, e);
         process::exit(1);
     });
 
     if emit_list.contains(&EmitStage::IR) {
         let fname = input_path.with_extension("pre.ll");
         codegen.module.print_to_file(&fname).unwrap();
-        println!("[INFO] LLVM ir written to: {}", fname.display());
+        println!("{}[INFO]{} LLVM ir written to: {}", GREEN, RESET, fname.display());
     }
 
     // --- PHASE 8: IR OPTIMIZATION ---
@@ -200,18 +222,17 @@ fn main() {
     if emit_list.contains(&EmitStage::IROpt) {
         let fname = input_path.with_extension("opt.ll");
         codegen.module.print_to_file(&fname).unwrap();
-        println!("[INFO] optimized LLVM ir written to: {}", fname.display());
+        println!("{}[INFO]{} optimized LLVM ir written to: {}", GREEN, RESET, fname.display());
     }
 
     // --- PHASE 9: ASSEMBLY ---
     if emit_list.contains(&EmitStage::ASM) {
         let fname = input_path.with_extension("s");
         CodeGen::emit_asm(&codegen.module, &codegen.triple, opt_level, &fname);
-        println!("[INFO] assembly written to: {}", fname.display());
+        println!("{}[INFO]{} assembly written to: {}", GREEN, RESET, fname.display());
     }
 
     // --- FINAL STOP CHECK ---
-    // If we emitted anything via the `--emit` flag, we STOP before binary linking.
     if cli.emit.is_some() {
         return;
     }
@@ -219,7 +240,6 @@ fn main() {
     // --- PHASE 10: OBJECT COMPILATION & LINKING ---
     let obj_file = PathBuf::from(format!("{}.o", module_name));
     
-    // Safety check just in case it skipped phase 8 somehow
     if cli.release && !ir_optimized {
         CodeGen::run_ir_passes(&codegen.module);
     }
@@ -248,7 +268,7 @@ fn main() {
         };
 
         if !start_s.exists() {
-            eprintln!("[ERROR] runtime start file not found: {}", start_s.display());
+            eprintln!("{}[ERROR]{} runtime start file not found: {}", RED, RESET, start_s.display());
             process::exit(1);
         }
 

@@ -11,4 +11,4 @@ errors = { path = "../errors" }
 
 [lib]
 name = "analyzer"
-path = "src/mod.rs"
+path = "src/lib.rs"

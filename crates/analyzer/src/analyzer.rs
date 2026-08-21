@@ -1,33 +1,46 @@
 use std::collections::HashMap;
 
-use crate::scope::Scope;
-use crate::fold::const_fold_hir;
+use parser::ast::*;
+use parser::program::Program as ASTProgram;
+use ir::types::Type as IRType;
+use ir::context::{HIRContext, DefID, DefKind};
+use ir::hir::{HIRBlock, HIRFunction, HIRProgram};
 use errors::error::{HydraError, Span};
 
-use parser::ast::ASTNode;
-use parser::program::Program as ASTProgram;
+use crate::scope::NameResolver;
 
-use ir::types::Type;
-use ir::context::{HIRContext, DefID, DefKind, SymbolInfo};
-use ir::hir::{HIRBlock, HIRFunction, HIRProgram};
-
-#[derive(Default)]
-pub struct Analyzer {
-    pub scope: Scope,
-    pub context: HIRContext,
+pub struct Analyzer<'a, 'ctx> {
+    pub program: &'a ASTProgram<'a>,
+    pub context: &'ctx mut HIRContext,
+    pub name_resolver: NameResolver,
     pub global_symbols: HashMap<Vec<String>, DefID>,
     pub impl_registry: HashMap<String, HashMap<String, DefID>>,
-    pub(crate) current_return_type: Option<Type>,
-    pub(crate) current_module: Vec<String>,
-    pub(crate) current_struct: Option<String>,
-    pub(crate) current_source: String,
-    pub(crate) current_generics: Vec<String>,
+    
+    pub current_return_type: Option<IRType>,
+    pub current_module: Vec<String>,
+    pub current_source: String,
+    pub errors: Vec<HydraError>,
 }
 
-impl Analyzer {
-
-    pub fn new() -> Self {
-        Self::default()
+impl<'a, 'ctx> Analyzer<'a, 'ctx> {
+    
+    pub fn new(
+        program: &'a ASTProgram<'a>, 
+        context: &'ctx mut HIRContext,
+        name_resolver: NameResolver,
+        global_symbols: HashMap<Vec<String>, DefID>
+    ) -> Self {
+        Self {
+            program,
+            context,
+            name_resolver,
+            global_symbols,
+            impl_registry: HashMap::new(),
+            current_return_type: None,
+            current_module: Vec::new(),
+            current_source: String::new(),
+            errors: Vec::new(),
+        }
     }
 
     pub(crate) fn error(&self, code: &'static str, message: impl Into<String>, span: Span) -> HydraError {
@@ -40,782 +53,176 @@ impl Analyzer {
             .with_file(filename, self.current_source.clone())
     }
 
-    pub fn analyze(&mut self, program: &ASTProgram) -> Result<HIRProgram, Vec<HydraError>> {
-        let mut functions: Vec<HIRFunction> = Vec::new();
-        let mut errors = Vec::new();
+    pub fn analyze(mut self) -> Result<HIRProgram, Vec<HydraError>> {
+        let mut functions = Vec::new();
         let mut structs = Vec::new();
-        let mut globals = Vec::new();
+        let globals = Vec::new(); 
 
-        for (module_name, module) in &program.modules {
-            let path_prefix = module_name.clone(); 
+        self.populate_impl_registry();
 
-            self.current_module = path_prefix.clone();
-            self.current_source = module.0.to_string();
-
-            for node in &module.1 {
-                self.register_global_item(&path_prefix, node, &mut errors);
-            }
+        if !self.errors.is_empty() {
+            return Err(self.errors);
         }
 
-        if !errors.is_empty() { return Err(errors); }
+        for (module_path, (source, items)) in &self.program.modules {
+            self.current_module = module_path.clone();
+            self.current_source = source.to_string();
 
-        let mut root_module_name = String::new();
-        for (name, module) in &program.modules {
-            for node in &module.1 {
-                if let ASTNode::FunctionDeclaration { name: fn_name, .. } = node {
-                    if fn_name.lexeme == "main" {
-                        root_module_name = name.join("::");
-                        break;
+            for item in items {
+                match item {
+                    Item::Function(decl) => {
+                        if let Some(hir_fn) = self.lower_function(decl, None) {
+                            functions.push(hir_fn);
+                        }
                     }
+                    Item::Extension(decl) => {
+                        let target_ty = self.lower_type(&decl.target_type).unwrap_or(IRType::VOID);
+                        let registry_key = self.get_impl_registry_key(&target_ty);
+
+                        for method in &decl.methods {
+                            if let Some(hir_fn) = self.lower_function(method, Some(registry_key.clone())) {
+                                functions.push(hir_fn);
+                            }
+                        }
+                    }
+                    Item::Struct(_decl) => {
+                        // struct fields were registered during the resolve pass.
+                        // we can expand this to generate constructor functions if needed later.
+                    }
+                    _ => {}
                 }
             }
         }
 
-        if root_module_name.is_empty() {
-            let mut keys: Vec<_> = program.modules.keys().collect();
-            keys.sort();
-            if !keys.is_empty() {
-                root_module_name = keys[0].join("::");
-            }
-        }
-
-        // --- PASS 1: Global Signatures ---
-        for (module_name, module) in &program.modules {
-            let module_name_str = module_name.join("::");
-            let path_prefix = self.get_path_from_module_name(&module_name_str, &root_module_name);
-            self.scope = Scope::new(path_prefix.clone());
-            self.current_module = path_prefix.clone();
-            self.current_source = module.0.to_string();
-
-            for node in &module.1 {
-                if let ASTNode::IncludeStatement { path, symbols, alias } = node {
-                    // Extract the base path (e.g., "std::random")
-                    let (base_path, end_span) = match &**path {
-                        ASTNode::VariableExpression { name } => {
-                            (vec![name.lexeme.to_string()], name.span)
-                        },
-                        ASTNode::PathExpression { segments } => {
-                            let strings = segments.iter().map(|t| t.lexeme.to_string()).collect();
-                            (strings, segments.last().unwrap().span)
-                        },
-                        _ => continue,
-                    };
-
-                    if let Some(syms) = symbols {
-                        // Handle: include std::random::{Random, seed};
-                        for sym in syms {
-                            let local_name = sym.lexeme.to_string();
-
-                            // Build the absolute path to the specific symbol
-                            let mut full_target_path = base_path.clone();
-                            full_target_path.push(local_name.clone());
-
-                            let info = SymbolInfo {
-                                name: local_name.clone(),
-                                span: sym.span,
-                                absolute_path: full_target_path.clone(),
-                                kind: DefKind::Alias { target_path: full_target_path },
-                                is_pub: false,
-                            };
-
-                            let def_id = self.context.insert_def(info);
-                            self.scope.define(local_name, def_id).ok();
-                        }
-                    } else {
-                        // Handle: include std::random; OR include std::random as rng;
-                        let local_name = alias.as_ref()
-                            .map(|t| t.lexeme.to_string())
-                            .unwrap_or_else(|| base_path.last().unwrap().clone());
-
-                        let info = SymbolInfo {
-                            name: local_name.clone(),
-                            span: alias.as_ref().map(|t| t.span).unwrap_or(end_span),
-                            absolute_path: base_path.clone(),
-                            kind: DefKind::Alias { target_path: base_path },
-                            is_pub: false,
-                        };
-
-                        let def_id = self.context.insert_def(info);
-                        self.scope.define(local_name, def_id).ok();
-                    }
-                }
-            }
-
-            for node in &module.1 {
-                self.register_global_item(&path_prefix, node, &mut errors);
-            }
-        }
-
-        // --- PASS 2: Deep Lowering ---
-        for (module_name, module) in &program.modules {
-            let module_name_str = module_name.join("::");
-            let path_prefix = self.get_path_from_module_name(&module_name_str, &root_module_name);
-            
-            self.current_module = path_prefix.clone();
-            self.current_source = module.0.to_string();
-            self.scope = Scope::new(path_prefix.clone());
-
-            // 0. Re-inject globals
-            for (path, &def_id) in &self.global_symbols {
-                if path.len() == 1 || path.starts_with(&path_prefix) {
-                    let local_name = path.last().unwrap().clone();
-                    self.scope.define(local_name, def_id).ok();
-                }
-            }
-
-            // 1. Register Local Includes/Aliases
-            for node in &module.1 {
-                if let ASTNode::IncludeStatement { path, symbols, alias } = node {
-                    // Extract the base path (e.g., "std::random")
-                    let (base_path, end_span) = match &**path {
-                        ASTNode::VariableExpression { name } => {
-                            (vec![name.lexeme.to_string()], name.span)
-                        },
-                        ASTNode::PathExpression { segments } => {
-                            let strings = segments.iter().map(|t| t.lexeme.to_string()).collect();
-                            (strings, segments.last().unwrap().span)
-                        },
-                        _ => continue,
-                    };
-
-                    if let Some(syms) = symbols {
-                        // Handle: include std::random::{Random, seed};
-                        for sym in syms {
-                            let local_name = sym.lexeme.to_string();
-
-                            // Build the absolute path to the specific symbol
-                            let mut full_target_path = base_path.clone();
-                            full_target_path.push(local_name.clone());
-
-                            if let Some(&target_def_id) = self.global_symbols.get(&full_target_path) {
-                                let target_info = self.context.get_def(target_def_id).unwrap();
-
-                                if !target_info.is_pub && self.current_module != base_path {
-                                    errors.push(self.error(
-                                        "S020",
-                                        format!("'{}' is private and cannot be included", local_name),
-                                        sym.span
-                                    ).with_help(format!("declare it as 'pub' in '{}'", base_path.join("::"))));
-                                    
-                                    continue;
-                                }
-                            } else {
-                                errors.push(self.error("S021", format!("unresolved import `{}`", local_name), sym.span));
-                                continue;
-                            }
-
-                            let info = SymbolInfo {
-                                name: local_name.clone(),
-                                span: sym.span,
-                                absolute_path: full_target_path.clone(),
-                                kind: DefKind::Alias { target_path: full_target_path },
-                                is_pub: false
-                            };
-
-                            let def_id = self.context.insert_def(info);
-                            self.scope.define(local_name, def_id).ok();
-                        }
-                    } else {
-                        // Handle: include std::random; OR include std::random as rng;
-                        let local_name = alias.as_ref()
-                            .map(|t| t.lexeme.to_string())
-                            .unwrap_or_else(|| base_path.last().unwrap().clone());
-
-                        let info = SymbolInfo {
-                            name: local_name.clone(),
-                            span: alias.as_ref().map(|t| t.span).unwrap_or(end_span),
-                            absolute_path: base_path.clone(),
-                            kind: DefKind::Alias { target_path: base_path },
-                            is_pub: false,
-                        };
-
-                        let def_id = self.context.insert_def(info);
-                        self.scope.define(local_name, def_id).ok();
-                    }
-                }            
-            }
-
-            // 2. Lower Bodies
-            for node in &module.1 {
-                match node {
-                    ASTNode::FunctionDeclaration { name, parameters, return_type, body, is_extern, generic_params, annotations, .. } => {
-                        self.enter_scope();
-
-                        let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
-                        self.current_generics.extend(param_names.clone());
-
-                        let rt = match self.lower_type(*return_type.clone()) {
-                            Ok(t) => t,
-                            Err(e) => { errors.push(e); Type::VOID }
-                        };
-
-                        self.current_return_type = Some(rt.clone());
-
-                        let mut ir_params = Vec::new();
-                        for (p_name, p_type_node) in parameters {
-                            let p_ty = match self.lower_type(*p_type_node.clone()) {
-                                Ok(t) => t,
-                                Err(e) => { errors.push(e); Type::VOID }
-                            };
-                            
-                            let info = SymbolInfo {
-                                name: p_name.lexeme.to_string(),
-                                span: p_name.span,
-                                absolute_path: vec![p_name.lexeme.to_string()],
-                                kind: DefKind::Variable { ty: p_ty.clone(), is_mutable: true },
-                                is_pub: false,
-                            };
-                            let def_id = self.context.insert_def(info);
-                            self.scope.define(p_name.lexeme.to_string(), def_id).ok();
-                            
-                            ir_params.push((def_id, p_ty)); // HIR utilizes (DefId, Type)
-                        }
-
-                        let mut ir_body = Vec::new();
-                        for stmt in body {
-                            match self.lower_statement(stmt.clone()) {
-                                Ok(s) => ir_body.push(s),
-                                Err(e) => errors.push(e),
-                            }
-                        }
-
-                        let mut full_path = self.current_module.clone();
-                        full_path.push(name.lexeme.to_string());
-                        
-                        let fn_def_id = *self.global_symbols.get(&full_path).unwrap();
-                        let is_intrinsic = annotations.iter().any(|a| a.name == "intrinsic");
-                        let is_inline = annotations.iter().any(|a| a.name == "inline");
-
-                        functions.push(HIRFunction {
-                            name: full_path.join("::"), 
-                            def_id: fn_def_id,
-                            params: ir_params,
-                            return_type: rt,
-                            body: HIRBlock { stmts: ir_body, span: name.span },
-                            is_extern: *is_extern,
-                            is_intrinsic,
-                            is_inline,
-                            generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect(),
-                        });
-
-                        self.current_generics.truncate(self.current_generics.len() - param_names.len());
-                        self.leave_scope();
-                        self.current_return_type = None;
-                    }
-
-                    ASTNode::StructDeclaration { name, fields, constants, generic_params, is_pub, .. } => {
-                        self.current_struct = Some(name.lexeme.to_string());
-
-                        let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
-                        self.current_generics.extend(param_names.clone());
-
-                        let mut struct_path = self.current_module.clone();
-                        struct_path.push(name.lexeme.to_string());
-
-                        let mut ir_fields = Vec::new();
-                        let mut symbol_fields = Vec::new();
-
-                        for (f_name, f_type) in fields {
-                            match self.lower_type(*f_type.clone()) {
-                                Ok(ty) => {
-                                    ir_fields.push((f_name.lexeme.to_string(), ty.clone()));
-                                    symbol_fields.push((f_name.lexeme.to_string(), ty, false));
-                                }
-                                Err(e) => errors.push(e),
-                            }
-                        }
-                        structs.push((struct_path.join("::"), ir_fields));
-
-                        for constant in constants {
-                            if let ASTNode::VariableDeclaration { name: c_name, initializer, type_annotation, is_const, .. } = constant {
-                                let mut const_path = struct_path.clone();
-                                const_path.push(c_name.lexeme.to_string());
-                                let expected_ty = type_annotation.as_ref()
-                                    .and_then(|ann| self.lower_type(*ann.clone()).ok());
-
-                                match self.lower_expr_with_type(*initializer.clone(), expected_ty.as_ref()) {
-                                    Ok(mut init_expr) => {
-                                        if let Some(ref target) = expected_ty {
-                                            init_expr = self.coerce_primitive(init_expr, target);
-                                        }
-                                        let final_ty = expected_ty.unwrap_or(init_expr.ty.clone());
-
-                                        if *is_const {
-                                            if let Some(folded) = const_fold_hir(&init_expr, &self.context) {
-                                                if let Some(&def_id) = self.global_symbols.get(&const_path) {
-                                                    let mut info = self.context.get_def(def_id).unwrap().clone();
-                                                    if let DefKind::Constant { ref mut value, .. } = info.kind {
-                                                        *value = folded;
-                                                    }
-                                                    self.context.update_def(def_id, info);
-                                                }
-                                            }
-                                        }
-
-                                        globals.push((const_path.join("::"), final_ty.clone(), init_expr));
-                                        symbol_fields.push((c_name.lexeme.to_string(), final_ty, *is_const));
-                                    }
-                                    Err(e) => errors.push(e),
-                                }
-                            }
-                        }
-
-                        // Update the Pass 1 dummy struct with the actual loaded fields
-                        let info = SymbolInfo {
-                            name: name.lexeme.to_string(),
-                            span: name.span,
-                            absolute_path: struct_path.clone(),
-                            kind: DefKind::Struct { 
-                                fields: symbol_fields, 
-                                generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect() 
-                            },
-                            is_pub: *is_pub, // Preserving visibility across the update
-                        };
-
-                        let def_id = *self.global_symbols.get(&struct_path).unwrap();
-                        self.context.update_def(def_id, info);
-
-                        self.current_struct = None;
-                        self.current_generics.truncate(self.current_generics.len() - param_names.len());
-                    }
-
-                    ASTNode::VariableDeclaration { name, initializer, type_annotation, .. } => {
-                        let mut const_path = self.current_module.clone();
-                        const_path.push(name.lexeme.to_string());
-                        
-                        let expected_ty = type_annotation.as_ref()
-                            .and_then(|ann| self.lower_type(*ann.clone()).ok());
-                        match self.lower_expr_with_type(*initializer.clone(), expected_ty.as_ref()) {
-                            Ok(mut init_expr) => {
-                                if let Some(ref target) = expected_ty {
-                                    init_expr = self.coerce_primitive(init_expr, target);
-                                }
-                                let final_ty = expected_ty.unwrap_or(init_expr.ty.clone());
-                                globals.push((const_path.join("::"), final_ty, init_expr));
-                            }
-                            Err(e) => errors.push(e),
-                        }
-                    }
-
-                    ASTNode::ExtensionDeclaration { target, constants, methods, generic_params, .. } => {
-                        let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
-                        self.current_generics.extend(param_names.clone());
-
-                        let target_type = self.lower_type(*target.clone()).unwrap_or(Type::VOID);
-                        let target_path = match &target_type {
-                            Type::STRUCT(full_path) => full_path.split("::").map(|s| s.to_string()).collect(),
-
-                            Type::GENERIC_INSTANCE(base, _) => {
-                                if let Type::STRUCT(full_path) = &**base {
-                                    full_path.split("::").map(|s| s.to_string()).collect()
-                                } else {
-                                    self.current_module.clone()
-                                }
-                            },
-
-                            _ => {
-                                let target_name = match &**target {
-                                    ASTNode::TypeIdentifier { type_token } => type_token.lexeme.to_string(),
-
-                                    ASTNode::GenericType { base, .. } => {
-                                        if let ASTNode::TypeIdentifier { type_token } = &**base {
-                                            type_token.lexeme.to_string()
-                                        } else { String::new() }
-                                    }
-
-                                    _ => String::new(),
-                                };
-
-                                let mut p = self.current_module.clone();
-                                if !target_name.is_empty() {
-                                    p.push(target_name); 
-                                }
-
-                                p
-                            }
-                        };
-                        
-                        let struct_name = match &target_type {
-                            Type::STRUCT(name) => name.clone(),
-                            Type::GENERIC_INSTANCE(base, _) => {
-                                if let Type::STRUCT(name) = base.as_ref() { name.clone() }
-                                else { String::new() }
-                            }
-                            _ => String::new(),
-                        };
-                        let type_methods = self.impl_registry.get(&struct_name).cloned().unwrap_or_default(); 
-
-                        for method in methods {
-                            if let ASTNode::FunctionDeclaration { 
-                                name: m_name, 
-                                parameters, 
-                                return_type, 
-                                body, 
-                                generic_params: m_generic_params, 
-                                annotations, is_extern, .. 
-                            } = method 
-                            {
-                                self.enter_scope();
-
-                                let m_param_names: Vec<String> = m_generic_params.iter().map(|t| t.lexeme.to_string()).collect();
-                                self.current_generics.extend(m_param_names.clone());
-
-                                let rt = match self.lower_type(*return_type.clone()) {
-                                    Ok(t) => t,
-                                    Err(e) => { errors.push(e); Type::VOID }
-                                };
-
-                                self.current_return_type = Some(rt.clone());
-
-                                let mut ir_params = Vec::new();
-                                for (p_name, p_type_node) in parameters {
-                                    let p_ty = match self.lower_type(*p_type_node.clone()) {
-                                        Ok(t) => t,
-                                        Err(e) => { errors.push(e); Type::VOID }
-                                    };
-                                    
-                                    let info = SymbolInfo {
-                                        name: p_name.lexeme.to_string(),
-                                        span: p_name.span,
-                                        absolute_path: vec![p_name.lexeme.to_string()],
-                                        kind: DefKind::Variable { ty: p_ty.clone(), is_mutable: true },
-                                        is_pub: false,
-                                    };
-                                    let def_id = self.context.insert_def(info);
-                                    self.scope.define(p_name.lexeme.to_string(), def_id).ok();
-                                    
-                                    ir_params.push((def_id, p_ty));
-                                }
-
-                                let mut ir_body = Vec::new();
-                                for stmt in body {
-                                    match self.lower_statement(stmt.clone()) {
-                                        Ok(s) => ir_body.push(s),
-                                        Err(e) => errors.push(e),
-                                    }
-                                }
-
-                                let mut m_path = target_path.clone();
-                                m_path.push(m_name.lexeme.to_string());
-
-                                let is_intrinsic = annotations.iter().any(|a| a.name == "intrinsic");
-                                let is_inline = annotations.iter().any(|a| a.name == "inline");
-                                let m_def_id = *type_methods.get(m_name.lexeme).unwrap(); // Fetch DefId assigned in Pass 1
-
-                                functions.push(HIRFunction {
-                                    name: m_path.join("::"), 
-                                    def_id: m_def_id,
-                                    params: ir_params,
-                                    return_type: rt.clone(),
-                                    body: HIRBlock { stmts: ir_body, span: m_name.span },
-                                    is_extern: *is_extern,
-                                    is_intrinsic,
-                                    is_inline,
-                                    generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect(),
-                                });
-
-                                self.leave_scope();
-                                self.current_return_type = None;
-                                self.current_generics.truncate(self.current_generics.len() - m_param_names.len());
-                            }
-                        }
-
-                        if !target_path.is_empty() {
-                            for constant in constants {
-                                if let ASTNode::VariableDeclaration { name: c_name, initializer, type_annotation, is_const, .. } = constant {
-                                    let mut c_path = target_path.clone();
-                                    c_path.push(c_name.lexeme.to_string());
-
-                                    let expected_ty = type_annotation.as_ref()
-                                        .and_then(|ann| self.lower_type(*ann.clone()).ok());
-                                    match self.lower_expr_with_type(*initializer.clone(), expected_ty.as_ref()) {
-                                        Ok(mut init_expr) => {
-                                            if let Some(ref target_ty) = expected_ty {
-                                                init_expr = self.coerce_primitive(init_expr, target_ty);
-                                            }
-                                            let final_ty = expected_ty.unwrap_or(init_expr.ty.clone());
-
-                                            // Fold and patch the dummy placeholder value from Pass 1
-                                            if let Some(folded) = const_fold_hir(&init_expr, &self.context) {
-                                                if let Some(&def_id) = self.global_symbols.get(&c_path) {
-                                                    let mut info = self.context.get_def(def_id).unwrap().clone();
-                                                    if let DefKind::Constant { ref mut value, .. } = info.kind {
-                                                        *value = folded;
-                                                    }
-                                                    self.context.update_def(def_id, info);
-                                                }
-                                            }
-
-                                            globals.push((c_path.join("::"), final_ty.clone(), init_expr));
-                                        }
-                                        Err(e) => errors.push(e),
-                                    }
-                                }
-                            }
-                        }
-
-                        self.current_generics.truncate(self.current_generics.len() - param_names.len());
-                    }
-
-                    ASTNode::IncludeStatement { .. } => {} 
-                    node => {
-                        let span = self.get_token_from_node(node).span;
-                        errors.push(self.error("S017", "executable code is not allowed at the top level", span));
-                    }
-                }
-            }
-        }
-
-        let has_main = functions.iter().any(|f| f.name == "main");
-        if !has_main && errors.is_empty() {
-            errors.push(HydraError::new(
+        let has_main = functions.iter().any(|f| f.name.ends_with("::main") || f.name == "main");
+        if !has_main && self.errors.is_empty() {
+            self.errors.push(HydraError::new(
                 "S015", 
                 "program is missing an entry point",
                 Span::default()
             ).with_help("consider adding `fn main() -> void`"));
         }
 
-        if !errors.is_empty() { Err(errors) } else { Ok(HIRProgram { functions, structs, globals }) }
+        if self.errors.is_empty() {
+            Ok(HIRProgram { functions, structs, globals })
+        } else {
+            Err(self.errors)
+        }
     }
 
-    fn get_path_from_module_name(&self, name: &str, root_module_name: &str) -> Vec<String> {
-        if name == root_module_name { return vec![]; }
-        name.split("::").map(|s| s.to_string()).collect()
-    }
+    fn populate_impl_registry(&mut self) {
+    for (module_path, (_, items)) in &self.program.modules {
+            self.current_module = module_path.clone();
 
+            for item in items {
+                if let Item::Extension(decl) = item {
+                    let target_ty = self.lower_type(&decl.target_type).unwrap_or(IRType::VOID);
+                    let registry_key = self.get_impl_registry_key(&target_ty);
+                    if registry_key.is_empty() { continue; }
 
-    fn register_global_item(&mut self, prefix: &[String], node: &ASTNode, errors: &mut Vec<HydraError>) {
-        match node {
-            ASTNode::FunctionDeclaration { name, parameters, return_type, generic_params, annotations, is_pub, .. } => {
-                let mut path = prefix.to_vec();
-                path.push(name.lexeme.to_string());
-
-                let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
-                self.current_generics.extend(param_names.clone());
-
-                let param_types: Vec<Type> = parameters.iter()
-                    .map(|(_, ty_node)| self.lower_type(*ty_node.clone()).unwrap_or(Type::VOID))
-                    .collect();
-                let ret_type = self.lower_type(*return_type.clone()).unwrap_or(Type::VOID);
-
-                self.current_generics.truncate(self.current_generics.len() - param_names.len());
-
-                let info = SymbolInfo {
-                    name: name.lexeme.to_string(),
-                    span: name.span,
-                    absolute_path: path.clone(),
-                    kind: DefKind::Function {
-                        params: param_types,
-                        annotations: annotations.clone(),
-                        return_type: ret_type,
-                        generic_params: generic_params.iter().map(|t| t.lexeme.to_string()).collect(),
-                    },
-                    is_pub: *is_pub,
-                };
-
-                let def_id = self.context.insert_def(info);
-                if let Err(msg) = self.scope.define(name.lexeme.to_string(), def_id) {
-                    errors.push(self.error("S018", msg, name.span));
-                }
-
-                self.global_symbols.insert(path, def_id);
-            }
-
-            ASTNode::StructDeclaration { name, constants, generic_params, is_pub, .. } => {
-                let mut struct_path = prefix.to_vec();
-                struct_path.push(name.lexeme.to_string());
-
-                let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
-                self.current_generics.extend(param_names.clone());
-
-                let info = SymbolInfo {
-                    name: name.lexeme.to_string(),
-                    span: name.span,
-                    absolute_path: struct_path.clone(),
-                    kind: DefKind::Struct { fields: vec![], generic_params: vec![] },
-                    is_pub: *is_pub,
-                };
-
-                let def_id = self.context.insert_def(info);
-                if let Err(msg) = self.scope.define(name.lexeme.to_string(), def_id) {
-                    errors.push(self.error("S018", msg, name.span));
-                }
-                self.global_symbols.insert(struct_path.clone(), def_id);
-
-                for constant in constants {
-                    if let ASTNode::VariableDeclaration { name: c_name, type_annotation, is_pub: c_is_pub, .. } = constant {
-                        let mut c_path = struct_path.clone();
-                        c_path.push(c_name.lexeme.to_string());
-
-                        let expected_ty = type_annotation.as_ref()
-                            .and_then(|ann| self.lower_type(*ann.clone()).ok()).unwrap_or(Type::VOID);
-
-                        let c_info = SymbolInfo {
-                            name: c_name.lexeme.to_string(),
-                            span: c_name.span,
-                            absolute_path: c_path.clone(),
-                            kind: DefKind::Constant {
-                                ty: expected_ty.clone(),
-                                value: ir::Constant::Float(0.0, expected_ty),
-                            },
-                            is_pub: *c_is_pub,
-                        };
-
-                        let c_def_id = self.context.insert_def(c_info);
-                        self.global_symbols.insert(c_path, c_def_id);
-                    }
-                }
-
-                self.current_generics.truncate(self.current_generics.len() - param_names.len());
-            }
-
-            ASTNode::VariableDeclaration { name, type_annotation, is_const, is_pub, .. } => {
-                let mut path = prefix.to_vec();
-                path.push(name.lexeme.to_string());
-
-                let ty = type_annotation.as_ref()
-                    .and_then(|ann| self.lower_type(*ann.clone()).ok())
-                    .unwrap_or(Type::VOID);
-
-                let kind = if *is_const {
-                    DefKind::Constant {
-                        ty: ty.clone(),
-                        value: ir::Constant::Float(0.0, ty.clone()),
-                    }
-                } else {
-                    DefKind::Variable { ty: ty.clone(), is_mutable: true }
-                };
-
-                let info = SymbolInfo {
-                    name: name.lexeme.to_string(),
-                    span: name.span,
-                    absolute_path: path.clone(),
-                    kind,
-                    is_pub: *is_pub,
-                };
-
-                let def_id = self.context.insert_def(info);
-                self.global_symbols.insert(path, def_id);
-            }
-
-            ASTNode::ExtensionDeclaration { target, methods, constants, generic_params, .. } => {
-                let param_names: Vec<String> = generic_params.iter().map(|t| t.lexeme.to_string()).collect();
-                self.current_generics.extend(param_names.clone());
-
-                let target_type = self.lower_type(*target.clone()).unwrap_or(Type::VOID);
-                let target_path = match &target_type {
-                    Type::STRUCT(full_path) => full_path.split("::").map(|s| s.to_string()).collect(),
-
-                    Type::GENERIC_INSTANCE(base, _) => {
-                        if let Type::STRUCT(full_path) = &**base {
-                            full_path.split("::").map(|s| s.to_string()).collect()
-                        } else {
-                            prefix.to_vec()
-                        }
-                    },
-
-                    _ => {
-                        let target_name = match &**target {
-                            ASTNode::TypeIdentifier { type_token } => type_token.lexeme.to_string(),
-
-                            ASTNode::GenericType { base, .. } => {
-                                if let ASTNode::TypeIdentifier { type_token } = &**base {
-                                    type_token.lexeme.to_string()
-                                } else { String::new() }
-                            }
-
-                            _ => String::new(),
-                        };
-
-                        let mut p = prefix.to_vec();
-                        if !target_name.is_empty() { p.push(target_name); }
-
-                        p
-                    }
-                };
-
-                let mut lowered_methods = Vec::new();
-                for method in methods {
-                    if let ASTNode::FunctionDeclaration { name: m_name, parameters, return_type, generic_params: m_generic_params, annotations, is_pub: m_is_pub, .. } = method {
-                        let m_param_names: Vec<String> = m_generic_params.iter().map(|t| t.lexeme.to_string()).collect();
-                        self.current_generics.extend(m_param_names.clone());
-
-                        let param_types: Vec<Type> = parameters.iter()
-                            .map(|(_, ty_node)| self.lower_type(*ty_node.clone()).unwrap_or(Type::VOID))
-                            .collect();
-                        let ret_type = self.lower_type(*return_type.clone()).unwrap_or(Type::VOID);
-
-                        self.current_generics.truncate(self.current_generics.len() - m_param_names.len());
-
-                        let mut m_path = target_path.clone();
-                        m_path.push(m_name.lexeme.to_string());
-
-                        let m_info = SymbolInfo {
-                            name: m_name.lexeme.to_string(),
-                            span: m_name.span,
-                            absolute_path: m_path,
-                            kind: DefKind::Function {
-                                params: param_types,
-                                annotations: annotations.clone(),
-                                return_type: ret_type,
-                                generic_params: {
-                                    let mut gp = param_names.clone(); // extension's <T>
-                                    gp.extend(m_param_names.iter().cloned()); // method's own <U> if any
-                                    gp
-                                },
-                            },
-                            is_pub: *m_is_pub,
-                        };
-
-                        let m_def_id = self.context.insert_def(m_info);
-                        lowered_methods.push((m_name.lexeme.to_string(), m_def_id));
-                    }
-                }
-
-                let struct_name = match &target_type {
-                    Type::STRUCT(name) => name.clone(),
-                    Type::GENERIC_INSTANCE(base, _) => {
-                        if let Type::STRUCT(name) = base.as_ref() { name.clone() }
-                        else { String::new() }
-                    }
-                    _ => String::new(),
-                };
-
-                let type_methods = self.impl_registry.entry(struct_name).or_default();
-
-                for (m_name, m_def_id) in lowered_methods {
-                    type_methods.insert(m_name, m_def_id);
-                }
-
-                if !target_path.is_empty() {
-                    for constant in constants {
-                        if let ASTNode::VariableDeclaration { name: c_name, type_annotation, is_pub: c_is_pub, .. } = constant {
-                            let mut c_path = target_path.clone();
-                            c_path.push(c_name.lexeme.to_string());
-
-                            let expected_ty = type_annotation.as_ref()
-                                .and_then(|ann| self.lower_type(*ann.clone()).ok()).unwrap_or(Type::VOID);
-
-                            let c_info = SymbolInfo {
-                                name: c_name.lexeme.to_string(),
-                                span: c_name.span,
-                                absolute_path: c_path.clone(),
-                                kind: DefKind::Constant {
-                                    ty: expected_ty.clone(),
-                                    value: ir::Constant::Float(0.0, expected_ty),
-                                },
-                                is_pub: *c_is_pub,
-                            };
-
-                            let c_def_id = self.context.insert_def(c_info);
-                            self.global_symbols.insert(c_path, c_def_id);
+                    let type_methods = self.impl_registry.entry(registry_key).or_default();
+                    
+                    for method in &decl.methods {
+                        if let Some(def_id) = self.name_resolver.get_resolution(method.id) {
+                            type_methods.insert(method.name.lexeme.to_string(), def_id);
                         }
                     }
                 }
-
-                self.current_generics.truncate(self.current_generics.len() - param_names.len());
             }
-            _ => {}
+        }
+    }
+
+    fn lower_function(&mut self, decl: &FunctionDecl<'a>, parent_path: Option<String>) -> Option<HIRFunction> 
+    {
+        let mut full_path = self.current_module.clone();
+        full_path.push(decl.name.lexeme.to_string());
+
+        let def_id = *self.global_symbols.get(&full_path)?;
+        let mut info = self.context.get_def(def_id).unwrap().clone();
+
+        let ret_type = if let Some(rt_node) = &decl.return_type {
+            self.lower_type(rt_node).unwrap_or(IRType::VOID)
+        } else {
+            IRType::VOID
+        };
+        self.current_return_type = Some(ret_type.clone());
+
+        let mut ir_params = Vec::new();
+        for (param_token, param_type_node) in &decl.parameters {
+            let p_ty = self.lower_type(param_type_node).unwrap_or(IRType::VOID);
+            
+            // update the parameter's symbol info generated during resolve pass
+            if let Some(param_def_id) = self.name_resolver.get_resolution(crate::utils::get_type_id(param_type_node)) {
+                let mut p_info = self.context.get_def(param_def_id).unwrap().clone();
+                p_info.kind = DefKind::Variable { ty: p_ty.clone(), is_mutable: true };
+                self.context.update_def(param_def_id, p_info);
+                ir_params.push((param_def_id, p_ty.clone()));
+            } else {
+                ir_params.push((DefID(0), p_ty.clone()));
+            }
+        }
+
+        if let DefKind::Function { ref mut return_type, ref mut params, .. } = info.kind {
+            *return_type = ret_type.clone();
+            *params = ir_params.iter().map(|(_, ty)| ty.clone()).collect();
+        }
+        self.context.update_def(def_id, info);
+
+        let is_intrinsic = decl.annotations.iter().any(|a| a.name == "intrinsic");
+        let is_inline = decl.annotations.iter().any(|a| a.name == "inline");
+
+        let mut ir_body = Vec::new();
+        if let Some(body_block) = &decl.body {
+            match self.lower_block(body_block) {
+                Ok(block) => ir_body = block.stmts,
+                Err(e) => self.errors.push(e), 
+            }
+        }
+
+        self.current_return_type = None;
+
+        let fn_name = if decl.name.lexeme == "main" {
+            "main".to_string()
+        } else {
+            full_path.join("::")
+        };
+
+        Some(HIRFunction {
+            name: fn_name,
+            def_id,
+            params: ir_params,
+            return_type: ret_type,
+            body: HIRBlock { stmts: ir_body, span: decl.name.span },
+            is_extern: decl.is_extern,
+            is_inline,
+            is_intrinsic,
+            generic_params: decl.generic_params.iter().map(|p| p.name.lexeme.to_string()).collect(),
+        })
+    }
+
+    pub(crate) fn get_impl_registry_key(&self, ty: &IRType) -> String {
+        match ty {
+            IRType::STRUCT(name) => name.clone(),
+            IRType::GENERIC_INSTANCE(base, _) => self.get_impl_registry_key(base),
+            IRType::SLICE(_) => "slice".to_string(),
+            IRType::ARRAY(_, _) | IRType::INFERRED_ARRAY(_) => "array".to_string(),
+            IRType::I8 => "i8".to_string(),
+            IRType::I16 => "i16".to_string(),
+            IRType::I32 => "i32".to_string(),
+            IRType::I64 => "i64".to_string(),
+            IRType::ISIZE => "isize".to_string(),
+            IRType::U8 => "u8".to_string(),
+            IRType::U16 => "u16".to_string(),
+            IRType::U32 => "u32".to_string(),
+            IRType::U64 => "u64".to_string(),
+            IRType::USIZE => "usize".to_string(),
+            IRType::F32 => "f32".to_string(),
+            IRType::F64 => "f64".to_string(),
+            IRType::BOOL => "bool".to_string(),
+            IRType::CHAR => "char".to_string(),
+            IRType::POINTER(inner) => self.get_impl_registry_key(inner),
+            IRType::REF(inner) | IRType::CONST_REF(inner) => self.get_impl_registry_key(inner),
+            _ => String::new(),
         }
     }
 }

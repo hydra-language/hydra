@@ -6,6 +6,8 @@ pub mod utils;
 pub mod analyzer;
 pub mod fold;
 pub mod monomorphizer;
+pub mod resolve;
 
 pub use analyzer::Analyzer;
-
+pub use resolve::Resolver;
+pub use scope::{NameResolver, Namespace, Scope};

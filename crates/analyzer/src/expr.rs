@@ -1,26 +1,27 @@
 use super::Analyzer;
 use errors::error::HydraError;
-use lexer::{Token, TokenType};
-use parser::ast::ASTNode;
-use ir::types::Type;
-use ir::context::DefKind;
-use ir::hir::{HIRExpr, HIRExprKind, HIRBinOp, HIRUnaryOp, CastKind}; 
+use lexer::TokenType;
+use parser::ast::Expr as ASTExpr;
+use ir::types::Type as IRType;
+use ir::context::{DefKind, SymbolInfo};
+use ir::hir::{HIRExpr, HIRExprKind, HIRBinOp, HIRUnaryOp, CastKind, HIRBlock, HIRStmt}; 
+use crate::utils;
 
-impl Analyzer {
+impl<'a, 'ctx> Analyzer<'a, 'ctx> {
 
-    pub(crate) fn is_int_type(&self, ty: &Type) -> bool {
+    pub(crate) fn is_int_type(&self, ty: &IRType) -> bool {
         matches!(
             ty, 
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::ISIZE | 
-            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::USIZE
+            IRType::I8 | IRType::I16 | IRType::I32 | IRType::I64 | IRType::ISIZE | 
+            IRType::U8 | IRType::U16 | IRType::U32 | IRType::U64 | IRType::USIZE
         )
     }
 
-    pub(crate) fn is_float_type(&self, ty: &Type) -> bool {
-        matches!(ty, Type::F32 | Type::F64)
+    pub(crate) fn is_float_type(&self, ty: &IRType) -> bool {
+        matches!(ty, IRType::F32 | IRType::F64)
     }
 
-    pub(crate) fn coerce_primitive(&self, mut expr: HIRExpr, target: &Type) -> HIRExpr {
+    pub(crate) fn coerce_primitive(&self, mut expr: HIRExpr, target: &IRType) -> HIRExpr {
         if expr.ty == *target { return expr; }
 
         if let HIRExprKind::IntLiteral(val) = expr.kind {
@@ -55,49 +56,72 @@ impl Analyzer {
         }
     }
 
-    pub(crate) fn lower_expression(&mut self, node: ASTNode) -> Result<HIRExpr, HydraError> {
+    pub(crate) fn lower_expr(&mut self, node: &ASTExpr<'a>) -> Result<HIRExpr, HydraError> {
         self.lower_expr_with_type(node, None)
     }
 
-    pub(crate) fn lower_expr_with_type(&mut self, node: ASTNode, expected: Option<&Type>) -> Result<HIRExpr, HydraError> {
-        let span = self.get_token_from_node(&node).span;
+    pub(crate) fn lower_expr_with_type(&mut self, node: &ASTExpr<'a>, expected: Option<&IRType>) -> Result<HIRExpr, HydraError> {
+        let span = crate::utils::get_expr_span(node);
 
         match node {
-            ASTNode::Expression { token } => {
-                match token.token_type {
+            ASTExpr::Literal { token, .. } => {
+                match &token.token_type {
                     TokenType::IntLiteral(val) => {
-                        let mut ty = Type::I32;
+                        let mut ty = IRType::I32;
                         if let Some(exp) = expected { ty = exp.clone(); }
-                        Ok(HIRExpr { kind: HIRExprKind::IntLiteral(val), ty, span })
+                        Ok(HIRExpr { kind: HIRExprKind::IntLiteral(*val), ty, span })
                     },
                     TokenType::FloatLiteral(val) => {
-                        let mut ty = Type::F64; 
+                        let mut ty = IRType::F64; 
                         if let Some(exp) = expected {
-                            if matches!(exp, Type::F32 | Type::F64) { ty = exp.clone(); }
+                            if matches!(exp, IRType::F32 | IRType::F64) { ty = exp.clone(); }
                         }
-                        Ok(HIRExpr { kind: HIRExprKind::FloatLiteral(val), ty, span })
+                        Ok(HIRExpr { kind: HIRExprKind::FloatLiteral(*val), ty, span })
                     },
                     TokenType::StringLiteral(ref s) => Ok(HIRExpr {
                         kind: HIRExprKind::StringLiteral(s.clone()),
-                        ty: Type::ARRAY(Box::new(Type::U8), s.len()),
+                        ty: IRType::ARRAY(Box::new(IRType::U8), s.len()),
                         span
                     }),
-                    TokenType::CharLiteral(c) => Ok(HIRExpr { kind: HIRExprKind::CharLiteral(c), ty: Type::CHAR, span }),
-                    TokenType::BoolLiteral(b) => Ok(HIRExpr {
-                        kind: HIRExprKind::BoolLiteral(b), ty: Type::BOOL, span
-                    }),
+                    TokenType::CharLiteral(c) => Ok(HIRExpr { kind: HIRExprKind::CharLiteral(*c), ty: IRType::CHAR, span }),
+                    TokenType::BoolLiteral(b) => Ok(HIRExpr { kind: HIRExprKind::BoolLiteral(*b), ty: IRType::BOOL, span }),
                     _ => Err(self.error("S003", format!("unexpected literal: {:?}", token.token_type), token.span))
                 }
             },
 
-            ASTNode::ArrayInitializer { elements, token } => {
+            ASTExpr::Variable { id, name } => {
+                let def_id = self.name_resolver.get_resolution(*id)
+                    .ok_or_else(|| self.error("S002", format!("undefined variable `{}`", name.lexeme), name.span))?;
+                
+                let info = self.context.get_def(def_id).unwrap();
+                let ty = match &info.kind {
+                    DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } | DefKind::Function { return_type: ty, .. } => ty.clone(),
+                    _ => return Err(self.error("S003", format!("`{}` cannot be used as a value", name.lexeme), name.span))
+                };
+                Ok(HIRExpr { kind: HIRExprKind::VarRef(def_id), ty, span })
+            },
+
+            ASTExpr::Path { id, segments } => {
+                let def_id = self.name_resolver.get_resolution(*id)
+                    .ok_or_else(|| self.error("S002", format!("undefined path `{}`", segments[0].lexeme), span))?;
+                
+                let info = self.context.get_def(def_id).unwrap();
+                let ty = match &info.kind {
+                    DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } | DefKind::Function { return_type: ty, .. } => ty.clone(),
+                    DefKind::Struct { .. } => IRType::STRUCT(info.absolute_path.join("::")),
+                    _ => return Err(self.error("S003", format!("`{}` cannot be used as a value", segments[0].lexeme), span))
+                };
+                Ok(HIRExpr { kind: HIRExprKind::VarRef(def_id), ty, span })
+            },
+
+            ASTExpr::ArrayInitializer { elements, .. } => {
                 let mut ir_elements = Vec::new();
                 let inner_expected = match expected {
-                    Some(Type::ARRAY(inner, _)) => Some(&**inner),
+                    Some(IRType::ARRAY(inner, _)) => Some(&**inner),
                     _ => None,
                 };
-                for element in &elements {
-                    let mut ir_element = self.lower_expr_with_type(element.clone(), inner_expected)?;
+                for element in elements {
+                    let mut ir_element = self.lower_expr_with_type(element, inner_expected)?;
                     if let Some(target) = inner_expected {
                         ir_element = self.coerce_primitive(ir_element, target);
                     }
@@ -107,85 +131,51 @@ impl Analyzer {
                 let element_type = if let Some(target) = inner_expected {
                     target.clone()
                 } else {
-                    ir_elements.first().map(|e| e.ty.clone()).ok_or_else(|| {
-                        self.error("S007", "cannot infer type of array", token.span)
-                    })?
+                    ir_elements.first().map(|e| e.ty.clone()).ok_or_else(|| self.error("S007", "cannot infer type of array", span))?
                 };
 
                 Ok(HIRExpr {
                     kind: HIRExprKind::ArrayInit { elements: ir_elements },
-                    ty: Type::ARRAY(Box::new(element_type.clone()), elements.len()),
+                    ty: IRType::ARRAY(Box::new(element_type), elements.len()),
                     span,
                 })
             },
 
-            ASTNode::ArrayAccess { array, index, token } => {
-                let arr = self.lower_expr_with_type(*array, None)?;
-                let idx_expr = self.lower_expr_with_type(*index, Some(&Type::USIZE))?;
+            ASTExpr::ArrayAccess { array, index, .. } => {
+                let arr = self.lower_expr_with_type(array, None)?;
+                let idx_expr = self.lower_expr_with_type(index, Some(&IRType::USIZE))?;
 
                 if !idx_expr.ty.is_numeric() {
-                    return Err(self.error("S001", format!("index must be numeric, found {}", idx_expr.ty), token.span));
+                    return Err(self.error("S001", format!("index must be numeric, found {}", idx_expr.ty), span));
                 }
 
                 match &arr.ty.clone() {
-                    Type::ARRAY(inner, size) => {
+                    IRType::ARRAY(inner, size) => {
                         if let HIRExprKind::IntLiteral(idx_val) = idx_expr.kind {
                             if idx_val < 0 || idx_val >= (*size as i64) {
-                                return Err(self.error("S008", format!("index out of bounds: len is {} but index is {}", size, idx_val), token.span));
+                                return Err(self.error("S008", format!("index out of bounds: len is {} but index is {}", size, idx_val), span));
                             }
                         }
                         Ok(HIRExpr { kind: HIRExprKind::ArrayAccess { array: Box::new(arr), index: Box::new(idx_expr) }, ty: *inner.clone(), span })
                     },
-                    Type::INFERRED_ARRAY(inner) => Ok(HIRExpr {
+                    IRType::INFERRED_ARRAY(inner) => Ok(HIRExpr {
                         kind: HIRExprKind::ArrayAccess { array: Box::new(arr), index: Box::new(idx_expr) }, ty: *inner.clone(), span
                     }),
-                    _ => Err(self.error("S003", format!("type '{}' cannot be indexed", arr.ty), token.span))
+                    _ => Err(self.error("S003", format!("type '{}' cannot be indexed", arr.ty), span))
                 }
             },
 
-            ASTNode::PathExpression { segments } => {
-                let path_strings: Vec<String> = segments.iter().map(|s| s.lexeme.to_string()).collect();
-                let abs_path = self.scope.resolve_path(&path_strings, &self.context);
-
-                if let Some(def_id) = self.global_symbols.get(&abs_path) {
-                    if let Some(info) = self.context.get_def(*def_id) {
-                        match &info.kind {
-                            DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } => {
-                                return Ok(HIRExpr { kind: HIRExprKind::VarRef(*def_id), ty: ty.clone(), span });
-                            }
-                            DefKind::Function { return_type: ty, .. } => {
-                                return Ok(HIRExpr { kind: HIRExprKind::VarRef(*def_id), ty: ty.clone(), span });
-                            }
-                            DefKind::Struct { .. } => {
-                                // For now, return a dummy expression or handle constructor logic.
-                                // If this path is used for a call (Rectangle::new), 
-                                // the MethodCallExpression handler will take over later.
-                                return Ok(HIRExpr { kind: HIRExprKind::VarRef(*def_id), ty: Type::STRUCT(abs_path.join("::")), span });
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                Err(self.error("S002", format!("undefined path: {}", path_strings.join("::")), span))
-            },
-
-            ASTNode::StructInitializer { name, fields } => {
-               let struct_name = match &*name {
-                    ASTNode::VariableExpression { name: n } => n.lexeme.to_string(),
-                    ASTNode::PathExpression { segments } => segments.iter().map(|s| s.lexeme).collect::<Vec<_>>().join("::"),
-                    _ => return Err(self.error("S002", "invalid struct name", span)),
-                };
-
-                let def_id = self.scope.resolve(&struct_name, &self.context)
-                    .ok_or_else(|| self.error("S002", format!("'{}' is not a defined struct", struct_name), span))?;
+            ASTExpr::StructInitializer { name, fields, .. } => {
+                let name_id = utils::get_expr_id(name);
+                let def_id = self.name_resolver.get_resolution(name_id)
+                    .ok_or_else(|| self.error("S002", "undefined struct", span))?;
 
                 let info = self.context.get_def(def_id).unwrap();
                 let absolute_struct_name = info.absolute_path.join("::");
 
                 let def_fields = match &info.kind {
                     DefKind::Struct { fields, .. } => fields.clone(),
-                    _ => return Err(self.error("S002", format!("'{}' is not a struct", struct_name), span)),
+                    _ => return Err(self.error("S002", "not a struct", span)),
                 }; 
 
                 let mut lowered_values = Vec::new();
@@ -194,13 +184,12 @@ impl Analyzer {
                     if *is_const { continue; }
 
                     if let Some((_, value_node)) = fields.iter().find(|(f_token, _)| f_token.lexeme == *def_name) {
-                        let mut val = self.lower_expr_with_type(*value_node.clone(), Some(def_type))?;
+                        let mut val = self.lower_expr_with_type(value_node, Some(def_type))?;
                         val = self.coerce_primitive(val, def_type);
 
                         if !self.check_type_compatibility(def_type, &val.ty) {
                             return Err(self.error("S001", format!("field '{}' expected {}, found {}", def_name, def_type, val.ty), span));
                         }
-
                         lowered_values.push(val);
                     } else {
                         return Err(self.error("S005", format!("missing field '{}'", def_name), span));
@@ -209,14 +198,14 @@ impl Analyzer {
 
                 Ok(HIRExpr {
                     kind: HIRExprKind::StructInit { def_id, values: lowered_values },
-                    ty: Type::STRUCT(absolute_struct_name),
+                    ty: IRType::STRUCT(absolute_struct_name),
                     span,
                 })
             },
 
-            ASTNode::BinaryExpression { left, operator, right } => {
-                let mut lhs = self.lower_expr_with_type(*left, expected)?;
-                let mut rhs = self.lower_expr_with_type(*right, Some(&lhs.ty))?;
+            ASTExpr::Binary { left, operator, right, .. } => {
+                let mut lhs = self.lower_expr_with_type(left, expected)?;
+                let mut rhs = self.lower_expr_with_type(right, Some(&lhs.ty))?;
 
                 if lhs.ty != rhs.ty {
                     let l_size = self.get_type_size(&lhs.ty).unwrap_or(0);
@@ -235,14 +224,14 @@ impl Analyzer {
                     TokenType::Star => (HIRBinOp::Mul, lhs.ty.clone()),
                     TokenType::ForwardSlash => (HIRBinOp::Div, lhs.ty.clone()),
                     TokenType::Modulo => (HIRBinOp::Mod, lhs.ty.clone()),
-                    TokenType::LeftAngle => (HIRBinOp::Lt, Type::BOOL),
-                    TokenType::LessEqual => (HIRBinOp::Le, Type::BOOL),
-                    TokenType::RightAngle => (HIRBinOp::Gt, Type::BOOL),
-                    TokenType::GreaterEqual => (HIRBinOp::Ge, Type::BOOL),
-                    TokenType::DoubleEqual => (HIRBinOp::Eq, Type::BOOL),
-                    TokenType::ExclamEqual => (HIRBinOp::Ne, Type::BOOL),
-                    TokenType::DoubleAmpersand => (HIRBinOp::And, Type::BOOL),
-                    TokenType::DoublePipe => (HIRBinOp::Or,  Type::BOOL),
+                    TokenType::LeftAngle => (HIRBinOp::Lt, IRType::BOOL),
+                    TokenType::LessEqual => (HIRBinOp::Le, IRType::BOOL),
+                    TokenType::RightAngle => (HIRBinOp::Gt, IRType::BOOL),
+                    TokenType::GreaterEqual => (HIRBinOp::Ge, IRType::BOOL),
+                    TokenType::DoubleEqual => (HIRBinOp::Eq, IRType::BOOL),
+                    TokenType::ExclamEqual => (HIRBinOp::Ne, IRType::BOOL),
+                    TokenType::DoubleAmpersand => (HIRBinOp::And, IRType::BOOL),
+                    TokenType::DoublePipe => (HIRBinOp::Or,  IRType::BOOL),
                     _ => return Err(self.error("S003", format!("unknown op: {}", operator.lexeme), operator.span))
                 };
                 
@@ -253,19 +242,12 @@ impl Analyzer {
                 })
             },
 
-            ASTNode::AssignmentExpression { target, operator, value } => {
-                let lowered_target = self.lower_expr_with_type(*target, None)?;
-                let mut lowered_value = self.lower_expr_with_type(*value, Some(&lowered_target.ty))?;
+            ASTExpr::Assignment { target, operator, value, .. } => {
+                let lowered_target = self.lower_expr_with_type(target, None)?;
+                let mut lowered_value = self.lower_expr_with_type(value, Some(&lowered_target.ty))?;
                 lowered_value = self.coerce_primitive(lowered_value, &lowered_target.ty);
                 
-                // Desugar +=, -=, etc immediately
-                let assign_value = if let Some(bin_op) = match operator.token_type {
-                    TokenType::PlusEqual => Some(HIRBinOp::Add),
-                    TokenType::MinusEqual => Some(HIRBinOp::Sub),
-                    TokenType::StarEqual => Some(HIRBinOp::Mul),
-                    TokenType::ForwardSlashEqual => Some(HIRBinOp::Div),
-                    _ => None,
-                } {
+                let assign_value = if let Some(bin_op) = crate::utils::get_binary_op_from_token(&operator.token_type) {
                     HIRExpr {
                         kind: HIRExprKind::Binary {
                             op: bin_op,
@@ -289,39 +271,26 @@ impl Analyzer {
                 })
             },
 
-            ASTNode::VariableExpression { name, .. } => {
-                let def_id = self.scope.resolve(name.lexeme, &self.context)
-                    .ok_or_else(|| self.error("S002", format!("undefined variable: {}", name.lexeme), name.span))?;
-                let info = self.context.get_def(def_id).unwrap();
-                match &info.kind {
-                    DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } | DefKind::Function { return_type: ty, .. } => {
-                        Ok(HIRExpr { kind: HIRExprKind::VarRef(def_id), ty: ty.clone(), span })
-                    },
-                    _ => Err(self.error("S003", format!("'{}' is not a variable", name.lexeme), name.span))
-                }
-            },
-
-            ASTNode::MemberExpression { object, property } => {
-                let lhs = self.lower_expr_with_type(*object, None)?;
+            ASTExpr::Member { object, property, .. } => {
+                let lhs = self.lower_expr_with_type(object, None)?;
                 
                 let actual_type = match &lhs.ty {
-                    Type::REF(inner) | Type::CONST_REF(inner) => inner.as_ref(),
+                    IRType::REF(inner) | IRType::CONST_REF(inner) => inner.as_ref(),
                     _ => &lhs.ty
                 };
                 
                 let lookup_type = match actual_type {
-                    Type::GENERIC_INSTANCE(base, _) => base.as_ref(),
+                    IRType::GENERIC_INSTANCE(base, _) => base.as_ref(),
                     other => other,
                 };
 
                 match lookup_type {
-                    Type::STRUCT(name) => {
-                        if let Some(def_id) = self.scope.resolve(name, &self.context) {
-                            if let Some(info) = self.context.get_def(def_id) {
+                    IRType::STRUCT(name) => {
+                        if let Some(def_id) = self.global_symbols.get(&name.split("::").map(|s| s.to_string()).collect::<Vec<_>>()) {
+                            if let Some(info) = self.context.get_def(*def_id) {
                                 if let DefKind::Struct { fields, .. } = &info.kind {
                                     if let Some(idx) = fields.iter().position(|(field_name, _, _)| field_name == &property.lexeme) {
                                         let (_, field_type, _) = &fields[idx];
-
                                         return Ok(HIRExpr {
                                             kind: HIRExprKind::FieldAccess { object: Box::new(lhs), field_index: idx },
                                             ty: field_type.clone(),
@@ -330,73 +299,59 @@ impl Analyzer {
                                     }
                                 }
                             }
-                        } else {
-                            return Err(self.error("S002", format!("ICE: absolute struct '{}' not found in global_symbols during field access", name), span));
                         }
-
                         Err(self.error("S005", format!("struct '{}' has no field '{}'", name, property.lexeme), property.span))
                     },
-
-                    Type::ARRAY(_, size) if property.lexeme == "len" => Ok(HIRExpr { kind: HIRExprKind::IntLiteral(*size as i64), ty: Type::I32, span }),
+                    IRType::ARRAY(_, size) if property.lexeme == "len" => Ok(HIRExpr { kind: HIRExprKind::IntLiteral(*size as i64), ty: IRType::I32, span }),
                     _ => Err(self.error("S005", format!("'{}' has no property '{}'", lhs.ty, property.lexeme), property.span))
                 }
             },
 
-            ASTNode::MethodCallExpression { object, method, arguments, generic_args } => {
-                let method_name = method.lexeme;
-                let span = method.span;
-
-                let lhs_expr = self.lower_expr_with_type(*object.clone(), None)?;
+            ASTExpr::MethodCall { object, method, arguments, generic_args, .. } => {
+                let lhs_expr = self.lower_expr_with_type(object, None)?;
                 let actual_type = match &lhs_expr.ty {
-                    Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) => inner.as_ref().clone(),
+                    IRType::REF(inner) | IRType::CONST_REF(inner) | IRType::POINTER(inner) => inner.as_ref().clone(),
                     _ => lhs_expr.ty.clone()
                 };
 
                 let lookup_type = match &actual_type {
-                    Type::GENERIC_INSTANCE(base, _) => *base.clone(),
+                    IRType::GENERIC_INSTANCE(base, _) => *base.clone(),
                     other => other.clone(),
                 };
 
                 let method_def_id = {
                     let struct_name = match &lookup_type {
-                        Type::STRUCT(name) => name.clone(),
+                        IRType::STRUCT(name) => name.clone(),
                         _ => return Err(self.error("S005", format!("type '{}' has no methods", actual_type), span)),
                     };
                     let type_methods = self.impl_registry.get(&struct_name)
                         .ok_or_else(|| self.error("S005", format!("type '{}' has no methods", actual_type), span))?;
 
-                    *type_methods.get(method_name)
-                        .ok_or_else(|| self.error("S005", format!("method '{}' not found", method_name), span))?
+                    *type_methods.get(method.lexeme)
+                        .ok_or_else(|| self.error("S005", format!("method '{}' not found", method.lexeme), span))?
                 };
                 
                 let info = self.context.get_def(method_def_id).unwrap();
                 let (param_types, return_type) = match &info.kind {
                     DefKind::Function { params, return_type, .. } => (params.clone(), return_type.clone()),
-                    _ => return Err(self.error("S003", format!("'{}' is not a function", method_name), span)),
+                    _ => return Err(self.error("S003", format!("'{}' is not a function", method.lexeme), span)),
                 };
                 
                 let mut args = Vec::new();
                 let expected_self_ty = param_types.first().ok_or_else(|| self.error("S004", "method expects self", span))?;
 
                 let self_arg = match (expected_self_ty, &lhs_expr.ty) {
-                    (Type::REF(inner), actual) | (Type::CONST_REF(inner), actual) 
+                    (IRType::REF(inner), actual) | (IRType::CONST_REF(inner), actual) 
                     if inner.as_ref() == actual => 
                     {
-                        let is_mut = matches!(expected_self_ty, Type::REF(_));
-
-                        let ty = if is_mut {
-                            Type::REF(Box::new(lhs_expr.ty.clone()))
-                        } else {
-                            Type::CONST_REF(Box::new(lhs_expr.ty.clone()))
-                        };
+                        let is_mut = matches!(expected_self_ty, IRType::REF(_));
+                        let ty = if is_mut { IRType::REF(Box::new(lhs_expr.ty.clone())) } else { IRType::CONST_REF(Box::new(lhs_expr.ty.clone())) };
 
                         HIRExpr {
                             kind: HIRExprKind::Borrow { is_mut, target: Box::new(lhs_expr) },
-                            ty,
-                            span
+                            ty, span
                         }
                     },
-
                     _ => lhs_expr
                 };
 
@@ -405,11 +360,7 @@ impl Analyzer {
                 for arg_node in arguments {
                     let expected_ty = param_types.get(args.len());
                     let mut lowered_arg = self.lower_expr_with_type(arg_node, expected_ty)?;
-
-                    if let Some(target) = expected_ty {
-                        lowered_arg = self.coerce_primitive(lowered_arg, target);
-                    }
-
+                    if let Some(target) = expected_ty { lowered_arg = self.coerce_primitive(lowered_arg, target); }
                     args.push(lowered_arg);
                 }
 
@@ -423,129 +374,59 @@ impl Analyzer {
                 })
             },
 
-            ASTNode::FunctionCallExpression { callee, mut arguments, generic_args } => {
-                let mut resolved_def_id = None;
-                let call_name_debug;
+            ASTExpr::FunctionCall { callee, arguments, generic_args, .. } => {
+                let call_name_debug = match &**callee {
+                    ASTExpr::Variable { name, .. } => name.lexeme.to_string(),
+                    ASTExpr::Path { segments, .. } => segments.iter().map(|s| s.lexeme).collect::<Vec<_>>().join("::"),
+                    _ => "".to_string()
+                };
 
-                match &*callee {
-                    ASTNode::VariableExpression { name } => {
-                        call_name_debug = name.lexeme.to_string();
-
-                        if call_name_debug == "print" || call_name_debug == "println" {
-                            let mut args = Vec::new();
-
-                            for arg in arguments { args.push(self.lower_expression(arg)?); }
-
-                            return Ok(HIRExpr {
-                                kind: HIRExprKind::BuiltinCall { name: call_name_debug, args },
-                                ty: Type::VOID,
-                                span
-                            });
-                        }
-
-                        if let Some(id) = self.scope.resolve(&call_name_debug, &self.context) {
-                            resolved_def_id = Some(id);
-                        }
-                    },
-
-                    ASTNode::PathExpression { segments } => {
-                        let method_name = segments.last().unwrap().lexeme;
-                        call_name_debug = segments.iter().map(|s| s.lexeme).collect::<Vec<_>>().join("::");
-                        
-                        let prefix_strings: Vec<String> = segments[..segments.len() - 1].iter()
-                            .map(|t| t.lexeme.to_string())
-                            .collect();
-
-                        let absolute_prefix = self.scope.resolve_path(&prefix_strings, &self.context);
-                        
-                        if let Some(def_id) = self.global_symbols.get(&absolute_prefix) {
-                            if let Some(info) = self.context.get_def(*def_id) {
-                                if matches!(info.kind, DefKind::Struct { .. }) {
-                                    let struct_ty = absolute_prefix.join("::");
-                                    if let Some(type_methods) = self.impl_registry.get(&struct_ty) {
-                                        if let Some(m_def_id) = type_methods.get(method_name) {
-                                            resolved_def_id = Some(*m_def_id);
-                                        }
-                                    }
-                                }
-                            }
-                        } else if !prefix_strings.is_empty() {
-                            let def_id_opt = self.global_symbols.get(&absolute_prefix).copied()
-                                .or_else(|| self.scope.resolve(&prefix_strings[0], &self.context));
-
-                            if let Some(def_id) = def_id_opt {
-                                if let Some(info) = self.context.get_def(def_id) {
-                                    if let DefKind::Variable { ty: prefix_ty, .. } = &info.kind {
-                                        let actual_ty = match prefix_ty {
-                                            Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) => inner.as_ref().clone(),
-                                            _ => prefix_ty.clone()
-                                        };
-
-                                        let struct_key = match &actual_ty {
-                                            Type::STRUCT(name) => name.clone(),
-                                            _ => String::new(),
-                                        };
-                                        
-                                        if let Some(type_methods) = self.impl_registry.get(&struct_key) {
-                                            if let Some(m_def_id) = type_methods.get(method_name) {
-                                                let prefix_tokens = segments[..segments.len() - 1].to_vec();
-                                                let self_node = if prefix_tokens.len() == 1 {
-                                                    ASTNode::VariableExpression { name: prefix_tokens[0].clone() }
-                                                } else {
-                                                    ASTNode::PathExpression { segments: prefix_tokens }
-                                                };
-
-                                                let m_info = self.context.get_def(*m_def_id).unwrap();
-                                                if let DefKind::Function { params, .. } = &m_info.kind {
-                                                    if let Some(expected_self) = params.first() {
-                                                        if matches!(expected_self, Type::REF(_) | Type::CONST_REF(_)) 
-                                                            && !matches!(prefix_ty, Type::REF(_) | Type::CONST_REF(_)) 
-                                                        {
-                                                            arguments.insert(0, ASTNode::UnaryExpression {
-                                                                operator: Token { token_type: TokenType::Ampersand, lexeme: "&", span: segments[0].span },
-                                                                right: Box::new(self_node)
-                                                            });
-                                                        } else {
-                                                            arguments.insert(0, self_node);
-                                                        }
-                                                    }
-                                                }
-
-                                                resolved_def_id = Some(*m_def_id);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if resolved_def_id.is_none() {
-                            let abs_path = self.scope.resolve_path(&segments.iter().map(|s| s.lexeme.to_string()).collect::<Vec<_>>(), &self.context);
-                            if let Some(id) = self.global_symbols.get(&abs_path) {
-                                resolved_def_id = Some(*id);
-                            }
-                        }
-                    },
-
-                    _ => {
-                        return Err(self.error("S006", "complex function calls (e.g. function pointers) are not yet supported", span));
-                    }
+                if call_name_debug == "print" || call_name_debug == "println" {
+                    let mut args = Vec::new();
+                    for arg in arguments { args.push(self.lower_expr(arg)?); }
+                    return Ok(HIRExpr {
+                        kind: HIRExprKind::BuiltinCall { name: call_name_debug, args },
+                        ty: IRType::VOID,
+                        span
+                    });
                 }
 
-                let def_id = resolved_def_id.ok_or_else(|| self.error("S002", format!("undefined function: {}", call_name_debug), span))?;
-                
+                // fetch the ID of the callee expression, not the outer FunctionCall
+                let callee_id = crate::utils::get_expr_id(callee);
+                let def_id = self.name_resolver.get_resolution(callee_id)
+                    .ok_or_else(|| self.error("S002", format!("undefined function `{}`", call_name_debug), span))?;    
+
                 let info = self.context.get_def(def_id).unwrap();
+
+                let actual_def_id = if let DefKind::Struct { .. } = info.kind {
+                    if let ASTExpr::Path { segments, .. } = &**callee {
+                        let method_name = segments.last().unwrap().lexeme;
+                        let struct_name = info.absolute_path.join("::");
+
+                        if let Some(type_methods) = self.impl_registry.get(&struct_name) {
+                            if let Some(&m_def_id) = type_methods.get(method_name) {
+                                m_def_id
+                            } else {
+                                return Err(self.error("S005", format!("struct `{}` has no associated function `{}`", struct_name, method_name), span));
+                            }
+                        } else {
+                            return Err(self.error("S005", format!("struct `{}` has no associated function `{}`", struct_name, method_name), span));
+                        }
+                    } else {
+                        return Err(self.error("S003", format!("target is a struct, not a function"), span));
+                    }
+                } else {
+                    def_id
+                };
+
                 let (param_types, return_type) = match &info.kind {
                     DefKind::Function { params, return_type, .. } => (params.clone(), return_type.clone()),
-                    _ => return Err(self.error("S003", format!("'{}' is not a function", call_name_debug), span)),
+                    _ => return Err(self.error("S003", format!("target is not a function"), span)),
                 };
 
                 let mut args = Vec::new();
-                for (i, node) in arguments.into_iter().enumerate() {
-                    let expected = param_types.get(i).and_then(|t| {
-                        // Don't use generic params as type hints — they're not concrete
-                        if matches!(t, Type::GENERIC(_)) { None } else { Some(t) }
-                    });
+                for (i, node) in arguments.iter().enumerate() {
+                    let expected = param_types.get(i).and_then(|t| if matches!(t, IRType::GENERIC(_)) { None } else { Some(t) });
                     let mut arg = self.lower_expr_with_type(node, expected)?;
                     if let Some(target) = expected { arg = self.coerce_primitive(arg, target); }
                     args.push(arg);
@@ -561,15 +442,14 @@ impl Analyzer {
                 })
             },
 
-            ASTNode::CastExpression { value, target } => {
-                let expr = self.lower_expr_with_type(*value, None)?;
-                let target_type = self.lower_type(*target)?;
+            ASTExpr::Cast { value, target, .. } => {
+                let expr = self.lower_expr_with_type(value, None)?;
+                let target_type = self.lower_type(target)?;
 
-                // Decide if this is a math cast or a pointer cast
                 let cast_kind = match (&expr.ty, &target_type) {
-                    (Type::REF(_), Type::POINTER(_)) |
-                    (Type::CONST_REF(_), Type::POINTER(_)) |
-                    (Type::POINTER(_), Type::POINTER(_)) => CastKind::Pointer,
+                    (IRType::REF(_), IRType::POINTER(_)) |
+                    (IRType::CONST_REF(_), IRType::POINTER(_)) |
+                    (IRType::POINTER(_), IRType::POINTER(_)) => CastKind::Pointer,
                     _ => CastKind::Numeric,
                 };
 
@@ -580,32 +460,22 @@ impl Analyzer {
                 })
             },
 
-            ASTNode::BorrowExpression { is_mut, right } => {
-                let target_expr = self.lower_expression(*right)?;
-
-                let ty = if is_mut {
-                    Type::REF(Box::new(target_expr.ty.clone()))
-                } else {
-                    Type::CONST_REF(Box::new(target_expr.ty.clone()))
-                };
+            ASTExpr::Borrow { is_mut, right, .. } => {
+                let target_expr = self.lower_expr(right)?;
+                let ty = if *is_mut { IRType::REF(Box::new(target_expr.ty.clone())) } else { IRType::CONST_REF(Box::new(target_expr.ty.clone())) };
 
                 Ok(HIRExpr {
-                    kind: HIRExprKind::Borrow { 
-                        is_mut, 
-                        target: Box::new(target_expr) 
-                    },
+                    kind: HIRExprKind::Borrow { is_mut: *is_mut, target: Box::new(target_expr) },
                     ty,
-                    span, // Ensure you pass the span from your AST node
+                    span, 
                 })
             }
 
-            ASTNode::DereferenceExpression { right } => {
-                let target_expr = self.lower_expression(*right)?;
+            ASTExpr::Dereference { right, .. } => {
+                let target_expr = self.lower_expr(right)?;
 
                 let inner_ty = match &target_expr.ty {
-                    Type::REF(inner) => *inner.clone(),
-                    Type::CONST_REF(inner) => *inner.clone(),
-                    Type::POINTER(inner) => *inner.clone(),
+                    IRType::REF(inner) | IRType::CONST_REF(inner) | IRType::POINTER(inner) => *inner.clone(),
                     _ => return Err(self.error("T004", format!("cannot dereference type `{}`", target_expr.ty), span)),
                 };
 
@@ -616,8 +486,8 @@ impl Analyzer {
                 })
             }
 
-            ASTNode::UnaryExpression { operator, right } => {
-                let rhs = self.lower_expr_with_type(*right, expected)?;
+            ASTExpr::Unary { operator, right, .. } => {
+                let rhs = self.lower_expr_with_type(right, expected)?;
                 match operator.token_type {
                     TokenType::Minus => Ok(HIRExpr {
                         kind: HIRExprKind::Unary { op: HIRUnaryOp::Neg, operand: Box::new(rhs.clone()) },
@@ -626,32 +496,220 @@ impl Analyzer {
 
                     TokenType::ExclamationMark => Ok(HIRExpr {
                         kind: HIRExprKind::Unary { op: HIRUnaryOp::Not, operand: Box::new(rhs) },
-                        ty: Type::BOOL, span
+                        ty: IRType::BOOL, span
                     }),
-
-                    TokenType::Ampersand => {
-                        let ty = Type::CONST_REF(Box::new(rhs.ty.clone()));
-                        Ok(HIRExpr {
-                            kind: HIRExprKind::Borrow { is_mut: false, target: Box::new(rhs) },
-                            ty, span
-                        })
-                    },
-
-                    TokenType::Star => {
-                        let inner_ty = match &rhs.ty {
-                            Type::REF(t) | Type::CONST_REF(t) | Type::POINTER(t) => *t.clone(),
-                            _ => return Err(self.error("S001", format!("cannot dereference '{}'", rhs.ty), operator.span)),
-                        };
-
-                        Ok(HIRExpr {
-                            kind: HIRExprKind::Dereference { target: Box::new(rhs) },
-                            ty: inner_ty, span
-                        })
-                    },
 
                     _ => Err(self.error("S003", format!("unknown unary op: {}", operator.lexeme), operator.span))
                 }
             },
+
+            ASTExpr::If { condition, then_branch, else_branch, .. } => {
+                let cond = self.lower_expr(condition)?;
+                let then_block = self.lower_block(then_branch)?;
+                let else_block = if let Some(eb) = else_branch { Some(Box::new(self.lower_block(eb)?)) } else { None };
+
+                Ok(HIRExpr {
+                    kind: HIRExprKind::If { cond: Box::new(cond), then_block: Box::new(then_block), else_block },
+                    ty: IRType::VOID,
+                    span
+                })
+            },
+
+            ASTExpr::While { condition, body, .. } => {
+                let cond_expr = self.lower_expr(condition)?;
+                
+                let break_expr = HIRExpr { kind: HIRExprKind::Break, ty: IRType::VOID, span };
+                let not_cond = HIRExpr {
+                    kind: HIRExprKind::Unary { op: HIRUnaryOp::Not, operand: Box::new(cond_expr) },
+                    ty: IRType::BOOL,
+                    span
+                };
+                
+                let break_if = HIRExpr {
+                    kind: HIRExprKind::If {
+                        cond: Box::new(not_cond),
+                        then_block: Box::new(HIRBlock { stmts: vec![HIRStmt::Expr(break_expr)], span }),
+                        else_block: None,
+                    },
+                    ty: IRType::VOID,
+                    span,
+                };
+
+                let mut loop_stmts = vec![HIRStmt::Expr(break_if)];
+                loop_stmts.extend(self.lower_block(body)?.stmts);
+
+                Ok(HIRExpr {
+                    kind: HIRExprKind::Loop(Box::new(HIRBlock { stmts: loop_stmts, span })),
+                    ty: IRType::VOID,
+                    span
+                })
+            },
+
+            ASTExpr::For { id, variable, start, end, is_inclusive, body } => {
+                let start_expr = self.lower_expr(start)?;
+                let end_expr = self.lower_expr(end)?;
+
+                let var_def_id = self.name_resolver.get_resolution(*id)
+                    .ok_or_else(|| self.error("S002", "loop variable definition not found", variable.span))?;
+                
+                let mut info = self.context.get_def(var_def_id).unwrap().clone();
+                info.kind = DefKind::Variable { ty: start_expr.ty.clone(), is_mutable: true };
+                self.context.update_def(var_def_id, info);
+
+                let init_stmt = HIRStmt::VarDecl { 
+                    def_id: var_def_id, 
+                    init: Some(start_expr.clone()), 
+                    span: variable.span 
+                };
+
+                let op = if *is_inclusive { HIRBinOp::Gt } else { HIRBinOp::Ge };
+                let check_cond = HIRExpr {
+                    kind: HIRExprKind::Binary {
+                        op,
+                        lhs: Box::new(HIRExpr { kind: HIRExprKind::VarRef(var_def_id), ty: start_expr.ty.clone(), span: variable.span }),
+                        rhs: Box::new(end_expr)
+                    },
+                    ty: IRType::BOOL,
+                    span: variable.span
+                };
+                let break_if = HIRExpr {
+                    kind: HIRExprKind::If {
+                        cond: Box::new(check_cond),
+                        then_block: Box::new(HIRBlock { stmts: vec![HIRStmt::Expr(HIRExpr { kind: HIRExprKind::Break, ty: IRType::VOID, span })], span }),
+                        else_block: None,
+                    },
+                    ty: IRType::VOID,
+                    span,
+                };
+
+                let mut loop_stmts = vec![HIRStmt::Expr(break_if)];
+                loop_stmts.extend(self.lower_block(body)?.stmts);
+
+                let increment_expr = HIRExpr {
+                    kind: HIRExprKind::Assign {
+                        target: Box::new(HIRExpr { kind: HIRExprKind::VarRef(var_def_id), ty: start_expr.ty.clone(), span: variable.span }),
+                        value: Box::new(HIRExpr {
+                            kind: HIRExprKind::Binary {
+                                op: HIRBinOp::Add,
+                                lhs: Box::new(HIRExpr { kind: HIRExprKind::VarRef(var_def_id), ty: start_expr.ty.clone(), span: variable.span }),
+                                rhs: Box::new(HIRExpr { kind: HIRExprKind::IntLiteral(1), ty: start_expr.ty.clone(), span: variable.span })
+                            },
+                            ty: start_expr.ty.clone(),
+                            span: variable.span
+                        })
+                    },
+                    ty: start_expr.ty,
+                    span: variable.span
+                };
+                loop_stmts.push(HIRStmt::Expr(increment_expr));
+
+                let loop_expr = HIRExpr {
+                    kind: HIRExprKind::Loop(Box::new(HIRBlock { stmts: loop_stmts, span })),
+                    ty: IRType::VOID,
+                    span
+                };
+
+                Ok(HIRExpr {
+                    kind: HIRExprKind::Block(HIRBlock { stmts: vec![init_stmt, HIRStmt::Expr(loop_expr)], span }),
+                    ty: IRType::VOID,
+                    span
+                })
+            },
+
+            ASTExpr::ForEach { id, item, iterable, body } => {
+                let iter_expr = self.lower_expr(iterable)?;
+                let (inner_ty, array_len) = match &iter_expr.ty {
+                    IRType::ARRAY(inner, size) => (*inner.clone(), *size as i64),
+                    _ => return Err(self.error("S014", "foreach requires an array", item.span)),
+                };
+
+                // Create hidden array def
+                let arr_name = format!("_iter_arr_{}", item.span.line);
+                let arr_info = SymbolInfo { name: arr_name.clone(), span: item.span, absolute_path: vec![arr_name.clone()], kind: DefKind::Variable { ty: iter_expr.ty.clone(), is_mutable: false }, is_pub: false };
+                let arr_def = self.context.insert_def(arr_info);
+                let init_arr = HIRStmt::VarDecl { def_id: arr_def, init: Some(iter_expr.clone()), span: item.span };
+
+                // Create index def
+                let idx_name = format!("_idx_{}", item.span.line);
+                let idx_info = SymbolInfo { name: idx_name.clone(), span: item.span, absolute_path: vec![idx_name.clone()], kind: DefKind::Variable { ty: IRType::I32, is_mutable: true }, is_pub: false };
+                let idx_def = self.context.insert_def(idx_info);
+                let init_idx = HIRStmt::VarDecl { def_id: idx_def, init: Some(HIRExpr { kind: HIRExprKind::IntLiteral(0), ty: IRType::I32, span: item.span }), span: item.span };
+
+                let mut loop_stmts = Vec::new();
+
+                let break_cond = HIRExpr {
+                    kind: HIRExprKind::Binary {
+                        op: HIRBinOp::Ge,
+                        lhs: Box::new(HIRExpr { kind: HIRExprKind::VarRef(idx_def), ty: IRType::I32, span: item.span }),
+                        rhs: Box::new(HIRExpr { kind: HIRExprKind::IntLiteral(array_len), ty: IRType::I32, span: item.span })
+                    },
+                    ty: IRType::BOOL,
+                    span: item.span
+                };
+
+                let break_if = HIRExpr {
+                    kind: HIRExprKind::If {
+                        cond: Box::new(break_cond),
+                        then_block: Box::new(HIRBlock { stmts: vec![HIRStmt::Expr(HIRExpr { kind: HIRExprKind::Break, ty: IRType::VOID, span: item.span })], span: item.span }),
+                        else_block: None
+                    },
+                    ty: IRType::VOID,
+                    span: item.span
+                };
+                loop_stmts.push(HIRStmt::Expr(break_if));
+
+                let item_def = self.name_resolver.get_resolution(*id).unwrap();
+                let mut item_info = self.context.get_def(item_def).unwrap().clone();
+                item_info.kind = DefKind::Variable { ty: inner_ty.clone(), is_mutable: false };
+                self.context.update_def(item_def, item_info);
+
+                let init_item = HIRStmt::VarDecl {
+                    def_id: item_def,
+                    init: Some(HIRExpr {
+                        kind: HIRExprKind::ArrayAccess {
+                            array: Box::new(HIRExpr { kind: HIRExprKind::VarRef(arr_def), ty: iter_expr.ty, span: item.span }),
+                            index: Box::new(HIRExpr { kind: HIRExprKind::VarRef(idx_def), ty: IRType::I32, span: item.span })
+                        },
+                        ty: inner_ty.clone(),
+                        span: item.span
+                    }),
+                    span: item.span
+                };
+                loop_stmts.push(init_item);
+
+                loop_stmts.extend(self.lower_block(body)?.stmts);
+
+                let inc_idx = HIRExpr {
+                    kind: HIRExprKind::Assign {
+                        target: Box::new(HIRExpr { kind: HIRExprKind::VarRef(idx_def), ty: IRType::I32, span: item.span }),
+                        value: Box::new(HIRExpr {
+                            kind: HIRExprKind::Binary {
+                                op: HIRBinOp::Add,
+                                lhs: Box::new(HIRExpr { kind: HIRExprKind::VarRef(idx_def), ty: IRType::I32, span: item.span }),
+                                rhs: Box::new(HIRExpr { kind: HIRExprKind::IntLiteral(1), ty: IRType::I32, span: item.span })
+                            },
+                            ty: IRType::I32,
+                            span: item.span
+                        })
+                    },
+                    ty: IRType::I32,
+                    span: item.span
+                };
+                loop_stmts.push(HIRStmt::Expr(inc_idx));
+
+                let loop_expr = HIRExpr {
+                    kind: HIRExprKind::Loop(Box::new(HIRBlock { stmts: loop_stmts, span: item.span })),
+                    ty: IRType::VOID,
+                    span: item.span
+                };
+
+                Ok(HIRExpr {
+                    kind: HIRExprKind::Block(HIRBlock { stmts: vec![init_arr, init_idx, HIRStmt::Expr(loop_expr)], span: item.span }),
+                    ty: IRType::VOID,
+                    span: item.span
+                })
+            },
+            
             _ => Err(self.error("S006", format!("expression not supported: {:?}", node), span)),
         }
     }

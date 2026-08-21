@@ -18,25 +18,19 @@ pub struct Monomorphizer<'a> {
 
 impl<'a> Monomorphizer<'a> {
 
-    // Helper to detect if a function belongs to a generic struct
-    // (e.g. `Shape::new` belongs to the generic `Shape`)
     fn is_function_generic(func: &HIRFunction, context: &HIRContext) -> bool {
         if !func.generic_params.is_empty() { return true; }
 
         let parts: Vec<&str> = func.name.split("::").collect();
         if parts.len() > 1 {
-            // Extract everything EXCEPT the method name (e.g., "math::Shape::new" -> "math::Shape")
             let struct_name = parts[..parts.len() - 1].join("::");
-
             if let Some(def_id) = context.find_struct_by_name(&struct_name) {
                 let info = context.get_def(def_id).unwrap();
-
                 if let DefKind::Struct { generic_params, .. } = &info.kind {
                     return !generic_params.is_empty();
                 }
             }
         }
-
         false
     }
 
@@ -46,7 +40,6 @@ impl<'a> Monomorphizer<'a> {
         let mut worklist = Vec::new();
 
         for func in program.functions {
-            // FIX 1: Use the helper to skip un-monomorphized extension methods
             if !Self::is_function_generic(&func, context) {
                 worklist.push((func.def_id, vec![], func.def_id));
                 specialized_functions.push(func.clone());
@@ -106,7 +99,6 @@ impl<'a> Monomorphizer<'a> {
                 match &mut info.kind {
                     DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } => {
                         *ty = ty.substitute(&substitutions);
-                        // Pass subs into resolve_type
                         *ty = self.resolve_type(&ty.clone(), &substitutions);
                     }
                     _ => {}
@@ -127,7 +119,6 @@ impl<'a> Monomorphizer<'a> {
 
                 if let Some(init_expr) = init {
                     self.substitute_expr(init_expr, subs);
-                    // Grab the cleanly resolved type (e.g. Shape__i32) from the expression!
                     resolved_init_ty = Some(init_expr.ty.clone()); 
                 }
 
@@ -135,7 +126,7 @@ impl<'a> Monomorphizer<'a> {
                     match &mut info.kind {
                         DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } => {
                             if let Some(init_ty) = resolved_init_ty {
-                                *ty = init_ty; // Inherit perfectly!
+                                *ty = init_ty; 
                             } else {
                                 *ty = ty.substitute(subs);
                                 *ty = self.resolve_type(&ty.clone(), subs);
@@ -182,7 +173,7 @@ impl<'a> Monomorphizer<'a> {
             HIRExprKind::Loop(block) => {
                 for s in &mut block.stmts { self.substitute_stmt(s, subs); }
             }
-
+            
             HIRExprKind::Block(block) => {
                 for s in &mut block.stmts { self.substitute_stmt(s, subs); }
             }
@@ -205,7 +196,6 @@ impl<'a> Monomorphizer<'a> {
                         
                         let concrete_args: Vec<Type> = generic_params.iter()
                             .map(|name| {
-                                // Fallback to `subs` if the field inference missed it
                                 inferred.get(name)
                                     .or_else(|| subs.get(name))
                                     .cloned()
@@ -276,7 +266,6 @@ impl<'a> Monomorphizer<'a> {
                             let specialized_callee = self.get_or_create_specialization(*callee, concrete_args);
                             *callee = specialized_callee;
 
-                            // Pass local_subs into resolve_type
                             expr.ty = self.resolve_type(&original_type.substitute(&local_subs), &local_subs);
                         }
                     }
@@ -309,7 +298,6 @@ impl<'a> Monomorphizer<'a> {
 
         if let DefKind::Function { params, return_type, annotations, .. } = generic_info.kind {
             specialized_info.kind = DefKind::Function {
-                // Pass subs into resolve_type
                 params: params.into_iter().map(|ty| self.resolve_type(&ty.substitute(&subs), &subs)).collect(),
                 return_type: self.resolve_type(&return_type.substitute(&subs), &subs),
                 generic_params: vec![],
@@ -356,7 +344,6 @@ impl<'a> Monomorphizer<'a> {
 
         let concrete_fields = match &generic_info.kind {
             DefKind::Struct { fields, .. } => fields.iter()
-                // Pass subs into resolve_type
                 .map(|(name, ty, is_mut)| (name.clone(), self.resolve_type(&ty.substitute(&subs), &subs), *is_mut))
                 .collect::<Vec<_>>(),
             _ => panic!("expected struct"),
@@ -370,7 +357,7 @@ impl<'a> Monomorphizer<'a> {
                 fields: concrete_fields,
                 generic_params: vec![],
             },
-            is_pub: generic_info.is_pub
+            is_pub: generic_info.is_pub,
         };
         
         let concrete_def_id = self.context.insert_def(concrete_info);
@@ -379,7 +366,6 @@ impl<'a> Monomorphizer<'a> {
         (concrete_def_id, mangled_name)
     }
 
-    // FIX 2: Modified resolve_type to take the current `subs` context map
     fn resolve_type(&mut self, ty: &Type, subs: &HashMap<String, Type>) -> Type {
         match ty {
             Type::GENERIC_INSTANCE(base, args) => {
@@ -406,7 +392,6 @@ impl<'a> Monomorphizer<'a> {
                     let info = self.context.get_def(def_id).unwrap();
                     if let DefKind::Struct { generic_params, .. } = &info.kind {
                         if !generic_params.is_empty() {
-                            // FIX: Only auto-deduce if we have EVERY substitution!
                             let mut can_specialize = true;
                             let mut concrete_args = Vec::new();
 
@@ -423,8 +408,6 @@ impl<'a> Monomorphizer<'a> {
                                 let (_, mangled) = self.get_or_create_struct_specialization(def_id, concrete_args);
                                 return Type::STRUCT(mangled);
                             }
-                            // If we couldn't find them all, return the unspecialized struct 
-                            // and let the expression/call logic figure it out later.
                         }
                     }
                 }
