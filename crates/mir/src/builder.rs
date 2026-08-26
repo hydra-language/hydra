@@ -197,7 +197,7 @@ impl<'a> MIRBuilder<'a> {
                 // 3. extract the Place from the evaluated target
                 let target_place = match target_op {
                     Operand::Copy(p) | Operand::Move(p) => p,
-                    Operand::Const(_) => panic!("Cannot assign to a constant literal"),
+                    Operand::Const(_) => panic!("ICE: semantic analysis allowed assignment to a non-place"),
                 };
 
                 // 4. emit the assignment using the dynamically resolved place
