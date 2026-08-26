@@ -1,37 +1,37 @@
 use std::collections::HashMap;
 
-use parser::ast::*;
-use parser::program::Program as ASTProgram;
+use parser::{ast::*, module::SourceMap};
+use parser::module::{self, ModuleTree};
 use ir::context::{HIRContext, DefID, DefKind, SymbolInfo};
 use errors::error::{HydraError, Span};
 
 use crate::scope::{NameResolver, Namespace, Scope};
 
-pub struct Resolver<'a, 'ctx> {
-    program: &'a ASTProgram<'a>,
+pub struct Resolver<'ctx> {
+    program: &'ctx ModuleTree,
     pub context: &'ctx mut HIRContext,
+    pub source_map: &'ctx SourceMap,
     pub name_resolver: NameResolver,
-    
-    // global registry for module-level lookups
     pub global_symbols: HashMap<Vec<String>, DefID>,
-    
-    // scope management
     current_scope: Scope,
+    current_filepath: String,
     current_module: Vec<String>,
     current_source: String,
-    
     pub errors: Vec<HydraError>,
 }
 
-impl<'a, 'ctx> Resolver<'a, 'ctx> {
+impl<'ctx> Resolver<'ctx> {
 
-    pub fn new(program: &'a ASTProgram<'a>, context: &'ctx mut HIRContext) -> Self {
+    pub fn new(program: &'ctx ModuleTree, context: &'ctx mut HIRContext, source_map: &'ctx SourceMap) -> Self 
+    {
         Self {
             program,
             context,
+            source_map,
             name_resolver: NameResolver::new(),
             global_symbols: HashMap::new(),
             current_scope: Scope::new(vec![]),
+            current_filepath: String::new(),
             current_module: vec![],
             current_source: String::new(),
             errors: Vec::new(),
@@ -39,20 +39,16 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
     }
 
     fn error(&mut self, span: Span, code: &'static str, message: impl Into<String>) {
-        let filename = if self.current_module.is_empty() {
-            "main.hydra".to_string()
+        let filename = if self.current_filepath.is_empty() {
+            "<unknown>".to_string()
         } else {
-            format!("{}.hydra", self.current_module.join("/"))
+            self.current_filepath.clone()
         };
 
         self.errors.push(
             HydraError::new(code, message, span).with_file(filename, self.current_source.clone())
         );
     }
-
-    // ========================================================================
-    // SCOPE MANAGEMENT
-    // ========================================================================
 
     fn enter_scope(&mut self) {
         let parent = std::mem::replace(&mut self.current_scope, Scope::new(self.current_module.clone()));
@@ -65,63 +61,61 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
         }
     }
 
-    // ========================================================================
-    // RESOLUTION PIPELINE
-    // ========================================================================
-
     pub fn resolve(mut self) -> Result<(NameResolver, HashMap<Vec<String>, DefID>), Vec<HydraError>> {
-        // pass 1: populate global scopes (structs, traits, functions)
         self.harvest_globals();
 
-        if !self.errors.is_empty() {
-            return Err(self.errors);
-        }
 
-        // pass 2: walk bodies, resolve usages, and build the side-table
+        if !self.errors.is_empty() { return Err(self.errors); }
+
         self.resolve_bodies();
-
-        if !self.errors.is_empty() {
-            Err(self.errors)
-        } else {
-            Ok((self.name_resolver, self.global_symbols))
-        }
+        if !self.errors.is_empty() { Err(self.errors) } else { Ok((self.name_resolver, self.global_symbols)) }
     }
 
-    // ========================================================================
-    // PASS 1: HARVESTING
-    // ========================================================================
-
     fn harvest_globals(&mut self) {
-        for (module_path, (source, items)) in &self.program.modules {
+        for (filepath, (module_path, items)) in &self.program.parsed_files {
             self.current_module = module_path.clone();
-            self.current_source = source.to_string();
+            self.current_filepath = filepath.display().to_string();
+            self.current_source = self.source_map.get_source(filepath).unwrap_or("").to_string();
 
             for item in items {
                 match item {
+
                     Item::Struct(decl) => {
                         let mut full_path = self.current_module.clone();
                         full_path.push(decl.name.lexeme.to_string());
 
-                        // insert a dummy definition for now. semantic analyzer will fill in the real fields/types.
                         let info = SymbolInfo {
                             name: decl.name.lexeme.to_string(),
                             span: decl.name.span,
                             absolute_path: full_path.clone(),
-                            kind: DefKind::Struct { fields: vec![], generic_params: vec![] },
+                            kind: DefKind::Struct {
+                                fields: vec![],
+                                generic_params: decl
+                                    .generic_params
+                                    .iter()
+                                    .map(|p| p.name.lexeme.clone())
+                                    .collect(),
+                            },
                             is_pub: decl.is_pub,
                         };
-                        
-                        let def_id = self.context.insert_def(info);
-                        self.global_symbols.insert(full_path, def_id);
 
-                        self.name_resolver.record_resolution(decl.id, def_id);
+                        let def_id = self.context.insert_def(info);
+
+                        self.global_symbols.insert(
+                            full_path.clone(),
+                            def_id,
+                        );
+
+                        self.name_resolver.record_resolution(
+                            decl.id,
+                            def_id,
+                        );
                     }
 
                     Item::Trait(decl) => {
                         let mut full_path = self.current_module.clone();
                         full_path.push(decl.name.lexeme.to_string());
 
-                        // traits act like structs in the type namespace conceptually for bounds
                         let info = SymbolInfo {
                             name: decl.name.lexeme.to_string(),
                             span: decl.name.span,
@@ -143,10 +137,8 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
                             span: decl.name.span,
                             absolute_path: full_path.clone(),
                             kind: DefKind::Function { 
-                                params: vec![], 
-                                annotations: vec![], 
-                                return_type: ir::types::Type::VOID, 
-                                generic_params: vec![] 
+                                params: vec![], annotations: vec![], return_type: ir::types::Type::VOID, generic_params: vec![],
+                                intrinsic: None
                             },
                             is_pub: decl.is_pub,
                         };
@@ -155,7 +147,7 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
                         self.global_symbols.insert(full_path, def_id);
                     }
 
-                    _ => {} // extensions don't introduce top-level names, they attach to existing ones
+                    _ => {} 
                 }
             }
         }
@@ -166,43 +158,94 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
     // ========================================================================
 
     fn resolve_bodies(&mut self) {
-        for (module_path, (source, items)) in &self.program.modules {
+        for (filepath, (module_path, items)) in &self.program.parsed_files {
             self.current_module = module_path.clone();
-            self.current_source = source.to_string();
-            
-            // clear the scope and rebuild it with globals for this module
+            self.current_filepath = filepath.display().to_string();
+            self.current_source = self.source_map.get_source(filepath).unwrap_or("").to_string();
             self.current_scope = Scope::new(self.current_module.clone());
             
-            // inject local module globals into scope
+            // 1. Inject local module globals into scope
             for (path, &def_id) in &self.global_symbols {
                 if path.len() > 0 && path.starts_with(&self.current_module) && path.len() == self.current_module.len() + 1 {
                     let local_name = path.last().unwrap().clone();
-                    
-                    // functions go in value namespace, types in type namespace
                     let info = self.context.get_def(def_id).unwrap();
                     let namespace = match info.kind {
                         DefKind::Function { .. } | DefKind::Constant { .. } | DefKind::Variable { .. } => Namespace::Value,
                         _ => Namespace::Type,
                     };
-
                     self.current_scope.define(namespace, local_name, def_id).ok();
                 }
             }
 
-            // walk the items
+            for item in items {
+                if let Item::Include(decl) = item {
+                    if let Type::Path { segments, .. } = &decl.path {
+                        let base_path: Vec<String> = segments.iter().map(|s| s.lexeme.clone()).collect();
+                        
+                        if let Some(syms) = &decl.symbols {
+                            for sym in syms {
+                                let mut full_path = base_path.clone();
+                                full_path.push(sym.lexeme.clone());
+                                
+                                if let Some(&def_id) = self.global_symbols.get(&full_path) {
+                                    let info = self.context.get_def(def_id).unwrap();
+                                    let namespace = match info.kind {
+                                        DefKind::Function { .. } | DefKind::Constant { .. } | DefKind::Variable { .. } => Namespace::Value,
+                                        _ => Namespace::Type,
+                                    };
+                                    self.current_scope.define_or_update(namespace, sym.lexeme.clone(), def_id);
+                                } else {
+                                    self.error(sym.span, "R003", format!("could not resolve import `{}`", full_path.join("::")));
+                                }
+                            }
+                        } else {
+                            let local_name = if let Some(alias) = &decl.alias {
+                                alias.lexeme.clone()
+                            } else {
+                                segments.last().unwrap().lexeme.clone()
+                            };
+
+                            if let Some(&def_id) = self.global_symbols.get(&base_path) {
+                                let info = self.context.get_def(def_id).unwrap();
+                                let namespace = match info.kind {
+                                    DefKind::Function { .. } | DefKind::Constant { .. } | DefKind::Variable { .. } => Namespace::Value,
+                                    _ => Namespace::Type,
+                                };
+                                self.current_scope.define_or_update(namespace, local_name, def_id);
+                            
+                            } else if self.program.is_module(&base_path) {
+                                let info = SymbolInfo {
+                                    name: local_name.clone(),
+                                    span: segments[0].span,
+                                    absolute_path: base_path.clone(), 
+                                    kind: DefKind::Alias { target_path: base_path.clone() },
+                                    is_pub: false,
+                                };
+                                let def_id = self.context.insert_def(info);
+                                self.current_scope.define_or_update(Namespace::Type, local_name, def_id);
+                            } else {
+                                self.error(segments[0].span, "R003", format!("could not resolve import `{}`", base_path.join("::")));
+                            }
+                        }
+                    }
+                }
+            }
+
             for item in items {
                 self.resolve_item(item);
             }
         }
     }
 
-    fn resolve_item(&mut self, item: &Item<'a>) {
+    fn resolve_item(&mut self, item: &Item) {
         match item {
             Item::Struct(decl) => {
                 self.enter_scope();
 
                 let mut full_path = self.current_module.clone();
                 full_path.push(decl.name.lexeme.to_string());
+
+
                 if let Some(&struct_def_id) = self.global_symbols.get(&full_path) {
                     self.current_scope.define(Namespace::Type, "Self".to_string(), struct_def_id).ok();
                 }
@@ -213,7 +256,7 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
                         name: param.name.lexeme.to_string(),
                         span: param.name.span,
                         absolute_path: vec![param.name.lexeme.to_string()],
-                        kind: DefKind::Alias { target_path: vec![] }, // placeholder for generic
+                        kind: DefKind::GenericParam,
                         is_pub: false,
                     };
                     let def_id = self.context.insert_def(info);
@@ -254,7 +297,8 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
                             params: vec![], 
                             annotations: vec![], 
                             return_type: ir::types::Type::VOID, 
-                            generic_params: vec![] 
+                            generic_params: vec![],
+                            intrinsic: None
                         },
                         is_pub: method.is_pub,
                     };
@@ -275,28 +319,47 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
                     let info = SymbolInfo {
                         name: param.name.lexeme.to_string(),
                         span: param.name.span,
-                        absolute_path: vec![param.name.lexeme.to_string()],
-                        kind: DefKind::Alias { target_path: vec![] }, 
+                        absolute_path: vec![],
+                        kind: DefKind::GenericParam,
                         is_pub: false,
                     };
+
                     let def_id = self.context.insert_def(info);
                     self.current_scope.define(Namespace::Type, param.name.lexeme.to_string(), def_id).ok();
                     self.name_resolver.record_resolution(param.id, def_id);
                 }
 
-                for (name_token, ty) in &decl.parameters {
+                for (param_index, (name_token, ty)) in decl.parameters.iter().enumerate() {
                     self.resolve_type(ty);
-                    
-                    // add parameters to the value namespace
+
                     let info = SymbolInfo {
                         name: name_token.lexeme.to_string(),
                         span: name_token.span,
                         absolute_path: vec![name_token.lexeme.to_string()],
-                        kind: DefKind::Variable { ty: ir::types::Type::VOID, is_mutable: true },
+                        kind: DefKind::Variable {
+                            ty: ir::types::Type::VOID,
+                            is_mutable: true,
+                        },
                         is_pub: false,
                     };
+
                     let def_id = self.context.insert_def(info);
-                    self.current_scope.define(Namespace::Value, name_token.lexeme.to_string(), def_id).ok();
+
+                    self.current_scope
+                        .define(
+                            Namespace::Value,
+                            name_token.lexeme.to_string(),
+                            def_id,
+                        )
+                        .ok();
+
+                    // this is the declaration DefID that all uses of this
+                    // parameter inside the function already resolve to
+                    self.name_resolver.record_parameter(
+                        decl.id,
+                        param_index,
+                        def_id,
+                    );
                 }
 
                 if let Some(rt) = &decl.return_type {
@@ -318,16 +381,24 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
                 self.enter_scope();
 
                 for param in &decl.generic_params {
-                    let info = SymbolInfo { 
-                        name: param.name.lexeme.to_string(), 
-                        span: param.name.span, 
-                        absolute_path: vec![], 
-                        kind: DefKind::Alias { target_path: vec![] }, 
-                        is_pub: false 
+                    let info = SymbolInfo {
+                        name: param.name.lexeme.to_string(),
+                        span: param.name.span,
+                        absolute_path: vec![],
+                        kind: DefKind::GenericParam,
+                        is_pub: false,
                     };
 
                     let def_id = self.context.insert_def(info);
-                    self.current_scope.define(Namespace::Type, param.name.lexeme.to_string(), def_id).ok();
+
+                    self.current_scope
+                        .define(
+                            Namespace::Type,
+                            param.name.lexeme.to_string(),
+                            def_id,
+                        )
+                        .ok();
+
                     self.name_resolver.record_resolution(param.id, def_id);
                 }
 
@@ -353,7 +424,8 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
                             params: vec![], 
                             annotations: vec![], 
                             return_type: ir::types::Type::VOID, 
-                            generic_params: vec![] 
+                            generic_params: vec![],
+                            intrinsic: None
                         },
                         is_pub: method.is_pub,
                     };
@@ -375,7 +447,7 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
     // STATEMENTS AND EXPRESSIONS
     // ========================================================================
 
-    fn resolve_block(&mut self, block: &Block<'a>) {
+    fn resolve_block(&mut self, block: &Block) {
         self.enter_scope();
         for stmt in &block.statements {
             self.resolve_stmt(stmt);
@@ -383,7 +455,7 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
         self.leave_scope();
     }
 
-    fn resolve_stmt(&mut self, stmt: &Stmt<'a>) {
+    fn resolve_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::VariableDecl { id, name, type_annotation, initializer, .. } => {
                 if let Some(ty) = type_annotation { 
@@ -413,13 +485,13 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
         }
     }
 
-    fn resolve_expr(&mut self, expr: &Expr<'a>) {
+    fn resolve_expr(&mut self, expr: &Expr) {
         match expr {
             Expr::Variable { id, name } => {
                 if name.lexeme == "print" || name.lexeme == "println" { return; }
 
-                if let Some(def_id) = self.current_scope.resolve(Namespace::Value, name.lexeme, self.context)
-                    .or_else(|| self.current_scope.resolve(Namespace::Type, name.lexeme, self.context)) 
+                if let Some(def_id) = self.current_scope.resolve(Namespace::Value, &name.lexeme, self.context)
+                    .or_else(|| self.current_scope.resolve(Namespace::Type, &name.lexeme, self.context)) 
                 {
                     self.name_resolver.record_resolution(*id, def_id);
                 } else {
@@ -432,13 +504,74 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
                     return; 
                 }
 
-                if let Some(def_id) = self.current_scope.resolve(Namespace::Value, segments[0].lexeme, self.context)
-                    .or_else(|| self.current_scope.resolve(Namespace::Type, segments[0].lexeme, self.context))
-                {
-                    self.name_resolver.record_resolution(*id, def_id);
-                } else {
-                    self.error(segments[0].span, "R001", format!("cannot find value `{}` in this scope", segments[0].lexeme));
+                if segments.len() == 2 {
+                    if let Some(def_id) = self.current_scope.resolve(Namespace::Value, &segments[0].lexeme, self.context) {
+                        let info = self.context.get_def(def_id).unwrap();
+                        if matches!(info.kind, DefKind::Variable { .. }) {
+                            self.name_resolver.record_resolution(*id, def_id);
+                            return;
+                        }
+                    }
                 }
+
+                let path_strings: Vec<String> = segments.iter().map(|s| s.lexeme.clone()).collect();
+
+                if segments.len() == 1 {
+                    if let Some(def_id) = self.current_scope.resolve(Namespace::Value, &segments[0].lexeme, self.context)
+                        .or_else(|| self.current_scope.resolve(Namespace::Type, &segments[0].lexeme, self.context))
+                    {
+                        self.name_resolver.record_resolution(*id, def_id);
+                        return;
+                    }
+                }
+
+                let absolute_path = self.current_scope.resolve_path(&path_strings, self.context);
+
+                // first try the complete path normally.
+                //
+                // examples:
+                //     ops::multiply
+                //     ops::Math
+                if let Some(&def_id) = self.global_symbols.get(&absolute_path) {
+                    self.name_resolver.record_resolution(*id, def_id);
+                    return;
+                }
+
+                // if the complete path does not exist globally, the final segment
+                // may be an associated function:
+                //
+                //     ops::Math::new
+                //     ^^^^^^^^^
+                //       owner
+                //
+                // associated functions are not global symbols. resolve the owner
+                // struct here and let semantic analysis resolve the final member
+                // through that struct's impl registry.
+                if absolute_path.len() >= 2 {
+                    let owner_path = &absolute_path[..absolute_path.len() - 1];
+
+                    if let Some(&owner_def_id) = self.global_symbols.get(owner_path) {
+                        if let Some(owner_info) = self.context.get_def(owner_def_id) {
+                            if matches!(owner_info.kind, DefKind::Struct { .. }) {
+                                self.name_resolver.record_resolution(
+                                    *id,
+                                    owner_def_id,
+                                );
+
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                self.error(
+                    segments[0].span,
+                    "R001",
+                    format!(
+                        "cannot find value `{}` in this scope",
+                        path_strings.join("::")
+                    ),
+                );
             }
 
             Expr::FunctionCall { callee, arguments, generic_args, .. } => {
@@ -562,32 +695,106 @@ impl<'a, 'ctx> Resolver<'a, 'ctx> {
         }
     }
 
-    fn resolve_type(&mut self, ty: &Type<'a>) {
+    fn resolve_type(&mut self, ty: &Type) {
         match ty {
             Type::Path { id, segments } => {
-                let name = segments[0].lexeme;
+                let name = segments[0].lexeme.as_str();
+
                 if segments.len() == 1 && matches!(
-                    name, 
-                    "i8" | "i16" | "i32" | "i64" | "isize" | 
-                    "u8" | "u16" | "u32" | "u64" | "usize" | 
-                    "f32" | "f64" | "char" | "bool" | "void") 
+                    name,
+                    "i8" | "i16" | "i32" | "i64" | "isize"
+                    | "u8" | "u16" | "u32" | "u64" | "usize"
+                    | "f32" | "f64"
+                    | "char" | "bool" | "void"
+                )
                 {
-                    return; 
+                    return;
                 }
 
-                if let Some(def_id) = self.current_scope.resolve(Namespace::Type, segments[0].lexeme, self.context) {
-                    self.name_resolver.record_resolution(*id, def_id);
+                // first: lexical/type scope.
+                //
+                // handles:
+                //   T
+                //   Self
+                //   Layout
+                if segments.len() == 1 {
+                    if let Some(def_id) = self.current_scope.resolve(
+                        Namespace::Type,
+                        name,
+                        self.context,
+                    ) 
+                    {
+                        self.name_resolver.record_resolution(
+                            *id,
+                            def_id,
+                        );
+
+                        return;
+                    }
+                }
+
+                let path_strings: Vec<String> = segments
+                    .iter()
+                    .map(|s| s.lexeme.clone())
+                    .collect();
+
+                let absolute_path = self.current_scope.resolve_path(
+                    &path_strings,
+                    self.context,
+                );
+
+                if let Some(&def_id) = self.global_symbols.get(&absolute_path) {
+                    self.name_resolver.record_resolution(
+                        *id,
+                        def_id,
+                    );
                 } else {
-                    self.error(segments[0].span, "R002", format!("cannot find type `{}` in this scope", segments[0].lexeme));
+                    self.error(
+                        segments[0].span,
+                        "R002",
+                        format!(
+                            "cannot find type `{}` in this scope",
+                            path_strings.join("::")
+                        ),
+                    );
                 }
             }
-            Type::Borrow { inner, .. } | Type::Slice { element_type: inner, .. } | Type::RawPointer { inner, .. } => self.resolve_type(inner),
-            Type::Generic { base, args, .. } => { self.resolve_type(base); for arg in args { self.resolve_type(arg); } }
-            Type::Array { element_type, size, .. } => { self.resolve_type(element_type); self.resolve_expr(size); }
+
+            Type::Borrow { inner, .. } | Type::Slice { element_type: inner, .. } | Type::RawPointer { inner, .. } => 
+            {
+                self.resolve_type(inner);
+            }
+
+            Type::Generic { base, args, id } => {
+                self.resolve_type(base);
+
+                for arg in args {
+                    self.resolve_type(arg);
+                }
+
+                // a generic instance resolves to the same nominal definition
+                // as its base:
+                //
+                //     Box<T> -> Box
+                //     Vec<i32> -> Vec
+                //
+                // concrete type arguments are handled by semantic analysis /
+                // monomorphization later.
+                let base_id = crate::utils::get_type_id(base);
+
+                if let Some(base_def_id) = self.name_resolver.get_resolution(base_id) {
+                    self.name_resolver.record_resolution(*id, base_def_id);
+                }
+            }
+
+            Type::Array { element_type, size, .. } => {
+                self.resolve_type(element_type);
+                self.resolve_expr(size);
+            }
         }
     }
 
-    fn resolve_where_clause(&mut self, wc: &WhereClause<'a>) {
+    fn resolve_where_clause(&mut self, wc: &WhereClause) {
         for pred in &wc.predicates {
             self.resolve_type(&pred.target_type);
             for bound in &pred.bound_traits {

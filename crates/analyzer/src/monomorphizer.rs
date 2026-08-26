@@ -147,6 +147,25 @@ impl<'a> Monomorphizer<'a> {
         expr.ty = self.resolve_type(&original_type.substitute(subs), subs);
 
         match &mut expr.kind {
+            HIRExprKind::VarRef(def_id) => {
+                let current_ty = self.context.get_def(*def_id).and_then(|info| {
+                    match &info.kind {
+                        DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } => {
+                            Some(ty.clone())
+                        }
+
+                        _ => None,
+                    }
+                });
+
+                if let Some(ty) = current_ty {
+                    expr.ty = self.resolve_type(
+                        &ty.substitute(subs),
+                        subs,
+                    );
+                }
+            }
+
             HIRExprKind::Binary { lhs, rhs, .. } => {
                 self.substitute_expr(lhs, subs);
                 self.substitute_expr(rhs, subs);
@@ -238,6 +257,17 @@ impl<'a> Monomorphizer<'a> {
                 for arg in args.iter_mut() { self.substitute_expr(arg, subs); }
             }
 
+            HIRExprKind::IntrinsicCall { args, type_args, .. } => {
+                for arg in args.iter_mut() {
+                    self.substitute_expr(arg, subs);
+                }
+
+                for ty in type_args.iter_mut() {
+                    let substituted = ty.substitute(subs);
+                    *ty = self.resolve_type(&substituted, subs);
+                }
+            }
+
             HIRExprKind::Call { callee, args, generic_args } => {
                 for arg in args.iter_mut() { self.substitute_expr(arg, subs); }
 
@@ -285,14 +315,30 @@ impl<'a> Monomorphizer<'a> {
         let type_suffixes: Vec<String> = type_args.iter().map(|t| t.mangle()).collect();
         let mangled_name = format!("{}__{}", generic_info.name, type_suffixes.join("_"));
 
+        let mut specialized_path =
+        generic_info.absolute_path.clone();
+
+        if let Some(last) = specialized_path.last_mut() {
+            *last = mangled_name.clone();
+        } else {
+            specialized_path.push(mangled_name.clone());
+        }
+
         let mut specialized_info = generic_info.clone();
+
         specialized_info.name = mangled_name.clone();
-        specialized_info.absolute_path = vec![mangled_name.clone()];
+        specialized_info.absolute_path = specialized_path.clone();
 
         let subs: HashMap<String, Type> = match &generic_info.kind {
-            DefKind::Function { generic_params, .. } => generic_params.iter().cloned()
+            DefKind::Function {
+                generic_params,
+                ..
+            } => generic_params
+                .iter()
+                .cloned()
                 .zip(type_args.clone())
                 .collect(),
+
             _ => HashMap::new(),
         };
 
@@ -301,15 +347,24 @@ impl<'a> Monomorphizer<'a> {
                 params: params.into_iter().map(|ty| self.resolve_type(&ty.substitute(&subs), &subs)).collect(),
                 return_type: self.resolve_type(&return_type.substitute(&subs), &subs),
                 generic_params: vec![],
+                intrinsic: None,
                 annotations,
             };
         }
 
         let specialized_def_id = self.context.insert_def(specialized_info);
-        self.instantiation_cache.insert(cache_key, specialized_def_id);
 
-        let mut new_func = self.original_functions.get(&generic_def_id).unwrap().clone();
-        new_func.name = mangled_name;
+        self.instantiation_cache.insert(
+            cache_key,
+            specialized_def_id,
+        );
+
+        let mut new_func = self.original_functions
+            .get(&generic_def_id)
+            .unwrap()
+            .clone();
+
+        new_func.name = specialized_path.join("::");
         new_func.def_id = specialized_def_id;
         new_func.generic_params.clear();
 
@@ -361,7 +416,30 @@ impl<'a> Monomorphizer<'a> {
         };
         
         let concrete_def_id = self.context.insert_def(concrete_info);
-        self.instantiated_structs.insert(cache_key, (concrete_def_id, mangled_name.clone()));
+
+        self.instantiated_structs.insert(
+            cache_key,
+            (concrete_def_id, mangled_name.clone()),
+        );
+
+        let generic_type_name = if generic_info.absolute_path.is_empty() {
+            generic_info.name.clone()
+        } else {
+            generic_info.absolute_path.join("::")
+        };
+
+        if let Some(generic_drop_def_id) = self.context.get_drop_impl(&generic_type_name)
+        {
+            let specialized_drop_def_id = self.get_or_create_specialization(
+                generic_drop_def_id,
+                type_args.clone(),
+            );
+
+            self.context.register_drop_impl(
+                mangled_name.clone(),
+                specialized_drop_def_id,
+            );
+        }
 
         (concrete_def_id, mangled_name)
     }
@@ -369,7 +447,15 @@ impl<'a> Monomorphizer<'a> {
     fn resolve_type(&mut self, ty: &Type, subs: &HashMap<String, Type>) -> Type {
         match ty {
             Type::GENERIC_INSTANCE(base, args) => {
-                let concrete_args: Vec<Type> = args.iter().map(|a| self.resolve_type(a, subs)).collect();
+                let concrete_args: Vec<Type> = args.iter()
+                    .map(|arg| self.resolve_type(arg, subs))
+                    .collect();
+
+                // do NOT instantiate Box<T>, Vec<T>, etc etc until every
+                // generic argument has become concrete
+                if concrete_args.iter().any(|ty| ty.contains_generic()) {
+                    return Type::GENERIC_INSTANCE(base.clone(), concrete_args);
+                }
 
                 if let Type::STRUCT(name) = base.as_ref() {
                     if let Some(def_id) = self.context.find_struct_by_name(name) {
@@ -417,27 +503,72 @@ impl<'a> Monomorphizer<'a> {
             Type::POINTER(inner) => Type::POINTER(Box::new(self.resolve_type(inner, subs))),
             Type::REF(inner) => Type::REF(Box::new(self.resolve_type(inner, subs))),
             Type::CONST_REF(inner) => Type::CONST_REF(Box::new(self.resolve_type(inner, subs))),
+            Type::CONST_POINTER(inner) => {
+                Type::CONST_POINTER(Box::new(
+                    self.resolve_type(inner, subs)
+                ))
+            }
 
             other => other.clone(),
         }
     }
 
-    fn infer_type_args(&self, param_ty: &Type, arg_ty: &Type, inferred: &mut HashMap<String, Type>) {
+
+    fn infer_type_args(&self, param_ty: &Type, arg_ty: &Type, inferred: &mut HashMap<String, Type>) 
+    {
         match (param_ty, arg_ty) {
             (Type::GENERIC(name), concrete) => {
-                inferred.entry(name.clone()).or_insert_with(|| concrete.clone());
+                inferred
+                    .entry(name.clone())
+                    .or_insert_with(|| concrete.clone());
             }
 
-            (Type::REF(p), Type::REF(a)) | 
-            (Type::CONST_REF(p), Type::CONST_REF(a)) | 
-            (Type::POINTER(p), Type::POINTER(a)) => 
-            {
+            (Type::REF(p), Type::REF(a)) | (Type::CONST_REF(p), Type::CONST_REF(a)) | 
+            (Type::POINTER(p), Type::POINTER(a)) | (Type::CONST_POINTER(p), Type::CONST_POINTER(a)) => {
                 self.infer_type_args(p, a, inferred);
             }
 
             (Type::GENERIC_INSTANCE(_, p_args), Type::GENERIC_INSTANCE(_, a_args)) => {
                 for (p, a) in p_args.iter().zip(a_args.iter()) {
                     self.infer_type_args(p, a, inferred);
+                }
+            }
+
+            //
+            // Box<T> vs Box__i32
+            //
+            (Type::GENERIC_INSTANCE(param_base, param_args), Type::STRUCT(concrete_name)) => {
+                let Type::STRUCT(generic_name) = param_base.as_ref() else {
+                    return;
+                };
+
+                let Some(generic_def_id) = self.context.find_struct_by_name(generic_name) else {
+                    return;
+                };
+
+                // instantiated_structs:
+                //
+                // (Box DefID, [i32])
+                //      ->
+                // (Box__i32 DefID, "Box__i32")
+                //
+                let concrete_args = self.instantiated_structs
+                    .iter()
+                    .find_map(|((def_id, type_args), (_concrete_def_id, mangled_name))| {
+                            if *def_id == generic_def_id && mangled_name == concrete_name {
+                                Some(type_args.clone())
+                            } else {
+                                None
+                            }
+                        },
+                    );
+
+                let Some(concrete_args) = concrete_args else {
+                    return;
+                };
+
+                for (param_arg, concrete_arg) in param_args.iter().zip(concrete_args.iter()) {
+                    self.infer_type_args(param_arg, concrete_arg, inferred);
                 }
             }
 

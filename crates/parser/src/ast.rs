@@ -1,7 +1,7 @@
 use lexer::Token;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeID(pub u32);
+pub struct NodeID(pub u64);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Annotation {
@@ -10,209 +10,209 @@ pub struct Annotation {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct GenericParam<'a> {
+pub struct GenericParam {
     pub id: NodeID,
-    pub name: Token<'a>,
+    pub name: Token,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct WherePredicate<'a> {
+pub struct WherePredicate {
     pub id: NodeID,
-    pub target_type: Type<'a>,
-    pub bound_traits: Vec<Type<'a>>
+    pub target_type: Type,
+    pub bound_traits: Vec<Type>
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct WhereClause<'a> {
-    pub predicates: Vec<WherePredicate<'a>>,
+pub struct WhereClause {
+    pub predicates: Vec<WherePredicate>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Block<'a> {
+pub struct Block {
     pub id: NodeID,
-    pub statements: Vec<Stmt<'a>>,
+    pub statements: Vec<Stmt>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Type<'a> {
+pub enum Type {
 
     Path {
         id: NodeID,
-        segments: Vec<Token<'a>>,
+        segments: Vec<Token>,
     },
 
     Generic {
         id: NodeID,
-        base: Box<Type<'a>>,
-        args: Vec<Type<'a>>,
+        base: Box<Type>,
+        args: Vec<Type>,
     },
 
     Borrow {
         id: NodeID,
         is_mut: bool,
-        inner: Box<Type<'a>>,
+        inner: Box<Type>,
     },
 
     RawPointer {
         id: NodeID,
         is_mut: bool,
-        inner: Box<Type<'a>>,
+        inner: Box<Type>,
     },
 
     Array {
         id: NodeID,
-        element_type: Box<Type<'a>>,
-        size: Box<Expr<'a>>,
-        token: Token<'a>,
+        element_type: Box<Type>,
+        size: Box<Expr>,
+        token: Token,
     },
 
     Slice {
         id: NodeID,
-        element_type: Box<Type<'a>>,
-        token: Token<'a>,
+        element_type: Box<Type>,
+        token: Token,
     },
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Expr<'a> {
+pub enum Expr {
 
     /// A literal value (number, string, bool)
-    Literal { id: NodeID, token: Token<'a> },
+    Literal { id: NodeID, token: Token },
     
     /// e.g., `my_var`
-    Variable { id: NodeID, name: Token<'a> },
+    Variable { id: NodeID, name: Token },
     
     /// e.g., `std::random::seed`
-    Path { id: NodeID, segments: Vec<Token<'a>> },
+    Path { id: NodeID, segments: Vec<Token> },
     
     /// e.g., `foo()`
-    FunctionCall { id: NodeID, callee: Box<Expr<'a>>, arguments: Vec<Expr<'a>>, generic_args: Vec<Type<'a>> },
+    FunctionCall { id: NodeID, callee: Box<Expr>, arguments: Vec<Expr>, generic_args: Vec<Type> },
     
     /// e.g., `object::method()`
-    MethodCall { id: NodeID, object: Box<Expr<'a>>, method: Token<'a>, arguments: Vec<Expr<'a>>, generic_args: Vec<Type<'a>> },
+    MethodCall { id: NodeID, object: Box<Expr>, method: Token, arguments: Vec<Expr>, generic_args: Vec<Type> },
     
     /// e.g., `a + b`
-    Binary { id: NodeID, left: Box<Expr<'a>>, operator: Token<'a>, right: Box<Expr<'a>> },
+    Binary { id: NodeID, left: Box<Expr>, operator: Token, right: Box<Expr> },
     
     /// e.g., `-a` or `!a`
-    Unary { id: NodeID, operator: Token<'a>, right: Box<Expr<'a>> },
+    Unary { id: NodeID, operator: Token, right: Box<Expr> },
     
     /// e.g., `a++`
-    PostfixUnary { id: NodeID, operator: Token<'a>, left: Box<Expr<'a>> },
+    PostfixUnary { id: NodeID, operator: Token, left: Box<Expr> },
     
     /// e.g., `a = b`
-    Assignment { id: NodeID, target: Box<Expr<'a>>, operator: Token<'a>, value: Box<Expr<'a>> },
+    Assignment { id: NodeID, target: Box<Expr>, operator: Token, value: Box<Expr> },
     
     /// e.g., `&mut a`
-    Borrow { id: NodeID, is_mut: bool, right: Box<Expr<'a>> },
+    Borrow { id: NodeID, is_mut: bool, right: Box<Expr> },
     
     /// e.g., `*a`
-    Dereference { id: NodeID, right: Box<Expr<'a>> },
+    Dereference { id: NodeID, right: Box<Expr> },
     
     /// e.g., `object.property`
-    Member { id: NodeID, object: Box<Expr<'a>>, property: Token<'a> },
+    Member { id: NodeID, object: Box<Expr>, property: Token },
     
     /// e.g., `{1, 2, 3}`
-    ArrayInitializer { id: NodeID, elements: Vec<Expr<'a>>, token: Token<'a> },
+    ArrayInitializer { id: NodeID, elements: Vec<Expr>, token: Token },
     
     /// e.g., `arr[0]`
-    ArrayAccess { id: NodeID, array: Box<Expr<'a>>, index: Box<Expr<'a>>, token: Token<'a> },
+    ArrayAccess { id: NodeID, array: Box<Expr>, index: Box<Expr>, token: Token },
     
     /// e.g., `Point { x: 1, y: 2 }`
-    StructInitializer { id: NodeID, name: Box<Expr<'a>>, fields: Vec<(Token<'a>, Box<Expr<'a>>)> },
+    StructInitializer { id: NodeID, name: Box<Expr>, fields: Vec<(Token, Box<Expr>)> },
     
     /// e.g., `a as i32`
-    Cast { id: NodeID, value: Box<Expr<'a>>, target: Box<Type<'a>> },
+    Cast { id: NodeID, value: Box<Expr>, target: Box<Type> },
 
     // Control Flow Expressions
-    If { id: NodeID, condition: Box<Expr<'a>>, then_branch: Block<'a>, else_branch: Option<Block<'a>> },
-    While { id: NodeID, condition: Box<Expr<'a>>, body: Block<'a> },
-    For { id: NodeID, variable: Token<'a>, start: Box<Expr<'a>>, end: Box<Expr<'a>>, is_inclusive: bool, body: Block<'a> },
-    ForEach { id: NodeID, item: Token<'a>, iterable: Box<Expr<'a>>, body: Block<'a> },
+    If { id: NodeID, condition: Box<Expr>, then_branch: Block, else_branch: Option<Block> },
+    While { id: NodeID, condition: Box<Expr>, body: Block },
+    For { id: NodeID, variable: Token, start: Box<Expr>, end: Box<Expr>, is_inclusive: bool, body: Block },
+    ForEach { id: NodeID, item: Token, iterable: Box<Expr>, body: Block },
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Stmt<'a> {
+pub enum Stmt {
     /// e.g., `let x: i32 = 5;` or `const y = 10;`
     VariableDecl {
         id: NodeID,
         is_const: bool,
-        name: Token<'a>,
-        type_annotation: Option<Type<'a>>,
-        initializer: Box<Expr<'a>>,
+        name: Token,
+        type_annotation: Option<Type>,
+        initializer: Box<Expr>,
     },
     
     /// An expression followed by a semicolon, e.g., `foo();`
-    Expr(Box<Expr<'a>>),
+    Expr(Box<Expr>),
     
     /// e.g., `return 5;`
-    Return { id: NodeID, value: Option<Box<Expr<'a>>> },
+    Return { id: NodeID, value: Option<Box<Expr>> },
     
     /// e.g., `break;`
-    Break { id: NodeID, condition: Option<Box<Expr<'a>>> },
+    Break { id: NodeID, condition: Option<Box<Expr>> },
     
     /// e.g., `continue;`
-    Continue { id: NodeID, condition: Option<Box<Expr<'a>>> },
+    Continue { id: NodeID, condition: Option<Box<Expr>> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Item<'a> {
-    Function(FunctionDecl<'a>),
-    Struct(StructDecl<'a>),
-    Trait(TraitDecl<'a>),
-    Extension(ExtensionDecl<'a>),
-    Include(IncludeDecl<'a>),
+pub enum Item {
+    Function(FunctionDecl),
+    Struct(StructDecl),
+    Trait(TraitDecl),
+    Extension(ExtensionDecl),
+    Include(IncludeDecl),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct FunctionDecl<'a> {
+pub struct FunctionDecl {
     pub id: NodeID,
-    pub name: Token<'a>,
+    pub name: Token,
     pub annotations: Vec<Annotation>,
-    pub generic_params: Vec<GenericParam<'a>>,
-    pub parameters: Vec<(Token<'a>, Type<'a>)>,
-    pub return_type: Option<Type<'a>>,
-    pub where_clause: Option<WhereClause<'a>>,
-    pub body: Option<Block<'a>>, // None for externs or trait definitions
+    pub generic_params: Vec<GenericParam>,
+    pub parameters: Vec<(Token, Type)>,
+    pub return_type: Option<Type>,
+    pub where_clause: Option<WhereClause>,
+    pub body: Option<Block>, // None for externs or trait definitions
     pub is_extern: bool,
     pub is_pub: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct StructDecl<'a> {
+pub struct StructDecl {
     pub id: NodeID,
-    pub name: Token<'a>,
-    pub generic_params: Vec<GenericParam<'a>>,
-    pub where_clause: Option<WhereClause<'a>>,
+    pub name: Token,
+    pub generic_params: Vec<GenericParam>,
+    pub where_clause: Option<WhereClause>,
     // We treat struct constants and fields separately based on your original design
-    pub constants: Vec<Stmt<'a>>, // Only VariableDecl (consts) should go here
-    pub fields: Vec<(Token<'a>, Type<'a>)>,
+    pub constants: Vec<Stmt>, // Only VariableDecl (consts) should go here
+    pub fields: Vec<(Token, Type)>,
     pub is_pub: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct TraitDecl<'a> {
+pub struct TraitDecl {
     pub id: NodeID,
-    pub name: Token<'a>,
-    pub methods: Vec<FunctionDecl<'a>>,
+    pub name: Token,
+    pub methods: Vec<FunctionDecl>,
     pub is_pub: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ExtensionDecl<'a> {
+pub struct ExtensionDecl {
     pub id: NodeID,
-    pub target_trait: Option<Type<'a>>, // e.g., Some(RandomGenerator)
-    pub target_type: Type<'a>,          // e.g., i32
-    pub generic_params: Vec<GenericParam<'a>>,
-    pub where_clause: Option<WhereClause<'a>>,
-    pub constants: Vec<Stmt<'a>>, 
-    pub methods: Vec<FunctionDecl<'a>>,
+    pub target_trait: Option<Type>, // e.g., Some(RandomGenerator)
+    pub target_type: Type,          // e.g., i32
+    pub generic_params: Vec<GenericParam>,
+    pub where_clause: Option<WhereClause>,
+    pub constants: Vec<Stmt>, 
+    pub methods: Vec<FunctionDecl>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct IncludeDecl<'a> {
+pub struct IncludeDecl {
     pub id: NodeID,
-    pub path: Type<'a>, // Using a Type::Path 
-    pub symbols: Option<Vec<Token<'a>>>,
-    pub alias: Option<Token<'a>>,
+    pub path: Type, // Using a Type::Path 
+    pub symbols: Option<Vec<Token>>,
+    pub alias: Option<Token>,
 }

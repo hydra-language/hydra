@@ -1,0 +1,45 @@
+include core::alloc::{Layout, Allocator};
+include core::ptr;
+
+pub struct Box<T> {
+    ptr: *mut T;
+}
+
+extension<T> Box<T> {
+    
+    pub fn new(value: T) -> Box<T> {
+        const layout = Layout::new::<T>();
+        const memory = Allocator::alloc(layout);
+        const pointer = memory as *mut T;
+
+        ptr::write::<T>(pointer, value);
+
+        return Box {
+            .ptr = pointer
+        };
+    }
+
+    pub fn as_ptr(&self) -> *const T {
+        return self.ptr as *const T;
+    }
+
+    pub fn as_mut_ptr(&self) -> *mut T {
+        return self.ptr;
+    }
+
+    pub fn into_inner(self) -> T {
+        const p = self.ptr;
+        const value = ptr::read::<T>(p as *const T);
+        const layout: Layout = Layout::new::<T>();
+
+        Allocator::dealloc(p as *mut u8, layout);
+
+        return value;
+    }
+
+    pub fn drop(&mut self) -> void {
+        const layout = Layout::new::<T>();
+
+        Allocator::dealloc(self.ptr as *mut u8, layout);
+    }
+}

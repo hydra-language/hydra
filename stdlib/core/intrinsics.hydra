@@ -1,0 +1,20 @@
+#[intrinsic]
+pub fn size_of<T>() -> usize;
+
+#[intrinsic]
+pub fn align_of<T>() -> usize;
+
+#[intrinsic]
+pub fn ptr_read<T>(src: *const T) -> T;
+
+#[intrinsic]
+pub fn ptr_write<T>(dst: *mut T, value: T) -> void;
+
+#[intrinsic]
+pub fn ptr_offset<T>(ptr: *mut T, count: isize) -> *mut T;
+
+#[intrinsic]
+pub fn __alloc(size: usize, align: usize) -> *mut u8;
+
+#[intrinsic]
+pub fn __dealloc(ptr: *mut u8, size: usize, align: usize) -> void;

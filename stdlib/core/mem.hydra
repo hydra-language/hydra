@@ -1,0 +1,9 @@
+include core::intrinsics;
+
+pub fn size_of<T>() -> usize {
+    return intrinsics::size_of::<T>();
+}
+
+pub fn align_of<T>() -> usize {
+    return intrinsics::align_of::<T>();
+}

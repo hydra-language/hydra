@@ -8,6 +8,7 @@ use ir::types::Type;
 use ir::context::DefID;
 use ir::hir::{HIRBinOp, HIRUnaryOp, CastKind};
 use ir::Constant;
+use ir::intrinsic::IntrinsicKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BasicBlockID(pub usize);
@@ -84,6 +85,12 @@ pub enum Rvalue {
     
     // Arrays and Structs
     Aggregate(AggregateKind, Vec<Operand>),
+    Intrinsic {
+        callee: String,
+        kind: IntrinsicKind,
+        type_args: Vec<Type>,
+        args: Vec<Operand>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -214,6 +221,35 @@ impl fmt::Display for Rvalue {
             Rvalue::UnaryOp(op, operand) => write!(f, "{}{}", op, operand),
             Rvalue::Cast(_kind, operand, ty) => write!(f, "{} as {}", operand, ty),
             Rvalue::Aggregate(_, _) => write!(f, "aggregate(...)"),
+            Rvalue::Intrinsic { callee, type_args, args, .. } => {
+                write!(f, "{}", callee)?;
+
+                if !type_args.is_empty() {
+                    write!(f, "<")?;
+
+                    for (i, ty) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+
+                        write!(f, "{}", ty)?;
+                    }
+
+                    write!(f, ">")?;
+                }
+
+                write!(f, "(")?;
+
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+
+                    write!(f, "{}", arg)?;
+                }
+
+                write!(f, ")")
+            }
         }
     }
 }

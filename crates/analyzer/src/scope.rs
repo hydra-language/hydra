@@ -21,6 +21,37 @@ pub struct Scope {
 pub struct NameResolver {
     // maps an AST NodeID (e.g., a Type::Path or Expr::Variable) to its resolved DefID
     pub resolved_paths: HashMap<NodeID, DefID>,
+
+    // (function declaration, parameter index) -> parameter DefID
+    pub parameter_defs: HashMap<(NodeID, usize), DefID>,
+}
+
+impl NameResolver {
+
+    pub fn new() -> Self {
+        Self {
+            resolved_paths: HashMap::new(),
+            parameter_defs: HashMap::new(),
+        }
+    }
+
+    /// records that a specific syntax node points to a specific IR definition
+    pub fn record_resolution(&mut self, usage_id: NodeID, definition_id: DefID) {
+        self.resolved_paths.insert(usage_id, definition_id);
+    }
+
+    /// fetches the resolved definition for a syntax node
+    pub fn get_resolution(&self, usage_id: NodeID) -> Option<DefID> {
+        self.resolved_paths.get(&usage_id).copied()
+    }
+
+    pub fn record_parameter(&mut self, function_id: NodeID, parameter_index: usize, def_id: DefID) {
+        self.parameter_defs.insert((function_id, parameter_index), def_id);
+    }
+
+    pub fn get_parameter(&self, function_id: NodeID, parameter_index: usize) -> Option<DefID> {
+        self.parameter_defs.get(&(function_id, parameter_index)).copied()
+    }
 }
 
 impl Scope {
@@ -106,24 +137,5 @@ impl Scope {
 
     pub fn parent(self) -> Option<Scope> {
         self.parent.map(|b| *b)
-    }
-}
-
-impl NameResolver {
-
-    pub fn new() -> Self {
-        Self {
-            resolved_paths: HashMap::new(),
-        }
-    }
-
-    /// records that a specific syntax node points to a specific IR definition
-    pub fn record_resolution(&mut self, usage_id: NodeID, definition_id: DefID) {
-        self.resolved_paths.insert(usage_id, definition_id);
-    }
-
-    /// fetches the resolved definition for a syntax node
-    pub fn get_resolution(&self, usage_id: NodeID) -> Option<DefID> {
-        self.resolved_paths.get(&usage_id).copied()
     }
 }

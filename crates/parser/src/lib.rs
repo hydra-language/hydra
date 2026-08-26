@@ -1,5 +1,5 @@
 pub mod ast;
 pub mod parser;
-pub mod program;
+pub mod module;
 
 pub use ast::*;

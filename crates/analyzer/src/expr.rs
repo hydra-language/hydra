@@ -7,7 +7,7 @@ use ir::context::{DefKind, SymbolInfo};
 use ir::hir::{HIRExpr, HIRExprKind, HIRBinOp, HIRUnaryOp, CastKind, HIRBlock, HIRStmt}; 
 use crate::utils;
 
-impl<'a, 'ctx> Analyzer<'a, 'ctx> {
+impl<'ctx> Analyzer<'ctx> {
 
     pub(crate) fn is_int_type(&self, ty: &IRType) -> bool {
         matches!(
@@ -56,11 +56,11 @@ impl<'a, 'ctx> Analyzer<'a, 'ctx> {
         }
     }
 
-    pub(crate) fn lower_expr(&mut self, node: &ASTExpr<'a>) -> Result<HIRExpr, HydraError> {
+    pub(crate) fn lower_expr(&mut self, node: &ASTExpr) -> Result<HIRExpr, HydraError> {
         self.lower_expr_with_type(node, None)
     }
 
-    pub(crate) fn lower_expr_with_type(&mut self, node: &ASTExpr<'a>, expected: Option<&IRType>) -> Result<HIRExpr, HydraError> {
+    pub(crate) fn lower_expr_with_type(&mut self, node: &ASTExpr, expected: Option<&IRType>) -> Result<HIRExpr, HydraError> {
         let span = crate::utils::get_expr_span(node);
 
         match node {
@@ -309,75 +309,13 @@ impl<'a, 'ctx> Analyzer<'a, 'ctx> {
 
             ASTExpr::MethodCall { object, method, arguments, generic_args, .. } => {
                 let lhs_expr = self.lower_expr_with_type(object, None)?;
-                let actual_type = match &lhs_expr.ty {
-                    IRType::REF(inner) | IRType::CONST_REF(inner) | IRType::POINTER(inner) => inner.as_ref().clone(),
-                    _ => lhs_expr.ty.clone()
-                };
-
-                let lookup_type = match &actual_type {
-                    IRType::GENERIC_INSTANCE(base, _) => *base.clone(),
-                    other => other.clone(),
-                };
-
-                let method_def_id = {
-                    let struct_name = match &lookup_type {
-                        IRType::STRUCT(name) => name.clone(),
-                        _ => return Err(self.error("S005", format!("type '{}' has no methods", actual_type), span)),
-                    };
-                    let type_methods = self.impl_registry.get(&struct_name)
-                        .ok_or_else(|| self.error("S005", format!("type '{}' has no methods", actual_type), span))?;
-
-                    *type_methods.get(method.lexeme)
-                        .ok_or_else(|| self.error("S005", format!("method '{}' not found", method.lexeme), span))?
-                };
-                
-                let info = self.context.get_def(method_def_id).unwrap();
-                let (param_types, return_type) = match &info.kind {
-                    DefKind::Function { params, return_type, .. } => (params.clone(), return_type.clone()),
-                    _ => return Err(self.error("S003", format!("'{}' is not a function", method.lexeme), span)),
-                };
-                
-                let mut args = Vec::new();
-                let expected_self_ty = param_types.first().ok_or_else(|| self.error("S004", "method expects self", span))?;
-
-                let self_arg = match (expected_self_ty, &lhs_expr.ty) {
-                    (IRType::REF(inner), actual) | (IRType::CONST_REF(inner), actual) 
-                    if inner.as_ref() == actual => 
-                    {
-                        let is_mut = matches!(expected_self_ty, IRType::REF(_));
-                        let ty = if is_mut { IRType::REF(Box::new(lhs_expr.ty.clone())) } else { IRType::CONST_REF(Box::new(lhs_expr.ty.clone())) };
-
-                        HIRExpr {
-                            kind: HIRExprKind::Borrow { is_mut, target: Box::new(lhs_expr) },
-                            ty, span
-                        }
-                    },
-                    _ => lhs_expr
-                };
-
-                args.push(self_arg);
-
-                for arg_node in arguments {
-                    let expected_ty = param_types.get(args.len());
-                    let mut lowered_arg = self.lower_expr_with_type(arg_node, expected_ty)?;
-                    if let Some(target) = expected_ty { lowered_arg = self.coerce_primitive(lowered_arg, target); }
-                    args.push(lowered_arg);
-                }
-
-                let mut lowered_generics = Vec::new();
-                for node in generic_args { lowered_generics.push(self.lower_type(node)?); }
-
-                Ok(HIRExpr {
-                    kind: HIRExprKind::Call { callee: method_def_id, args, generic_args: lowered_generics },
-                    ty: return_type,
-                    span
-                })
-            },
+                self.lower_instance_method_call(lhs_expr, &method.lexeme, arguments, generic_args, span)
+            }
 
             ASTExpr::FunctionCall { callee, arguments, generic_args, .. } => {
                 let call_name_debug = match &**callee {
                     ASTExpr::Variable { name, .. } => name.lexeme.to_string(),
-                    ASTExpr::Path { segments, .. } => segments.iter().map(|s| s.lexeme).collect::<Vec<_>>().join("::"),
+                    ASTExpr::Path { segments, .. } => segments.iter().map(|s| s.lexeme.as_str()).collect::<Vec<_>>().join("::"),
                     _ => "".to_string()
                 };
 
@@ -396,11 +334,45 @@ impl<'a, 'ctx> Analyzer<'a, 'ctx> {
                 let def_id = self.name_resolver.get_resolution(callee_id)
                     .ok_or_else(|| self.error("S002", format!("undefined function `{}`", call_name_debug), span))?;    
 
-                let info = self.context.get_def(def_id).unwrap();
+                let info = self.context.get_def(def_id).cloned().ok_or_else(|| 
+                    {
+                        self.error("S002", format!("missing definition for `{}`", call_name_debug), span)
+                    }
+                )?;
+
+                // a path such as:
+                //
+                //     math::multiply(...)
+                //
+                // may have resolved to the local value `math`.
+                //
+                // in that case the final path segment is a method name,
+                // not part of the receiver's definition path.
+                if matches!(info.kind, DefKind::Variable { .. } | DefKind::Constant { .. }) {
+                    if let ASTExpr::Path { segments, .. } = &**callee {
+                        if segments.len() >= 2 {
+                            let method_name = &segments.last().unwrap().lexeme;
+
+                            // lower_expr(Path) is safe here:
+                            //
+                            // the resolver associated this path's NodeID
+                            // with the receiver's DefID, so this produces
+                            // VarRef(math), not a reference to multiply.
+                            let lhs_expr = self.lower_expr_with_type(callee, None)?;
+                            return self.lower_instance_method_call(
+                                lhs_expr,
+                                method_name,
+                                arguments,
+                                generic_args,
+                                span,
+                            );
+                        }
+                    }
+                }
 
                 let actual_def_id = if let DefKind::Struct { .. } = info.kind {
                     if let ASTExpr::Path { segments, .. } = &**callee {
-                        let method_name = segments.last().unwrap().lexeme;
+                        let method_name = &segments.last().unwrap().lexeme;
                         let struct_name = info.absolute_path.join("::");
 
                         if let Some(type_methods) = self.impl_registry.get(&struct_name) {
@@ -419,9 +391,28 @@ impl<'a, 'ctx> Analyzer<'a, 'ctx> {
                     def_id
                 };
 
-                let (param_types, return_type) = match &info.kind {
-                    DefKind::Function { params, return_type, .. } => (params.clone(), return_type.clone()),
-                    _ => return Err(self.error("S003", format!("target is not a function"), span)),
+                let actual_info = self.context.get_def(actual_def_id).unwrap();
+
+                let (param_types, return_type, intrinsic) =
+                match &actual_info.kind {
+                    DefKind::Function {
+                        params,
+                        return_type,
+                        intrinsic,
+                        ..
+                    } => (
+                        params.clone(),
+                        return_type.clone(),
+                        *intrinsic,
+                    ),
+
+                    _ => {
+                        return Err(self.error(
+                            "S003",
+                            "target is not a function",
+                            span,
+                        ));
+                    }
                 };
 
                 let mut args = Vec::new();
@@ -435,10 +426,27 @@ impl<'a, 'ctx> Analyzer<'a, 'ctx> {
                 let mut lowered_generics = Vec::new();
                 for node in generic_args { lowered_generics.push(self.lower_type(node)?); }
 
+                if let Some(kind) = intrinsic {
+                    return Ok(HIRExpr {
+                        kind: HIRExprKind::IntrinsicCall {
+                            callee: actual_def_id,
+                            kind,
+                            args,
+                            type_args: lowered_generics,
+                        },
+                        ty: return_type,
+                        span,
+                    });
+                }
+
                 Ok(HIRExpr { 
-                    kind: HIRExprKind::Call { callee: def_id, args, generic_args: lowered_generics }, 
+                    kind: HIRExprKind::Call {
+                        callee: actual_def_id,
+                        args,
+                        generic_args: lowered_generics,
+                    },
                     ty: return_type,
-                    span
+                    span,
                 })
             },
 
@@ -446,23 +454,44 @@ impl<'a, 'ctx> Analyzer<'a, 'ctx> {
                 let expr = self.lower_expr_with_type(value, None)?;
                 let target_type = self.lower_type(target)?;
 
-                let cast_kind = match (&expr.ty, &target_type) {
-                    (IRType::REF(_), IRType::POINTER(_)) |
-                    (IRType::CONST_REF(_), IRType::POINTER(_)) |
-                    (IRType::POINTER(_), IRType::POINTER(_)) => CastKind::Pointer,
-                    _ => CastKind::Numeric,
+                let source_is_pointer_like = matches!(
+                    &expr.ty,
+                    IRType::REF(_)
+                    | IRType::CONST_REF(_)
+                    | IRType::POINTER(_)
+                    | IRType::CONST_POINTER(_)
+                );
+
+                let target_is_raw_pointer = matches!(
+                    &target_type,
+                    IRType::POINTER(_)
+                    | IRType::CONST_POINTER(_)
+                );
+
+                let cast_kind =
+                if source_is_pointer_like && target_is_raw_pointer {
+                    CastKind::Pointer
+                } else {
+                    CastKind::Numeric
                 };
 
-                Ok(HIRExpr { 
-                    kind: HIRExprKind::Cast { expr: Box::new(expr), kind: cast_kind }, 
+                Ok(HIRExpr {
+                    kind: HIRExprKind::Cast {
+                        expr: Box::new(expr),
+                        kind: cast_kind,
+                    },
                     ty: target_type,
-                    span
+                    span,
                 })
-            },
+            }
 
             ASTExpr::Borrow { is_mut, right, .. } => {
                 let target_expr = self.lower_expr(right)?;
-                let ty = if *is_mut { IRType::REF(Box::new(target_expr.ty.clone())) } else { IRType::CONST_REF(Box::new(target_expr.ty.clone())) };
+                let ty = if *is_mut { 
+                    IRType::REF(Box::new(target_expr.ty.clone())) 
+                } else { 
+                    IRType::CONST_REF(Box::new(target_expr.ty.clone())) 
+                };
 
                 Ok(HIRExpr {
                     kind: HIRExprKind::Borrow { is_mut: *is_mut, target: Box::new(target_expr) },
@@ -475,7 +504,8 @@ impl<'a, 'ctx> Analyzer<'a, 'ctx> {
                 let target_expr = self.lower_expr(right)?;
 
                 let inner_ty = match &target_expr.ty {
-                    IRType::REF(inner) | IRType::CONST_REF(inner) | IRType::POINTER(inner) => *inner.clone(),
+                    IRType::REF(inner) | IRType::CONST_REF(inner) | 
+                    IRType::POINTER(inner) | IRType::CONST_POINTER(inner) => *inner.clone(),
                     _ => return Err(self.error("T004", format!("cannot dereference type `{}`", target_expr.ty), span)),
                 };
 
@@ -712,5 +742,202 @@ impl<'a, 'ctx> Analyzer<'a, 'ctx> {
             
             _ => Err(self.error("S006", format!("expression not supported: {:?}", node), span)),
         }
+    }
+
+    fn lower_instance_method_call(
+        &mut self,
+        lhs_expr: HIRExpr,
+        method_name: &str,
+        arguments: &[ASTExpr],
+        generic_args: &[parser::ast::Type],
+        span: errors::error::Span,
+    ) -> Result<HIRExpr, HydraError> 
+    {
+        let actual_type = match &lhs_expr.ty {
+            IRType::REF(inner) | IRType::CONST_REF(inner) | 
+            IRType::POINTER(inner) | IRType::CONST_POINTER(inner) => inner.as_ref().clone(),
+
+            _ => lhs_expr.ty.clone(),
+        };
+
+        let lookup_type = match &actual_type {
+            IRType::GENERIC_INSTANCE(base, _) => *base.clone(),
+            other => other.clone(),
+        };
+
+        let struct_name = match &lookup_type {
+            IRType::STRUCT(name) => name.clone(),
+
+            _ => {
+                return Err(self.error(
+                    "S005",
+                    format!("type '{}' has no methods", actual_type),
+                    span,
+                ));
+            }
+        };
+
+        let method_def_id = {
+            let type_methods = self
+                .impl_registry
+                .get(&struct_name)
+                .ok_or_else(|| {
+                    self.error(
+                        "S005",
+                        format!("type '{}' has no methods", actual_type),
+                        span,
+                    )
+                })?;
+
+            *type_methods
+                .get(method_name)
+                .ok_or_else(|| {
+                    self.error(
+                        "S005",
+                        format!(
+                            "method '{}' not found for type '{}'",
+                            method_name,
+                            actual_type
+                        ),
+                        span,
+                    )
+                })?
+        };
+
+        let info = self
+            .context
+            .get_def(method_def_id)
+            .ok_or_else(|| {
+                self.error(
+                    "S003",
+                    format!("method '{}' has no definition", method_name),
+                    span,
+                )
+            })?;
+
+        let (param_types, return_type) = match &info.kind {
+            DefKind::Function {
+                params,
+                return_type,
+                ..
+            } => (
+                params.clone(),
+                return_type.clone(),
+            ),
+
+            _ => {
+                return Err(self.error(
+                    "S003",
+                    format!("'{}' is not a function", method_name),
+                    span,
+                ));
+            }
+        };
+
+        let expected_self_ty = param_types
+            .first()
+            .ok_or_else(|| {
+                self.error(
+                    "S004",
+                    format!("method '{}' does not accept self", method_name),
+                    span,
+                )
+            })?;
+
+        let self_arg = match (expected_self_ty, &lhs_expr.ty.clone()) {
+            (
+                IRType::REF(inner),
+                actual,
+            ) if inner.as_ref() == actual => {
+                HIRExpr {
+                    kind: HIRExprKind::Borrow {
+                        is_mut: true,
+                        target: Box::new(lhs_expr),
+                    },
+                    ty: IRType::REF(
+                        Box::new(actual.clone())
+                    ),
+                    span,
+                }
+            }
+
+            (
+                IRType::CONST_REF(inner),
+                actual,
+            ) if inner.as_ref() == actual => {
+                HIRExpr {
+                    kind: HIRExprKind::Borrow {
+                        is_mut: false,
+                        target: Box::new(lhs_expr),
+                    },
+                    ty: IRType::CONST_REF(
+                        Box::new(actual.clone())
+                    ),
+                    span,
+                }
+            }
+
+            _ => lhs_expr,
+        };
+
+        let expected_user_args =
+        param_types.len().saturating_sub(1);
+
+        if arguments.len() != expected_user_args {
+            return Err(self.error(
+                "S004",
+                format!(
+                    "method '{}' expected {} argument{}, found {}",
+                    method_name,
+                    expected_user_args,
+                    if expected_user_args == 1 { "" } else { "s" },
+                    arguments.len(),
+                ),
+                span,
+            ));
+        }
+
+        let mut args = Vec::new();
+
+        // self is always argument zero.
+        args.push(self_arg);
+
+        for arg_node in arguments {
+            let expected_ty = param_types.get(args.len());
+
+            let mut lowered_arg =
+            self.lower_expr_with_type(
+                arg_node,
+                expected_ty,
+            )?;
+
+            if let Some(target) = expected_ty {
+                lowered_arg =
+                    self.coerce_primitive(
+                        lowered_arg,
+                        target,
+                    );
+            }
+
+            args.push(lowered_arg);
+        }
+
+        let mut lowered_generics = Vec::new();
+
+        for node in generic_args {
+            lowered_generics.push(
+                self.lower_type(node)?
+            );
+        }
+
+        Ok(HIRExpr {
+            kind: HIRExprKind::Call {
+                callee: method_def_id,
+                args,
+                generic_args: lowered_generics,
+            },
+            ty: return_type,
+            span,
+        })
     }
 }

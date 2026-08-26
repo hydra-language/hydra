@@ -1,4 +1,5 @@
 use errors::error::Span;
+use crate::intrinsic::IntrinsicKind;
 use crate::types::Type;
 use crate::context::DefID;
 use std::fmt;
@@ -18,7 +19,6 @@ pub struct HIRFunction {
     pub return_type: Type,
     pub body: HIRBlock,
     pub is_extern: bool,
-    pub is_intrinsic: bool,
     pub is_inline: bool,
     pub generic_params: Vec<String>,
 }
@@ -72,6 +72,13 @@ pub enum HIRExprKind {
     BuiltinCall {
         name: String,
         args: Vec<HIRExpr>,
+    },
+
+    IntrinsicCall {
+        callee: DefID,
+        kind: IntrinsicKind,
+        args: Vec<HIRExpr>,
+        type_args: Vec<Type>,
     },
 
     Binary {
@@ -257,6 +264,36 @@ impl fmt::Display for HIRExprKind {
                     if i > 0 { write!(f, ", ")?; }
                     write!(f, "{}", arg)?;
                 }
+                write!(f, ")")
+            }
+
+            HIRExprKind::IntrinsicCall { callee: _, kind, args, type_args } => {
+                write!(f, "intrinsic {:?}", kind)?;
+
+                if !type_args.is_empty() {
+                    write!(f, "<")?;
+
+                    for (i, ty) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+
+                        write!(f, "{}", ty)?;
+                    }
+
+                    write!(f, ">")?;
+                }
+
+                write!(f, "(")?;
+
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+
+                    write!(f, "{}", arg)?;
+                }
+
                 write!(f, ")")
             }
             

@@ -3,6 +3,7 @@ use inkwell::types::{BasicType, BasicTypeEnum};
 use ir::Constant;
 use ir::hir::{CastKind, HIRBinOp, HIRUnaryOp};
 use ir::types::Type;
+use ir::intrinsic::IntrinsicKind;
 use mir::{Rvalue, Operand, AggregateKind, MIRFunction};
 use crate::CodeGen;
 
@@ -143,16 +144,27 @@ impl<'c> CodeGen<'c> {
 
 
             Rvalue::Aggregate(kind, operands) => {
-                // EXPLICIT TYPE ANNOTATION FIX:
                 let llvm_ty: BasicTypeEnum = match kind {
                     AggregateKind::Struct(def_id) => {
-                        let info = self.hir_context.get_def(*def_id)
-                            .expect("ICE: struct defintion not found");
+                        let info = self.hir_context.get_def(*def_id).expect("ICE: struct definition not found");
 
-                        self.module.get_struct_type(&info.name)
-                            .unwrap_or_else(|| panic!("ICE: struct {} not registered in module", info.name))
+                        let struct_name = if info.absolute_path.is_empty() {
+                            info.name.clone()
+                        } else {
+                            info.absolute_path.join("::")
+                        };
+
+                        self.module
+                            .get_struct_type(&struct_name)
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "ICE: struct '{}' not registered in module",
+                                    struct_name
+                                )
+                            })
                             .as_basic_type_enum()
-                    },
+                    }
+
                     AggregateKind::Array(inner) => {
                         crate::types::compile_type(self.context, &self.target_data, inner)
                             .array_type(operands.len() as u32).into()
@@ -180,6 +192,10 @@ impl<'c> CodeGen<'c> {
                 }
                 
                 Ok(agg_val)
+            }
+
+            Rvalue::Intrinsic { kind, type_args, args, .. } => {
+                self.compile_intrinsic(*kind, type_args, args, mir_fn)
             }
         }
     }

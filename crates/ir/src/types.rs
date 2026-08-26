@@ -104,6 +104,29 @@ impl Type {
             _ => "unknown".to_string(),
         }
     }
+
+    pub fn contains_generic(&self) -> bool {
+        match self {
+            Type::GENERIC(_) => true,
+
+            Type::GENERIC_INSTANCE(base, args) => {
+                base.contains_generic()
+                || args.iter().any(Type::contains_generic)
+            }
+
+            Type::POINTER(inner) | Type::CONST_POINTER(inner) | 
+            Type::REF(inner) | Type::CONST_REF(inner) | 
+            Type::SLICE(inner) | Type::INFERRED_ARRAY(inner) => {
+                inner.contains_generic()
+            }
+
+            Type::ARRAY(inner, _) => {
+                inner.contains_generic()
+            }
+
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for Type {

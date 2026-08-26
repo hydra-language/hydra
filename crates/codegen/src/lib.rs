@@ -13,12 +13,15 @@ use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::builder::Builder;
 use inkwell::passes::PassManager;
-use inkwell::values::{FunctionValue, PointerValue};
 use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine, TargetTriple};
-use inkwell::types::BasicTypeEnum;
+use inkwell::values::{ BasicValueEnum, FunctionValue, PointerValue };
+use inkwell::AddressSpace;
+use inkwell::types::{BasicType, BasicTypeEnum};
 
 use ir::context::{DefKind, HIRContext};
-use mir::{MIRProgram, BasicBlockID, LocalID};
+use ir::intrinsic::IntrinsicKind;
+use ir::types::Type;
+use mir::{BasicBlockID, LocalID, MIRFunction, MIRProgram, Operand};
 
 pub struct CodeGen<'c> {
     pub context: &'c Context,
@@ -73,34 +76,336 @@ impl<'c> CodeGen<'c> {
 
         for (def_id, info) in &self.hir_context.definitions {
             if let DefKind::Struct { fields, .. } = &info.kind {
-                struct_defs.push((info.name.clone(), *def_id, fields.clone()));
+                // use the same canonical name Type::STRUCT carries.
+                let canonical_name = if info.absolute_path.is_empty() {
+                    info.name.clone()
+                } else {
+                    info.absolute_path.join("::")
+                };
+
+                struct_defs.push((
+                    canonical_name,
+                    *def_id,
+                    fields.clone(),
+                ));
             }
         }
 
-        for (name, _def_id, fields) in struct_defs {
-            if fields.iter().any(|(_, ty, _)| matches!(ty, ir::types::Type::GENERIC(_))) {
+        // PASS 1:
+        // declare every concrete struct as opaque first.
+        //
+        // this matters not only for qualified names, but also for:
+        //
+        //     struct A { b: B }
+        //     struct B { ... }
+        //
+        // HashMap iteration order must not decide whether B exists
+        // when compiling A's field types.
+        for (name, _def_id, fields) in &struct_defs {
+            if fields.iter().any(|(_, ty, _)| ty.contains_generic()) {
                 continue;
             }
-            let struct_ty = self.context.opaque_struct_type(&name);
 
-            // Convert field definitions (String, Type, bool) to just Type
-            let field_types: Vec<BasicTypeEnum> = fields.iter()
-                .map(|(_, ty, _)| crate::types::compile_type(self.context, &self.target_data, ty))
+            if self.context.get_struct_type(name).is_none() {
+                self.context.opaque_struct_type(name);
+            }
+        }
+
+        // PASS 2:
+        // now that every struct name exists, populate the fields.
+        for (name, _def_id, fields) in &struct_defs {
+            if fields.iter().any(|(_, ty, _)| ty.contains_generic()) {
+                continue;
+            }
+
+            let struct_ty = self
+                .context
+                .get_struct_type(name)
+                .ok_or_else(|| {
+                    format!(
+                        "ICE: LLVM struct type '{}' was not registered",
+                        name
+                    )
+                })?;
+
+            let field_types: Vec<BasicTypeEnum> = fields
+                .iter()
+                .map(|(_, ty, _)| {
+                    crate::types::compile_type(
+                        self.context,
+                        &self.target_data,
+                        ty,
+                    )
+                })
                 .collect();
 
             struct_ty.set_body(&field_types, false);
-        }        
-        // 1. Declare all functions first
+        }
+
+        // declare all functions first.
         for function in &program.functions {
             self.generate_function_prototype(function);
         }
 
-        // 2. Build bodies
+        // then build bodies.
         for function in &program.functions {
             self.generate_function_body(function)?;
         }
 
         Ok(())
+    }
+
+    fn compile_intrinsic(&mut self, kind: IntrinsicKind, type_args: &[Type], args: &[Operand], mir_fn: &MIRFunction) 
+        -> Result<BasicValueEnum<'c>, String> 
+    {
+        match kind {
+            IntrinsicKind::SizeOf => {
+                let ty = type_args
+                    .first()
+                    .ok_or("size_of requires one type argument")?;
+
+                let llvm_ty = crate::types::compile_type(
+                    self.context,
+                    &self.target_data,
+                    ty,
+                );
+
+                let size = self.target_data
+                    .get_abi_size(&llvm_ty);
+
+                let usize_ty = self.context
+                    .ptr_sized_int_type(
+                        &self.target_data,
+                        None,
+                    );
+
+                Ok(
+                    usize_ty
+                        .const_int(size, false)
+                        .into()
+                )
+            }
+
+            IntrinsicKind::AlignOf => {
+                let ty = type_args
+                    .first()
+                    .ok_or("align_of requires one type argument")?;
+
+                let llvm_ty = crate::types::compile_type(
+                    self.context,
+                    &self.target_data,
+                    ty,
+                );
+
+                let align = self.target_data
+                    .get_abi_alignment(&llvm_ty);
+
+                let usize_ty = self.context
+                    .ptr_sized_int_type(
+                        &self.target_data,
+                        None,
+                    );
+
+                Ok(
+                    usize_ty
+                        .const_int(align as u64, false)
+                        .into()
+                )
+            }
+
+            IntrinsicKind::PtrRead => {
+                let src = args
+                    .first()
+                    .ok_or("ptr_read requires one argument")?;
+
+                let ptr = self.compile_operand(src, mir_fn)?.into_pointer_value();
+                let value = self.builder.build_load(ptr, "ptr_read");
+
+                Ok(value)
+            }
+
+            IntrinsicKind::PtrWrite => {
+                if args.len() != 2 {
+                    return Err(
+                        "ptr_write requires two arguments".into()
+                    );
+                }
+
+                let dst = self.compile_operand(&args[0], mir_fn)?.into_pointer_value();
+                let value = self.compile_operand(&args[1], mir_fn)?;
+                self.builder.build_store(dst, value);
+
+                Ok(self.context.i8_type().const_zero().into())
+            }
+
+            IntrinsicKind::PtrOffset => {
+                if args.len() != 2 {
+                    return Err(
+                        "ptr_offset requires two arguments".into()
+                    );
+                }
+
+                let ptr = self
+                    .compile_operand(&args[0], mir_fn)?
+                    .into_pointer_value();
+
+                let count = self
+                    .compile_operand(&args[1], mir_fn)?
+                    .into_int_value();
+
+                let result = unsafe {
+                    self.builder.build_gep(
+                        ptr,
+                        &[count],
+                        "ptr_offset",
+                    )
+                };
+
+                Ok(result.into())
+            }
+
+            IntrinsicKind::Alloc => {
+                if args.len() != 2 {
+                    return Err(
+                        "alloc requires two arguments".into()
+                    );
+                }
+
+                let size = self.compile_operand(
+                    &args[0],
+                    mir_fn,
+                )?;
+
+                let align = self.compile_operand(
+                    &args[1],
+                    mir_fn,
+                )?;
+
+                let alloc_fn = self.get_or_declare_alloc();
+
+                let call = self.builder.build_call(
+                    alloc_fn,
+                    &[
+                        size.into(),
+                        align.into(),
+                    ],
+                    "hydra_alloc",
+                );
+
+                call.try_as_basic_value()
+                    .left()
+                    .ok_or_else(|| {
+                        "hydra_alloc unexpectedly returned void".to_string()
+                    })
+            }
+
+            IntrinsicKind::Dealloc => {
+                if args.len() != 3 {
+                    return Err(
+                        "dealloc requires three arguments".into()
+                    );
+                }
+
+                let ptr = self.compile_operand(
+                    &args[0],
+                    mir_fn,
+                )?;
+
+                let size = self.compile_operand(
+                    &args[1],
+                    mir_fn,
+                )?;
+
+                let align = self.compile_operand(
+                    &args[2],
+                    mir_fn,
+                )?;
+
+                let dealloc_fn = self.get_or_declare_dealloc();
+
+                self.builder.build_call(
+                    dealloc_fn,
+                    &[
+                        ptr.into(),
+                        size.into(),
+                        align.into(),
+                    ],
+                    "",
+                );
+
+                // MIR currently represents void intrinsics as an Rvalue,
+                // so return a dummy LLVM value just like ptr_write.
+                Ok(
+                    self.context
+                        .i8_type()
+                        .const_zero()
+                        .into()
+                )
+            }
+        }
+    }
+
+    fn get_or_declare_alloc(&self) -> FunctionValue<'c> {
+        if let Some(function) = self.module.get_function("hydra_alloc") {
+            return function;
+        }
+
+        let usize_ty = self.context.ptr_sized_int_type(
+            &self.target_data,
+            None,
+        );
+
+        let ptr_ty = self
+            .context
+            .i8_type()
+            .ptr_type(AddressSpace::default());
+
+        let fn_ty = ptr_ty.fn_type(
+            &[
+                usize_ty.into(),
+                usize_ty.into(),
+            ],
+            false,
+        );
+
+        self.module.add_function(
+            "hydra_alloc",
+            fn_ty,
+            None,
+        )
+    }
+
+    fn get_or_declare_dealloc(&self) -> FunctionValue<'c> {
+        if let Some(function) = self.module.get_function("hydra_dealloc") {
+            return function;
+        }
+
+        let usize_ty = self.context.ptr_sized_int_type(
+            &self.target_data,
+            None,
+        );
+
+        let ptr_ty = self
+            .context
+            .i8_type()
+            .ptr_type(AddressSpace::default());
+
+        let fn_ty = self.context
+            .void_type()
+            .fn_type(
+                &[
+                    ptr_ty.into(),
+                    usize_ty.into(),
+                    usize_ty.into(),
+                ],
+                false,
+            );
+
+        self.module.add_function(
+            "hydra_dealloc",
+            fn_ty,
+            None,
+        )
     }
 
     pub fn ir_to_string(&self) -> String {

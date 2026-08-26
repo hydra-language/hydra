@@ -519,7 +519,16 @@ impl Optimizer {
                 let original_len = block.statements.len();
                 
                 block.statements.retain(|stmt| {
-                    if let StatementKind::Assign(place, _rval) = &stmt.kind {
+                    if let StatementKind::Assign(place, rval) = &stmt.kind {
+
+                        // never delete an effectful intrinsic merely because
+                        // its result is unused.
+                        if let Rvalue::Intrinsic { kind, .. } = rval {
+                            if kind.has_side_effects() {
+                                return true;
+                            }
+                        }
+
                         if place.local.0 == 0 || !place.projection.is_empty() { return true; }
                         read_counts.get(&place.local).unwrap_or(&0) > &0
                     } else {
@@ -708,15 +717,28 @@ impl Optimizer {
             Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(_, op, _) => {
                 changed |= Self::replace_operand(op, safe_constants);
             }
+
             Rvalue::BinaryOp(_, lhs, rhs) => {
                 changed |= Self::replace_operand(lhs, safe_constants);
                 changed |= Self::replace_operand(rhs, safe_constants);
             }
+
             Rvalue::Aggregate(_, ops) => {
                 for op in ops { changed |= Self::replace_operand(op, safe_constants); }
             }
+
             Rvalue::Ref(_, _) => {}
+
+            Rvalue::Intrinsic { args, .. } => {
+                for op in args {
+                    changed |= Self::replace_operand(
+                        op,
+                        safe_constants,
+                    );
+                }
+            }
         }
+
         changed
     }
 
@@ -738,7 +760,14 @@ impl Optimizer {
                 for op in ops { changed |= replace(op); }
             }
             Rvalue::Ref(_, _) => {}
+
+            Rvalue::Intrinsic { args, .. } => {
+                for op in args {
+                    changed |= replace(op);
+                }
+            }
         }
+
         changed
     }
 
@@ -775,6 +804,15 @@ impl Optimizer {
                     }
                 }
             }
+
+            Rvalue::Intrinsic { args, .. } => {
+                for op in args {
+                    changed |= Self::replace_local(
+                        op,
+                        safe_copies,
+                    );
+                }
+            }
         }
         changed
     }
@@ -809,6 +847,12 @@ impl Optimizer {
                     if let ProjectionElem::Index(idx_local) = proj {
                         *counts.entry(*idx_local).or_insert(0) += 1;
                     }
+                }
+            }
+
+            Rvalue::Intrinsic { args, .. } => {
+                for op in args {
+                    Self::count_reads(op, counts);
                 }
             }
         }
@@ -887,6 +931,12 @@ impl Optimizer {
                 for op in ops { Self::shift_locals_in_operand(op, shift); }
             }
             Rvalue::Ref(_, place) => shift(&mut place.local),
+
+            Rvalue::Intrinsic { args, .. } => {
+                for op in args {
+                    Self::shift_locals_in_operand(op, shift);
+                }
+            }
         }
     }
 
@@ -931,6 +981,11 @@ impl Optimizer {
             Rvalue::Use(op) | Rvalue::Cast(_, op, _) => Self::operand_uses_local(op, target),
             Rvalue::Aggregate(_, ops) => ops.iter().any(|op| Self::operand_uses_local(op, target)),
             Rvalue::Ref(_, place) => place.local == target,
+            Rvalue::Intrinsic { args, .. } => {
+                args.iter().any(|op| {
+                    Self::operand_uses_local(op, target)
+                })
+            }
         }
     }
 

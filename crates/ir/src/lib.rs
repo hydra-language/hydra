@@ -2,6 +2,7 @@ pub mod types;
 pub mod expr;
 pub mod stmt;
 pub mod context;
+pub mod intrinsic;
 pub mod hir;
 
 use std::fmt;

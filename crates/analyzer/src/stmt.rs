@@ -5,9 +5,9 @@ use ir::types::Type as IRType;
 use ir::context::DefKind;
 use ir::hir::{HIRStmt, HIRExpr, HIRExprKind, HIRBlock}; 
 
-impl<'a, 'ctx> Analyzer<'a, 'ctx> {
+impl<'ctx> Analyzer<'ctx> {
 
-    pub(crate) fn lower_block(&mut self, block: &parser::ast::Block<'a>) -> Result<HIRBlock, HydraError> {
+    pub(crate) fn lower_block(&mut self, block: &parser::ast::Block) -> Result<HIRBlock, HydraError> {
         let mut stmts = Vec::new();
         for stmt in &block.statements {
             stmts.push(self.lower_stmt(stmt)?);
@@ -15,7 +15,7 @@ impl<'a, 'ctx> Analyzer<'a, 'ctx> {
         Ok(HIRBlock { stmts, span: crate::utils::get_stmt_span(block.statements.first().unwrap()) }) // approx span
     }
 
-    pub(crate) fn lower_stmt(&mut self, stmt: &ASTStmt<'a>) -> Result<HIRStmt, HydraError> {
+    pub(crate) fn lower_stmt(&mut self, stmt: &ASTStmt) -> Result<HIRStmt, HydraError> {
         let span = crate::utils::get_stmt_span(stmt);
         
         match stmt {

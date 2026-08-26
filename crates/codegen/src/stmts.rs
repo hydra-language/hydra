@@ -19,10 +19,53 @@ impl<'c> CodeGen<'c> {
                 // If it IS void, we do nothing (no memory to store into!)
             }
 
-            StatementKind::Drop(_) => {
-                // Stack types drop automatically. Heap drop logic goes here later!
+            StatementKind::Drop(place) => {
+                let ty = &mir_fn.locals[place.local.0].ty;
+
+                let Type::STRUCT(type_name) = ty else {
+                    return Ok(());
+                };
+
+                let Some(drop_def_id) = self.hir_context.get_drop_impl(type_name) else {
+                    return Ok(());
+                };
+
+                let drop_info = self.hir_context.get_def(drop_def_id).ok_or_else(|| {
+                    format!(
+                        "ICE: missing drop implementation for `{}`",
+                        type_name
+                    )
+                })?;
+
+                let drop_name = if drop_info.absolute_path.is_empty() {
+                    drop_info.name.clone()
+                } else {
+                    drop_info.absolute_path.join("::")
+                };
+
+                let drop_fn = self.module.get_function(&drop_name).ok_or_else(|| {
+                    format!(
+                        "ICE: LLVM drop function `{}` not found",
+                        drop_name
+                    )
+                })?;
+
+                //
+                // drop(&mut self)
+                //
+                // compile_place() gives us the address of the Box local,
+                // which is exactly the representation expected by &mut self.
+                //
+                let self_ptr = self.compile_place(place, mir_fn)?;
+
+                self.builder.build_call(
+                    drop_fn,
+                    &[self_ptr.into()],
+                    "",
+                );
             }
         }
+
         Ok(())
     }
 

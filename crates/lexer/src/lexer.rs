@@ -3,8 +3,8 @@ use core::hash;
 use super::token::{Token, TokenType};
 use errors::error::{HydraError, Span};
 
-pub struct Lexer<'a> {
-    input: &'a str,
+pub struct Lexer {
+    input: String,
     chars: Vec<char>,
     current: usize,
     start: usize,
@@ -14,11 +14,11 @@ pub struct Lexer<'a> {
     start_column: usize,
 }
 
-impl<'a> Lexer<'a> {
+impl Lexer {
 
-    pub fn new(input: &'a str) -> Self {
+    pub fn new(input: String) -> Self {
         Self {
-            input,
+            input: input.clone(),
             chars: input.chars().collect(),
             current: 0,
             start: 0,
@@ -37,7 +37,7 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    pub fn tokenize(&mut self) -> Result<Vec<Token<'a>>, HydraError> {
+    pub fn tokenize(&mut self) -> Result<Vec<Token>, HydraError> {
         let mut tokens = Vec::new();
 
         while !self.is_at_end() {
@@ -52,11 +52,11 @@ impl<'a> Lexer<'a> {
             self.start_column = self.column;
 
             if let Some(token_type) = self.scan_token()? {
-                let lexeme = &self.input[self.start_offset()..self.current_offset()];
+                let lexeme = &self.input[self.start_offset()..self.current_offset()].to_string();
 
                 tokens.push(Token {
                     token_type,
-                    lexeme,
+                    lexeme: lexeme.clone(),
                     span: Span {
                         line: self.start_line,
                         column: self.start_column,
@@ -68,7 +68,7 @@ impl<'a> Lexer<'a> {
 
         tokens.push(Token {
             token_type: TokenType::EOF,
-            lexeme: "",
+            lexeme: String::new(),
             span: Span {
                 line: self.line,
                 column: self.column,

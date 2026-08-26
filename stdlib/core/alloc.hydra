@@ -1,0 +1,53 @@
+include core::mem;
+include core::intrinsics;
+
+pub struct Layout {
+    size: usize;
+    align: usize;
+}
+
+extension Layout {
+
+    pub fn new<T>() -> Layout {
+        return Layout {
+            .size = mem::size_of::<T>(),
+            .align = mem::align_of::<T>(),
+        };
+    }
+    
+    pub fn from_size_align(size: usize, align: usize) -> Layout {
+        return Layout {
+            .size = size,
+            .align = align
+        };
+    }
+
+    pub fn size(&self) -> usize {
+        return self.size;
+    }
+
+    pub fn align(&self) -> usize {
+        return self.align;
+    }
+}
+
+pub struct Allocator {}
+
+extension Allocator {
+    
+    pub fn alloc(layout: Layout) -> *mut u8 {
+        return intrinsics::__alloc(
+            layout::size(),
+            layout::align()
+        );
+}
+
+    pub fn dealloc(ptr: *mut u8, layout: Layout) -> void {
+        intrinsics::__dealloc(
+            ptr,
+            layout::size(),
+            layout::align()
+        );
+    }
+}
+

@@ -2,48 +2,56 @@ use lexer::{Token, TokenType};
 use crate::ast::*;
 use errors::error::HydraError;
 
-pub struct Parser<'a> {
-    tokens: Vec<Token<'a>>,
+pub struct Parser {
+    tokens: Vec<Token>,
     current: usize,
     errors: Vec<HydraError>,
-    
+    source_id: u32,
+   
     // used to generate unique ids for every syntax node 
     // so the semantic analyzer can build side-tables later.
     next_node_id: u32,
     
     // used to prevent parsing struct initializers inside if-conditions
     allow_struct: bool,
+
+    pub headers_only: bool,
 }
 
-impl<'a> Parser<'a> {
+impl Parser {
 
     // ========================================================================
     // 1. LIFECYLE AND ENTRY POINT
     // ========================================================================
 
-    pub fn new(tokens: Vec<Token<'a>>) -> Self {
+    pub fn new(tokens: Vec<Token>, source_id: u32) -> Self {
         Self {
             tokens, 
             current: 0,
+            source_id,
             errors: Vec::new(),
             next_node_id: 1, // start at 1 so 0 can be reserved for invalid/null if needed
             allow_struct: true,
+            headers_only: false,
         }
     }
 
     // create new node id for each ast node
     fn next_node_id(&mut self) -> NodeID {
-        let id = self.next_node_id;
+        let id = self.next_node_id as u64;
         self.next_node_id += 1;
-        NodeID(id)
+
+        let source_id = self.source_id as u64;
+
+        NodeID((source_id << 32) | id)
     }
 
-    fn error(&self, token: &Token<'a>, code: &'static str, message: impl Into<String>) -> HydraError {
+    fn error(&self, token: &Token, code: &'static str, message: impl Into<String>) -> HydraError {
         HydraError::new(code, message, token.span)
     }
 
     // the main entry point for the compiler. a file is just a list of items.
-    pub fn parse(&mut self) -> Result<Vec<Item<'a>>, Vec<HydraError>> {
+    pub fn parse(&mut self) -> Result<Vec<Item>, Vec<HydraError>> {
         let mut items = Vec::new();
 
         while !self.is_at_end() {
@@ -102,7 +110,7 @@ impl<'a> Parser<'a> {
     // 3. TOP LEVEL DECLARATIONS
     // ========================================================================
 
-    fn parse_item(&mut self) -> Result<Item<'a>, HydraError> {
+    fn parse_item(&mut self) -> Result<Item, HydraError> {
         if self.match_token(TokenType::INCLUDE) {
             return self.parse_include();
         }
@@ -132,7 +140,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_include(&mut self) -> Result<Item<'a>, HydraError> {
+    fn parse_include(&mut self) -> Result<Item, HydraError> {
         let id = self.next_node_id();
         let first_token = self.consume_identifier("expected module path")?.clone();
         let mut segments = vec![first_token];
@@ -171,7 +179,7 @@ impl<'a> Parser<'a> {
         Ok(Item::Include(IncludeDecl { id, path, symbols, alias }))
     }
 
-    fn parse_struct(&mut self, is_pub: bool, _annotations: Vec<Annotation>) -> Result<Item<'a>, HydraError> {
+    fn parse_struct(&mut self, is_pub: bool, _annotations: Vec<Annotation>) -> Result<Item, HydraError> {
         let id = self.next_node_id();
         let name = self.consume_identifier("expected struct name")?.clone();
         let generic_params = self.parse_generic_params()?;
@@ -207,7 +215,7 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    fn parse_trait(&mut self, is_pub: bool, _annotations: Vec<Annotation>) -> Result<Item<'a>, HydraError> {
+    fn parse_trait(&mut self, is_pub: bool, _annotations: Vec<Annotation>) -> Result<Item, HydraError> {
         let id = self.next_node_id();
         let name = self.consume_identifier("expected trait name")?.clone();
 
@@ -230,7 +238,7 @@ impl<'a> Parser<'a> {
         Ok(Item::Trait(TraitDecl { id, name, methods, is_pub }))
     }
 
-    fn parse_extension(&mut self, _annotations: Vec<Annotation>) -> Result<Item<'a>, HydraError> {
+    fn parse_extension(&mut self, _annotations: Vec<Annotation>) -> Result<Item, HydraError> {
         let id = self.next_node_id();
         let generic_params = self.parse_generic_params()?;
 
@@ -274,7 +282,7 @@ impl<'a> Parser<'a> {
 
     // standard fns, externs and trait methods
     fn parse_function_decl(&mut self, is_pub: bool, annotations: Vec<Annotation>, is_extern_or_trait: bool) 
-        -> Result<FunctionDecl<'a>, HydraError> 
+        -> Result<FunctionDecl, HydraError> 
     {
         let id = self.next_node_id();
         let name = self.consume_identifier("expected function name")?.clone();
@@ -305,7 +313,7 @@ impl<'a> Parser<'a> {
                     // semantic analyzer will resolve "Self" properly later
                     let self_type = Type::Path {
                         id: self.next_node_id(),
-                        segments: vec![Token { token_type: TokenType::IDENTIFIER("Self".to_string()), lexeme: "Self", span: self_token.span }]
+                        segments: vec![Token { token_type: TokenType::IDENTIFIER("Self".to_string()), lexeme: "Self".to_string(), span: self_token.span }]
                     };
 
                     let final_type = if is_shorthand {
@@ -340,6 +348,9 @@ impl<'a> Parser<'a> {
         let body = if is_bodyless {
             self.consume(TokenType::Semicolon, "expected ';' after bodyless function declaration")?;
             None
+        } else if self.headers_only {
+            self.skip_block()?;
+            None
         } else {
             Some(self.parse_block()?)
         };
@@ -362,7 +373,7 @@ impl<'a> Parser<'a> {
     // 4. STATEMENTS AND BLOCKS
     // ========================================================================
 
-    fn parse_block(&mut self) -> Result<Block<'a>, HydraError> {
+    fn parse_block(&mut self) -> Result<Block, HydraError> {
         let id = self.next_node_id();
         self.consume(TokenType::LeftBrace, "expected '{' to start block")?;
 
@@ -383,7 +394,7 @@ impl<'a> Parser<'a> {
         Ok(Block { id, statements })
     }
 
-    fn parse_stmt(&mut self) -> Result<Stmt<'a>, HydraError> {
+    fn parse_stmt(&mut self) -> Result<Stmt, HydraError> {
         if self.match_token(TokenType::LET) {
             self.parse_variable_decl(false)
         } else if self.match_token(TokenType::CONST) {
@@ -402,7 +413,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_variable_decl(&mut self, is_const: bool) -> Result<Stmt<'a>, HydraError> {
+    fn parse_variable_decl(&mut self, is_const: bool) -> Result<Stmt, HydraError> {
         let id = self.next_node_id();
         let name = self.consume_identifier("expected variable name")?.clone();
 
@@ -420,7 +431,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_return_stmt(&mut self) -> Result<Stmt<'a>, HydraError> {
+    fn parse_return_stmt(&mut self) -> Result<Stmt, HydraError> {
         let id = self.next_node_id();
         let mut value = None;
 
@@ -433,7 +444,7 @@ impl<'a> Parser<'a> {
         Ok(Stmt::Return { id, value })
     }
 
-    fn parse_break_stmt(&mut self) -> Result<Stmt<'a>, HydraError> {
+    fn parse_break_stmt(&mut self) -> Result<Stmt, HydraError> {
         let id = self.next_node_id();
         let mut condition = None;
 
@@ -449,7 +460,7 @@ impl<'a> Parser<'a> {
         Ok(Stmt::Break { id, condition })
     }
 
-    fn parse_continue_stmt(&mut self) -> Result<Stmt<'a>, HydraError> {
+    fn parse_continue_stmt(&mut self) -> Result<Stmt, HydraError> {
         let id = self.next_node_id();
         let mut condition = None;
 
@@ -469,7 +480,7 @@ impl<'a> Parser<'a> {
     // 5. TYPES
     // ========================================================================
 
-    fn parse_type(&mut self) -> Result<Type<'a>, HydraError> {
+    fn parse_type(&mut self) -> Result<Type, HydraError> {
         if self.match_token(TokenType::LeftBracket) {
             let id = self.next_node_id();
             let start_token = self.previous().clone();
@@ -576,7 +587,7 @@ impl<'a> Parser<'a> {
     // 6. GENERICS AND TRAIT BOUNDS
     // ========================================================================
 
-    fn parse_generic_params(&mut self) -> Result<Vec<GenericParam<'a>>, HydraError> {
+    fn parse_generic_params(&mut self) -> Result<Vec<GenericParam>, HydraError> {
         let mut params = Vec::new();
         if self.match_token(TokenType::LeftAngle) { 
             loop {
@@ -590,7 +601,7 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    fn parse_where_clause(&mut self) -> Result<Option<WhereClause<'a>>, HydraError> {
+    fn parse_where_clause(&mut self) -> Result<Option<WhereClause>, HydraError> {
         if !self.match_token(TokenType::WHERE) {
             return Ok(None);
         }
@@ -658,11 +669,11 @@ impl<'a> Parser<'a> {
     // 7. EXPRESSIONS
     // ========================================================================
 
-    fn parse_expression(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_expression(&mut self) -> Result<Expr, HydraError> {
         self.parse_assignment()
     }
 
-    fn parse_assignment(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_assignment(&mut self) -> Result<Expr, HydraError> {
         let target = self.parse_logical_or()?; 
 
         if self.match_token(TokenType::Equal) ||
@@ -687,7 +698,7 @@ impl<'a> Parser<'a> {
         Ok(target)
     }
 
-    fn parse_logical_or(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_logical_or(&mut self) -> Result<Expr, HydraError> {
         let mut node = self.parse_logical_and()?;
 
         while self.match_token(TokenType::DoublePipe) {
@@ -703,7 +714,7 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
-    fn parse_logical_and(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_logical_and(&mut self) -> Result<Expr, HydraError> {
         let mut node = self.parse_equality()?;
 
         while self.match_token(TokenType::DoubleAmpersand) {
@@ -719,7 +730,7 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
-    fn parse_equality(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_equality(&mut self) -> Result<Expr, HydraError> {
         let mut node = self.parse_comparison()?;
 
         while self.match_token(TokenType::DoubleEqual) || self.match_token(TokenType::ExclamEqual) {
@@ -735,7 +746,7 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
-    fn parse_comparison(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_comparison(&mut self) -> Result<Expr, HydraError> {
         let mut node = self.parse_additive()?;
 
         while self.match_token(TokenType::LeftAngle) || self.match_token(TokenType::LessEqual) ||
@@ -753,7 +764,7 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
-    fn parse_additive(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_additive(&mut self) -> Result<Expr, HydraError> {
         let mut node = self.parse_multiplicative()?;
 
         loop {
@@ -777,7 +788,7 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
-    fn parse_multiplicative(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_multiplicative(&mut self) -> Result<Expr, HydraError> {
         let mut node = self.parse_unary()?;
 
         loop {
@@ -804,7 +815,7 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
-    fn parse_unary(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_unary(&mut self) -> Result<Expr, HydraError> {
         // borrowing
         if self.match_token(TokenType::Ampersand) {
             let id = self.next_node_id();
@@ -840,7 +851,7 @@ impl<'a> Parser<'a> {
         self.parse_call()
     }
 
-    fn parse_call(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_call(&mut self) -> Result<Expr, HydraError> {
         let mut expr = self.parse_primary()?;
         
         loop {
@@ -891,25 +902,48 @@ impl<'a> Parser<'a> {
                     return Err(self.error(self.peek(), "P001", "expected property name after '.'"));
                 };
 
-                // check if it's a method call like `obj::method()`
-                if self.check(TokenType::LeftParen) || self.check(TokenType::DoubleColon) {
-                    // if there are generic args, we expect `::`
+                expr = Expr::Member { id, object: Box::new(expr), property: name };
+            } else if self.match_token(TokenType::DoubleColon) {
+                if self.match_token(TokenType::LeftAngle) {
+                    let id = self.next_node_id();
                     let mut generic_args = Vec::new();
-                    if self.match_token(TokenType::DoubleColon) {
-                        self.consume(TokenType::LeftAngle, "expected '<' after '::' for method generics")?;
-                        loop {
-                            generic_args.push(self.parse_type()?);
-                            if self.match_token(TokenType::RightAngle) { break; }
-                            self.consume(TokenType::Comma, "expected ',' in generic args")?;
+                    loop {
+                        generic_args.push(self.parse_type()?);
+                        if self.match_token(TokenType::RightAngle) { break; }
+                        self.consume(TokenType::Comma, "expected ',' in generic args")?;
+                    }
+                    self.consume(TokenType::LeftParen, "expected '(' after generic arguments")?;
+                    let arguments = self.finish_parse_fn_call_args()?;
+                    expr = Expr::FunctionCall { id, callee: Box::new(expr), arguments, generic_args };
+                } else {
+                    let next_name = self.consume_identifier("expected identifier after '::'")?.clone();
+
+                    expr = match expr {
+                        Expr::Variable { name, .. } => {
+                            Expr::Path { id: self.next_node_id(), segments: vec![name, next_name] }
+                        },
+                        Expr::Path { mut segments, .. } => {
+                            segments.push(next_name);
+                            Expr::Path { id: self.next_node_id(), segments }
+                        },
+                        other => {
+                            let mut generic_args = Vec::new();
+                            if self.match_token(TokenType::DoubleColon) {
+                                self.consume(TokenType::LeftAngle, "expected '<' after '::' for method generics")?;
+                                loop {
+                                    generic_args.push(self.parse_type()?);
+                                    if self.match_token(TokenType::RightAngle) { break; }
+                                    self.consume(TokenType::Comma, "expected ',' in generic args")?;
+                                }
+                            }
+                            if self.match_token(TokenType::LeftParen) {
+                                let arguments = self.finish_parse_fn_call_args()?;
+                                Expr::MethodCall { id: self.next_node_id(), object: Box::new(other), method: next_name, arguments, generic_args }
+                            } else {
+                                Expr::Member { id: self.next_node_id(), object: Box::new(other), property: next_name }
+                            }
                         }
                     }
-                    
-                    self.consume(TokenType::LeftParen, "expected '(' after method name")?;
-                    let arguments = self.finish_parse_fn_call_args()?;
-                    expr = Expr::MethodCall { id, object: Box::new(expr), method: name, arguments, generic_args };
-                } else {
-                    // standard field access
-                    expr = Expr::Member { id, object: Box::new(expr), property: name };
                 }
             } else if self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) {
                 let id = self.next_node_id();
@@ -928,7 +962,7 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn finish_parse_fn_call_args(&mut self) -> Result<Vec<Expr<'a>>, HydraError> {
+    fn finish_parse_fn_call_args(&mut self) -> Result<Vec<Expr>, HydraError> {
         let mut args = Vec::new();
 
         if !self.check(TokenType::RightParen) {
@@ -942,7 +976,7 @@ impl<'a> Parser<'a> {
         Ok(args)
     }
 
-    fn parse_struct_initializer(&mut self, name_expr: Expr<'a>) -> Result<Expr<'a>, HydraError> {
+    fn parse_struct_initializer(&mut self, name_expr: Expr) -> Result<Expr, HydraError> {
         let id = self.next_node_id();
         self.consume(TokenType::LeftBrace, "expected '{' for struct initializer")?;
         let mut fields = Vec::new();
@@ -965,7 +999,7 @@ impl<'a> Parser<'a> {
         Ok(Expr::StructInitializer { id, name: Box::new(name_expr), fields })
     }
 
-    fn parse_primary(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_primary(&mut self) -> Result<Expr, HydraError> {
         // check for control flow expressions first 
         if self.match_token(TokenType::IF) { return self.parse_if(); }
         if self.match_token(TokenType::WHILE) { return self.parse_while(); }
@@ -1017,7 +1051,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_array_initializer(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_array_initializer(&mut self) -> Result<Expr, HydraError> {
         let id = self.next_node_id();
         let start_token = self.consume(TokenType::LeftBrace, "expected '{' to start array initializer")?.clone();
         let mut elements = Vec::new();
@@ -1034,7 +1068,7 @@ impl<'a> Parser<'a> {
         Ok(Expr::ArrayInitializer { id, elements, token: start_token })
     }
 
-    fn parse_if(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_if(&mut self) -> Result<Expr, HydraError> {
         let id = self.next_node_id();
         let has_paren = self.match_token(TokenType::LeftParen);
 
@@ -1068,7 +1102,7 @@ impl<'a> Parser<'a> {
         Ok(Expr::If { id, condition: Box::new(condition), then_branch, else_branch })
     }
 
-    fn parse_while(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_while(&mut self) -> Result<Expr, HydraError> {
         let id = self.next_node_id();
         let has_paren = self.match_token(TokenType::LeftParen);        
         
@@ -1085,7 +1119,7 @@ impl<'a> Parser<'a> {
         Ok(Expr::While { id, condition: Box::new(condition), body })
     }
 
-    fn parse_for(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_for(&mut self) -> Result<Expr, HydraError> {
         let id = self.next_node_id();
         let has_paren = self.match_token(TokenType::LeftParen);
 
@@ -1115,7 +1149,7 @@ impl<'a> Parser<'a> {
         Ok(Expr::For { id, variable, start: Box::new(start), end: Box::new(end), is_inclusive, body })
     }
     
-    fn parse_foreach(&mut self) -> Result<Expr<'a>, HydraError> {
+    fn parse_foreach(&mut self) -> Result<Expr, HydraError> {
         let id = self.next_node_id();
         let has_paren = self.match_token(TokenType::LeftParen);
 
@@ -1150,7 +1184,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn consume(&mut self, token: TokenType, expected: &str) -> Result<&Token<'a>, HydraError> {
+    fn consume(&mut self, token: TokenType, expected: &str) -> Result<&Token, HydraError> {
         if self.check(token) {
             Ok(self.advance())
         } else {
@@ -1158,7 +1192,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn consume_identifier(&mut self, expected: &str) -> Result<Token<'a>, HydraError> {
+    fn consume_identifier(&mut self, expected: &str) -> Result<Token, HydraError> {
         if let TokenType::IDENTIFIER(_) = self.peek().token_type {
             Ok(self.advance().clone())
         } else {
@@ -1176,7 +1210,7 @@ impl<'a> Parser<'a> {
         std::mem::discriminant(&self.tokens[pos].token_type) == std::mem::discriminant(&token_type)
     }
 
-    fn peek(&self) -> &Token<'a> {
+    fn peek(&self) -> &Token {
         &self.tokens[self.current]
     }
 
@@ -1194,7 +1228,26 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn advance(&mut self) -> &Token<'a> {
+    fn skip_block(&mut self) -> Result<(), HydraError> {
+        self.consume(TokenType::LeftBrace, "expected '{' to start block")?;
+        let mut depth = 1;
+
+        while depth > 0 && !self.is_at_end() {
+            if self.check(TokenType::LeftBrace) {
+                depth += 1;
+            } else if self.check(TokenType::RightBrace) {
+                depth -= 1;
+            }
+            self.advance();
+        }
+
+        if depth > 0 {
+            return Err(self.error(self.peek(), "P014", "unterminated block"));
+        }
+        Ok(())
+    }
+
+    fn advance(&mut self) -> &Token {
         if !self.is_at_end() {
             self.current += 1;
         }
@@ -1205,7 +1258,7 @@ impl<'a> Parser<'a> {
         self.tokens[self.current].token_type == TokenType::EOF
     }
 
-    fn previous(&self) -> &Token<'a> {
+    fn previous(&self) -> &Token {
         &self.tokens[self.current - 1]
     }
 }

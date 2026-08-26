@@ -1,10 +1,13 @@
+mod sysroot;
+
 use std::{env, fs, path::{Path, PathBuf}, process::{self, Command}};
 use clap::{CommandFactory, Parser as ClapParser, ValueEnum};
 use inkwell::{OptimizationLevel, context::Context};
 
-use parser::program::Program;
+use sysroot::Sysroot;
 
-// NEW: Import Resolver and HIRContext
+use parser::module::{ModuleTree, SourceMap};
+
 use analyzer::{Analyzer, Resolver, monomorphizer::Monomorphizer};
 use ir::context::HIRContext;
 
@@ -41,11 +44,21 @@ struct Cli {
     release: bool,
 
     #[arg(short, long, value_name = "OUTPUT", help = "specify name of output file")]
-    output: Option<String>
+    output: Option<String>,
+
+    #[arg(long, value_name = "PATH", help = "override the hydra sysroot")]
+    sysroot: Option<PathBuf>,
 }
 
 fn main() {
     let cli = Cli::parse();
+
+    let sysroot = Sysroot::discover(cli.sysroot.clone())
+        .unwrap_or_else(|error| {
+            eprintln!("{}[ERROR]{} {}", RED, RESET, error);
+
+            process::exit(1);
+        });
 
     if cli.input.is_none() {
         Cli::command().print_help().unwrap();
@@ -85,31 +98,53 @@ fn main() {
     };
 
     // --- PHASE 1: PARSER ---
-    let program = Program::build(input_path).unwrap_or_else(|e| {
-        eprintln!("{}[ERROR]{} build error: {}", RED, RESET, e.message);
+    let mut source_map = SourceMap::new();
+
+    // parse the requested root file and seed import worklist
+    let mut program = ModuleTree::build(input_path, sysroot.stdlib(), &mut source_map).unwrap_or_else(|errors| {
+        for e in errors {
+            e.report(&contents, input_path.to_str().unwrap());
+        }
         process::exit(1);
     });
-        
+
+    // run the fixpoint loop to resolve all includes
+    program.resolve_imports(&mut source_map).unwrap_or_else(|errors| {
+        for e in errors {
+            e.report(&contents, input_path.to_str().unwrap());
+        }
+
+        process::exit(1);
+    });
+
+    // no op: parse_bodies() just returns Ok(()). will delete later
+    program.parse_bodies(&source_map).unwrap_or_else(|errors| {
+        for e in errors { e.report(&contents, input_path.to_str().unwrap()); }
+        process::exit(1);
+    });
+
     if emit_list.contains(&EmitStage::AST) {
         let fname = input_path.with_extension("nodes");
         let mut all_asts = String::new();
-        for (name, module) in &program.modules {
-            all_asts.push_str(&format!("--- MODULE: {} ---\n", name.join("::")));
-            for node in &module.1 {
+
+        for (filepath, (_, items)) in &program.parsed_files {
+            all_asts.push_str(&format!("--- FILE: {} ---\n", filepath.display()));
+            for node in items {
                 all_asts.push_str(&format!("{:#?}\n\n", node));
             }
         }
+
         fs::write(&fname, all_asts).unwrap();
         println!("{}[INFO]{} AST nodes written to: {}", GREEN, RESET, fname.display());
     }
 
     // --- PHASE 2: RESOLUTION & SEMANTIC ANALYSIS ---
     
-    // We instantiate the context here so it lives for the entire compilation
+    // we instantiate the context here so it lives for the entire compilation
     let mut context = HIRContext::default(); 
 
     // Pass 2a: Name Resolution
-    let resolver = Resolver::new(&program, &mut context);
+    let resolver = Resolver::new(&program, &mut context, &source_map);
     let (name_resolver, global_symbols) = resolver.resolve().unwrap_or_else(|errors| {
         for e in errors {
             e.report(&contents, input_path.to_str().unwrap());
@@ -118,7 +153,7 @@ fn main() {
     });
 
     // Pass 2b: Semantic Analysis (Type Checking)
-    let analyzer = Analyzer::new(&program, &mut context, name_resolver, global_symbols);
+    let analyzer = Analyzer::new(&program, &mut context, &source_map, name_resolver, global_symbols);
     let hir = analyzer.analyze().unwrap_or_else(|errors| {
         for e in errors {
             e.report(&contents, input_path.to_str().unwrap());
@@ -260,7 +295,7 @@ fn main() {
             .status()
             .expect("failed to link");
     } else {
-        let runtime_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime/arch");
+        let runtime_dir = sysroot.runtime_arch();
         let start_s = match env::consts::ARCH {
             "x86_64" => runtime_dir.join("x86_64/start.s"),
             "aarch64" => runtime_dir.join("aarch64/start.s"),
@@ -285,13 +320,55 @@ fn main() {
                 .expect("failed to assemble start.s");
         }
 
-        Command::new("ld")
+        let runtime_profile = if cli.release {
+            "release"
+        } else {
+            "debug"
+        };
+
+        let runtime_root = runtime_dir
+            .parent()
+            .expect("runtime path has no parent");
+
+        let sysroot_root = runtime_root
+            .parent()
+            .expect("runtime root has no parent");
+
+        let runtime_lib = sysroot_root
+            .join("target")
+            .join(runtime_profile)
+            .join("librt.a");
+
+        if !runtime_lib.exists() {
+            eprintln!(
+                "{}[ERROR]{} runtime library not found: {}",
+                RED,
+                RESET,
+                runtime_lib.display(),
+            );
+
+            process::exit(1);
+        }
+
+        let status = Command::new("clang")
+            .arg("-nostartfiles")
             .arg("-o")
             .arg(&exe_name)
             .arg(&start_o)
             .arg(&obj_file)
+            .arg(&runtime_lib)
             .status()
-            .unwrap();
+            .expect("failed to invoke linker");
+
+        if !status.success() {
+            eprintln!(
+                "{}[ERROR]{} linking failed",
+                RED,
+                RESET,
+            );
+
+            process::exit(1);
+        }
 
         let _ = fs::remove_file(&obj_file);
     }

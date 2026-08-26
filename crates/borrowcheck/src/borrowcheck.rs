@@ -507,6 +507,13 @@ impl<'a> BorrowChecker<'a> {
                     self.extract_uses_operand(op, gen, kill);
                 }
             }
+
+            
+            Rvalue::Intrinsic { args, .. } => {
+                for op in args {
+                    self.extract_uses_operand(op, gen, kill);
+                }
+            }
         }
     }
 
@@ -568,6 +575,14 @@ impl<'a> BorrowChecker<'a> {
                     if let Operand::Copy(p) | Operand::Move(p) = op { reads.insert(p.local); }
                 }
             }
+
+            Rvalue::Intrinsic { args, .. } => {
+                for op in args {
+                    if let Operand::Copy(p) | Operand::Move(p) = op {
+                        reads.insert(p.local);
+                    }
+                }
+            }
         }
     }
 
@@ -618,6 +633,13 @@ impl<'a> BorrowChecker<'a> {
                     if let Operand::Copy(p) | Operand::Move(p) = op { reads.insert(p.local); }
                 }
             }
+            Rvalue::Intrinsic { args, .. } => {
+                for op in args {
+                    if let Operand::Copy(p) | Operand::Move(p) = op {
+                        reads.insert(p.local);
+                    }
+                }
+            }
         }
     }
 
@@ -649,6 +671,9 @@ impl<'a> BorrowChecker<'a> {
                 return;
             }
             Rvalue::Aggregate(_, ops) => ops.iter().collect(),
+            Rvalue::Intrinsic { args, .. } => {
+                args.iter().collect()
+            }
         };
 
         for op in operands {
@@ -675,6 +700,9 @@ impl<'a> BorrowChecker<'a> {
             Rvalue::BinaryOp(_, l, r) => vec![l, r],
             Rvalue::Ref(_, _) => vec![], // borrows don't move
             Rvalue::Aggregate(_, ops) => ops.iter().collect(),
+            Rvalue::Intrinsic { args, .. } => {
+                args.iter().collect()
+            }
         };
 
         for op in operands {

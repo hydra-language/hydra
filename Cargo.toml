@@ -8,5 +8,6 @@ members = [
     "crates/mir",
     "crates/analyzer",
     "crates/codegen",
-    "crates/borrowcheck"
+    "crates/borrowcheck",
+    "runtime"
 ]

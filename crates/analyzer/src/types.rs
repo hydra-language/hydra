@@ -4,14 +4,20 @@ use parser::ast::Type as ASTType;
 use ir::types::Type as IRType;
 use ir::context::DefKind;
 
-impl<'a, 'ctx> Analyzer<'a, 'ctx> {
+impl<'ctx> Analyzer<'ctx> {
 
-    pub(crate) fn lower_type(&mut self, node: &ASTType<'a>) -> Result<IRType, HydraError> {
+    pub(crate) fn lower_type(&mut self, node: &ASTType) -> Result<IRType, HydraError> {
         let span = crate::utils::get_type_span(node);
 
         match node {
             ASTType::Path { id, segments } => {
-                let name = segments[0].lexeme;
+                let name = segments[0].lexeme.as_str();
+
+                if segments.len() == 1 && name == "Self" {
+                    if let Some(self_ty) = &self.current_self_type {
+                        return Ok(self_ty.clone());
+                    }
+                }
 
                 match name {
                     "i8" => return Ok(IRType::I8), 
@@ -39,7 +45,11 @@ impl<'a, 'ctx> Analyzer<'a, 'ctx> {
 
                 match info.kind {
                     DefKind::Struct { .. } => Ok(IRType::STRUCT(info.absolute_path.join("::"))),
-                    DefKind::Alias { .. } => Ok(IRType::GENERIC(info.name.clone())), 
+                    DefKind::GenericParam => {
+                        Ok(IRType::GENERIC(
+                            info.name.clone()
+                        ))
+                    }
                     _ => Err(self.error("T001", format!("`{}` is not a type", info.name), span))
                 }
             },
@@ -53,10 +63,15 @@ impl<'a, 'ctx> Analyzer<'a, 'ctx> {
                 }
             },
 
-            ASTType::RawPointer { inner, .. } => {
+            ASTType::RawPointer { is_mut, inner, .. } => {
                 let inner_type = self.lower_type(inner)?;
-                Ok(IRType::POINTER(Box::new(inner_type)))
-            },
+
+                if *is_mut {
+                    Ok(IRType::POINTER(Box::new(inner_type)))
+                } else {
+                    Ok(IRType::CONST_POINTER(Box::new(inner_type)))
+                }
+            }
 
             ASTType::Generic { base, args, .. } => {
                 let base_ty = self.lower_type(base)?;
@@ -96,7 +111,7 @@ impl<'a, 'ctx> Analyzer<'a, 'ctx> {
             IRType::I32 | IRType::U32 | IRType::F32 => Ok(4),
             IRType::I64 | IRType::U64 | IRType::F64 | IRType::USIZE | IRType::ISIZE => Ok(8),
             
-            IRType::POINTER(_) | IRType::REF(_) | IRType::CONST_REF(_) => Ok(8),
+            IRType::POINTER(_) | IRType::CONST_POINTER(_) | IRType::REF(_) | IRType::CONST_REF(_) => Ok(8),
             
             IRType::ARRAY(inner, len) => {
                 let inner_size = self.get_type_size(inner)?;

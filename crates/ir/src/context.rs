@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use errors::error::Span;
 use parser::Annotation;
+use crate::intrinsic::IntrinsicKind;
 use crate::types::Type;
 use crate::Constant;
 
@@ -29,7 +30,9 @@ pub enum DefKind {
         annotations: Vec<Annotation>,
         return_type: Type,
         generic_params: Vec<String>,
+        intrinsic: Option<IntrinsicKind>,
     },
+
 
     Struct {
         fields: Vec<(String, Type, bool)>,
@@ -44,6 +47,8 @@ pub enum DefKind {
         ty: Type,
         value: Constant,
     },
+
+    GenericParam,
 }
 
 #[derive(Debug, Clone)]
@@ -60,7 +65,7 @@ pub struct HIRContext {
     pub definitions: HashMap<DefID, SymbolInfo>,
     pub types: HashMap<TypeID, Type>,
     next_def_id: usize,
-    next_type_id: usize,
+    pub drop_impls: HashMap<String, DefID>,
 }
 
 impl HIRContext {
@@ -119,5 +124,13 @@ impl HIRContext {
             }
             None
         })
+    }
+
+    pub fn register_drop_impl(&mut self, type_name: String, def_id: DefID) {
+        self.drop_impls.insert(type_name, def_id);
+    }
+
+    pub fn get_drop_impl(&self, type_name: &str) -> Option<DefID> {
+        self.drop_impls.get(type_name).copied()
     }
 }

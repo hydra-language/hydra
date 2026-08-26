@@ -5,6 +5,7 @@ use crate::{
 };
 use crate::Operand;
 
+use errors::error::Span;
 use ir::hir::{HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRStmt};
 use ir::types::Type;
 use ir::context::{DefKind, DefID, HIRContext};
@@ -84,9 +85,8 @@ impl<'a> MIRBuilder<'a> {
         // 4. Flatten the body
         self.lower_block(&hir_fn.body);
 
-        // 5. If the last block doesn't have a terminator, add an implicit Return
-        // (This happens for void functions without explicit returns)
         if matches!(self.basic_blocks[self.current_block.0].terminator, Terminator::Unreachable) {
+            self.emit_pending_drops(hir_fn.body.span);
             self.terminate_block(Terminator::Return);
         }
 
@@ -264,23 +264,34 @@ impl<'a> MIRBuilder<'a> {
             HIRExprKind::Return(ret_expr_opt) => {
                 if let Some(ret_expr) = ret_expr_opt {
                     let ret_operand = self.lower_expr_to_operand(ret_expr);
+
                     self.push_statement(Statement {
                         kind: StatementKind::Assign(
-                            Place { local: LocalID(0), projection: vec![] },
-                            Rvalue::Use(ret_operand)
+                            Place {
+                                local: LocalID(0),
+                                projection: vec![],
+                            },
+                            Rvalue::Use(ret_operand),
                         ),
-                        span: ret_expr.span
+                        span: ret_expr.span,
                     });
-                } 
+                }
+
+                // drop everything still owned before leaving this function.
+                self.emit_pending_drops(expr.span);
 
                 self.terminate_block(Terminator::Return);
-                
-                // Since `return` diverges, it doesn't matter what we return here.
-                // We create a dummy block to receive any unreachable code that follows.
-                self.current_block = self.new_block(); 
-                
-                let unit_local = self.new_local(Type::VOID, false, None);
-                Operand::Copy(Place { local: unit_local, projection: vec![] })
+
+                // anything lowered after this point is unreachable.
+                self.current_block = self.new_block();
+
+                let unit_local =
+                self.new_local(Type::VOID, false, None);
+
+                Operand::Copy(Place {
+                    local: unit_local,
+                    projection: vec![],
+                })
             }
 
             HIRExprKind::Call { callee, args, .. } => {
@@ -310,6 +321,47 @@ impl<'a> MIRBuilder<'a> {
                 self.current_block = success_block;
 
                 Operand::Copy(destination)
+            }
+
+            HIRExprKind::IntrinsicCall { callee, kind, args, type_args } => {
+                let lowered_args = args
+                    .iter()
+                    .map(|arg| self.lower_expr_to_operand(arg))
+                    .collect();
+
+                let temp_local =
+                self.new_local(expr.ty.clone(), false, None);
+
+                let target_place = Place {
+                    local: temp_local,
+                    projection: vec![],
+                };
+
+                let callee_name = self.context
+                    .get_def(*callee)
+                    .map(|info| {
+                        if info.absolute_path.is_empty() {
+                            info.name.clone()
+                        } else {
+                            info.absolute_path.join("::")
+                        }
+                    })
+                    .unwrap_or_else(|| format!("{}", callee));
+
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(
+                        target_place.clone(),
+                        Rvalue::Intrinsic {
+                            callee: callee_name,
+                            kind: *kind,
+                            type_args: type_args.clone(),
+                            args: lowered_args,
+                        },
+                    ),
+                    span: expr.span,
+                });
+
+                Operand::Copy(target_place)
             }
 
             HIRExprKind::BuiltinCall { name, args } => {
@@ -603,7 +655,7 @@ impl<'a> MIRBuilder<'a> {
             
             // Pointers and References are just memory addresses. 
             // Copying an address is safe (the underlying data is NOT copied).
-            Type::POINTER(_) | Type::REF(_) | Type::CONST_REF(_) => true,
+            Type::POINTER(_) | Type::CONST_POINTER(_) | Type::REF(_) | Type::CONST_REF(_) => true,
             
             // Everything else (Structs, dynamically sized arrays, strings) defaults to Move.
             // (Later, you can add logic so a Struct is Copy if all its fields are Copy!)
@@ -612,5 +664,107 @@ impl<'a> MIRBuilder<'a> {
             Type::VOID => true,
             _ => false,
         }
+    }
+
+    fn type_needs_drop(&self, ty: &Type) -> bool {
+        match ty {
+            Type::STRUCT(name) => {
+                self.context.get_drop_impl(name).is_some()
+            }
+
+            _ => false,
+        }
+    }
+
+    fn emit_pending_drops(&mut self, span: Span) {
+        for index in (1..self.locals.len()).rev() {
+            let local = LocalID(index);
+
+            let should_drop = {
+                let decl = &self.locals[index];
+                decl.debug_def_id.is_some() && self.type_needs_drop(&decl.ty)
+            };
+
+            if !should_drop {
+                continue;
+            }
+
+            if self.local_is_moved(local) {
+                continue;
+            }
+
+            self.push_statement(Statement {
+                kind: StatementKind::Drop(Place {
+                    local,
+                    projection: vec![],
+                }),
+                span,
+            });
+        }
+    }
+
+    fn local_is_moved(&self, local: LocalID) -> bool {
+        fn operand_moves(op: &Operand, local: LocalID) -> bool {
+            matches!(
+                op,
+                Operand::Move(place) if place.local == local
+            )
+        }
+
+        for block in &self.basic_blocks {
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    StatementKind::Assign(_, rval) => {
+                        let moved = match rval {
+                            Rvalue::Use(op)
+                            | Rvalue::UnaryOp(_, op)
+                            | Rvalue::Cast(_, op, _) => {
+                                operand_moves(op, local)
+                            }
+
+                            Rvalue::BinaryOp(_, lhs, rhs) => {
+                                operand_moves(lhs, local)
+                                || operand_moves(rhs, local)
+                            }
+
+                            Rvalue::Aggregate(_, ops) => {
+                                ops.iter()
+                                    .any(|op| operand_moves(op, local))
+                            }
+
+                            Rvalue::Intrinsic { args, .. } => {
+                                args.iter()
+                                    .any(|op| operand_moves(op, local))
+                            }
+
+                            Rvalue::Ref(_, _) => false,
+                        };
+
+                        if moved {
+                            return true;
+                        }
+                    }
+
+                    StatementKind::Drop(place) => {
+                        if place.local == local {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            match &block.terminator {
+                Terminator::Call { args, .. }
+                | Terminator::BuiltinCall { args, .. } => {
+                    if args.iter().any(|op| operand_moves(op, local)) {
+                        return true;
+                    }
+                }
+
+                _ => {}
+            }
+        }
+
+        false
     }
 }
