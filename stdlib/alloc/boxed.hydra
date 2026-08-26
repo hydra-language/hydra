@@ -30,9 +30,6 @@ extension<T> Box<T> {
     pub fn into_inner(self) -> T {
         const p = self.ptr;
         const value = ptr::read::<T>(p as *const T);
-        const layout: Layout = Layout::new::<T>();
-
-        Allocator::dealloc(p as *mut u8, layout);
 
         return value;
     }
