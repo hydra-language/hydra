@@ -115,22 +115,19 @@ impl<'a> Monomorphizer<'a> {
             }
 
             HIRStmt::VarDecl { def_id, init, .. } => {
-                let mut resolved_init_ty = None;
-
                 if let Some(init_expr) = init {
                     self.substitute_expr(init_expr, subs);
-                    resolved_init_ty = Some(init_expr.ty.clone()); 
                 }
 
                 if let Some(mut info) = self.context.get_def(*def_id).cloned() {
                     match &mut info.kind {
                         DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } => {
-                            if let Some(init_ty) = resolved_init_ty {
-                                *ty = init_ty; 
-                            } else {
-                                *ty = ty.substitute(subs);
-                                *ty = self.resolve_type(&ty.clone(), subs);
-                            }
+                            let substituted = ty.substitute(subs);
+
+                            *ty = self.resolve_type(
+                                &substituted,
+                                subs,
+                            );
                         }
 
                         _ => {}
@@ -509,6 +506,27 @@ impl<'a> Monomorphizer<'a> {
                 ))
             }
 
+            Type::SLICE(inner) => {
+                Type::SLICE(Box::new(
+                    self.resolve_type(inner, subs)
+                ))
+            }
+
+            Type::INFERRED_ARRAY(inner) => {
+                Type::INFERRED_ARRAY(Box::new(
+                    self.resolve_type(inner, subs)
+                ))
+            }
+
+            Type::ARRAY(inner, len) => {
+                Type::ARRAY(
+                    Box::new(
+                        self.resolve_type(inner, subs)
+                    ),
+                    *len,
+                )
+            }
+
             other => other.clone(),
         }
     }
@@ -570,6 +588,14 @@ impl<'a> Monomorphizer<'a> {
                 for (param_arg, concrete_arg) in param_args.iter().zip(concrete_args.iter()) {
                     self.infer_type_args(param_arg, concrete_arg, inferred);
                 }
+            }
+
+            (Type::SLICE(p), Type::SLICE(a)) | (Type::INFERRED_ARRAY(p), Type::INFERRED_ARRAY(a)) => {
+                self.infer_type_args(p, a, inferred);
+            }
+
+            (Type::ARRAY(p, p_len), Type::ARRAY(a, a_len)) if p_len == a_len => {
+                self.infer_type_args(p, a, inferred);
             }
 
             _ => {}

@@ -1,11 +1,18 @@
 use std::collections::HashMap;
 
 use parser::{ast::*, module::SourceMap};
-use parser::module::{self, ModuleTree};
+use parser::module::ModuleTree;
 use ir::context::{HIRContext, DefID, DefKind, SymbolInfo};
 use errors::error::{HydraError, Span};
 
 use crate::scope::{NameResolver, Namespace, Scope};
+
+/// The result of name resolution.
+///
+/// Contains:
+/// - the [`NameResolver`], which maps AST node IDs to resolved [`DefID`]s;
+/// - the global symbol table, which maps fully-qualified paths to [`DefID`]s.
+pub type ResolutionSymbols = (NameResolver, HashMap<Vec<String>, DefID>);
 
 pub struct Resolver<'ctx> {
     program: &'ctx ModuleTree,
@@ -61,7 +68,7 @@ impl<'ctx> Resolver<'ctx> {
         }
     }
 
-    pub fn resolve(mut self) -> Result<(NameResolver, HashMap<Vec<String>, DefID>), Vec<HydraError>> {
+    pub fn resolve(mut self) -> Result<ResolutionSymbols, Vec<HydraError>> {
         self.harvest_globals();
 
 
@@ -409,9 +416,25 @@ impl<'ctx> Resolver<'ctx> {
                 self.resolve_type(&decl.target_type);
 
                 let target_id_node = crate::utils::get_type_id(&decl.target_type);
-                if let Some(target_def_id) = self.name_resolver.get_resolution(target_id_node) {
-                    self.current_scope.define(Namespace::Type, "Self".to_string(), target_def_id).ok();
-                }
+
+                let self_def_id = if let Some(target_def_id) = self.name_resolver.get_resolution(target_id_node) {
+                    target_def_id
+                } else {
+                    // primitive / pointer / slice extensions dont necessarily
+                    // have a nominal DefID
+                    //
+                    // this only exists so the resolver accept 'Self'
+                    // semantic analysis replaces 'Self' with current_self_type
+                    self.context.insert_def(SymbolInfo {
+                        name: "Self".to_string(),
+                        span: crate::utils::get_type_span(&decl.target_type),
+                        absolute_path: vec![],
+                        kind: DefKind::GenericParam,
+                        is_pub: false
+                    })
+                };
+
+                self.current_scope.define(Namespace::Type, "Self".to_string(), self_def_id).ok();
 
                 if let Some(wc) = &decl.where_clause { self.resolve_where_clause(wc); }
                 for stmt in &decl.constants { self.resolve_stmt(stmt); }

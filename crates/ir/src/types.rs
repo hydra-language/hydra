@@ -75,6 +75,14 @@ impl Type {
             Type::CONST_REF(inner) => {
                 Type::CONST_REF(Box::new(inner.substitute(substitutions)))
             }
+
+            Type::SLICE(inner) => {
+                Type::SLICE(
+                    Box::new(
+                        inner.substitute(substitutions)
+                    )
+                )
+            }
             // Base types (I64, BOOL, STRUCT, etc.) stay exactly the same
             _ => self.clone(),
         }
@@ -87,20 +95,36 @@ impl Type {
             Type::I16 => "i16".to_string(),
             Type::I32 => "i32".to_string(),
             Type::I64 => "i64".to_string(),
+            Type::ISIZE => "isize".to_string(),
+
             Type::U8 => "u8".to_string(),
             Type::U16 => "u16".to_string(),
             Type::U32 => "u32".to_string(),
             Type::U64 => "u64".to_string(),
+            Type::USIZE => "usize".to_string(),
+
             Type::BOOL => "bool".to_string(),
             Type::CHAR => "char".to_string(),
+
             Type::F32 => "f32".to_string(),
             Type::F64 => "f64".to_string(),
+
             Type::STRUCT(name) => name.replace("::", "_"),
+
             Type::POINTER(inner) => format!("ptr_{}", inner.mangle()),
             Type::CONST_POINTER(inner) => format!("cptr_{}", inner.mangle()),
+
             Type::REF(inner) => format!("ref_{}", inner.mangle()),
             Type::CONST_REF(inner) => format!("cref_{}", inner.mangle()),
+
             Type::ARRAY(inner, size) => format!("arr_{}_{}", inner.mangle(), size),
+            Type::SLICE(inner) => {
+                format!("slice_{}", inner.mangle())
+            }
+            Type::INFERRED_ARRAY(inner) => {
+                format!("array_{}", inner.mangle())
+            }
+
             _ => "unknown".to_string(),
         }
     }

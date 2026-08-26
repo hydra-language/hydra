@@ -137,7 +137,14 @@ impl<'a> MIRBuilder<'a> {
                     }
                 }
 
-                let ty = init.as_ref().map(|e| e.ty.clone()).unwrap_or(Type::VOID);
+                let ty = match self.context.get_def(*def_id).map(|info| &info.kind) {
+                    Some(DefKind::Variable { ty, .. }) | Some(DefKind::Constant { ty, .. }) => {
+                        ty.clone()
+                    }
+
+                    _ => init.as_ref().map(|e| e.ty.clone()).unwrap_or(Type::VOID),
+                };
+
                 let local_id = self.new_local(ty, false, Some(*def_id));
                 self.var_map.insert(*def_id, local_id);
 

@@ -142,28 +142,102 @@ impl<'ctx> Analyzer<'ctx> {
             },
 
             ASTExpr::ArrayAccess { array, index, .. } => {
-                let arr = self.lower_expr_with_type(array, None)?;
-                let idx_expr = self.lower_expr_with_type(index, Some(&IRType::USIZE))?;
+                let mut arr = self.lower_expr_with_type(array, None)?;
+
+                let idx_expr = self.lower_expr_with_type(
+                    index,
+                    Some(&IRType::USIZE),
+                )?;
 
                 if !idx_expr.ty.is_numeric() {
-                    return Err(self.error("S001", format!("index must be numeric, found {}", idx_expr.ty), span));
+                    return Err(self.error(
+                        "S001",
+                        format!(
+                            "index must be numeric, found {}",
+                            idx_expr.ty
+                        ),
+                        span,
+                    ));
                 }
 
-                match &arr.ty.clone() {
+                //
+                // indexing auto-dereferences references:
+                //
+                //     &[T]     -> [T]
+                //     &mut [T] -> [T]
+                //
+                // do this in HIR rather than merely inspecting the inner type,
+                // because MIR needs the Deref projection too.
+                //
+                loop {
+                    let inner = match &arr.ty {
+                        IRType::REF(inner) | IRType::CONST_REF(inner) => {
+                            Some(inner.as_ref().clone())
+                        }
+
+                        _ => None,
+                    };
+
+                    let Some(inner_ty) = inner else {
+                        break;
+                    };
+
+                    arr = HIRExpr {
+                        kind: HIRExprKind::Dereference {
+                            target: Box::new(arr),
+                        },
+                        ty: inner_ty,
+                        span,
+                    };
+                }
+
+                match arr.ty.clone() {
                     IRType::ARRAY(inner, size) => {
-                        if let HIRExprKind::IntLiteral(idx_val) = idx_expr.kind {
-                            if idx_val < 0 || idx_val >= (*size as i64) {
-                                return Err(self.error("S008", format!("index out of bounds: len is {} but index is {}", size, idx_val), span));
+                        if let HIRExprKind::IntLiteral(idx_val) = &idx_expr.kind {
+                            if *idx_val < 0 || *idx_val >= size as i64 {
+                                return Err(self.error(
+                                    "S008",
+                                    format!(
+                                        "index out of bounds: len is {} but index is {}",
+                                        size,
+                                        idx_val
+                                    ),
+                                    span,
+                                ));
                             }
                         }
-                        Ok(HIRExpr { kind: HIRExprKind::ArrayAccess { array: Box::new(arr), index: Box::new(idx_expr) }, ty: *inner.clone(), span })
-                    },
-                    IRType::INFERRED_ARRAY(inner) => Ok(HIRExpr {
-                        kind: HIRExprKind::ArrayAccess { array: Box::new(arr), index: Box::new(idx_expr) }, ty: *inner.clone(), span
-                    }),
-                    _ => Err(self.error("S003", format!("type '{}' cannot be indexed", arr.ty), span))
+
+                        Ok(HIRExpr {
+                            kind: HIRExprKind::ArrayAccess {
+                                array: Box::new(arr),
+                                index: Box::new(idx_expr),
+                            },
+                            ty: *inner,
+                            span,
+                        })
+                    }
+
+                    IRType::INFERRED_ARRAY(inner) | IRType::SLICE(inner) => {
+                        Ok(HIRExpr {
+                            kind: HIRExprKind::ArrayAccess {
+                                array: Box::new(arr),
+                                index: Box::new(idx_expr),
+                            },
+                            ty: *inner,
+                            span,
+                        })
+                    }
+
+                    _ => Err(self.error(
+                        "S003",
+                        format!(
+                            "type '{}' cannot be indexed",
+                            arr.ty
+                        ),
+                        span,
+                    )),
                 }
-            },
+            }
 
             ASTExpr::StructInitializer { name, fields, .. } => {
                 let name_id = utils::get_expr_id(name);
@@ -772,26 +846,30 @@ impl<'ctx> Analyzer<'ctx> {
             other => other.clone(),
         };
 
-        let struct_name = match &lookup_type {
-            IRType::STRUCT(name) => name.clone(),
+        let registry_key = self.get_impl_registry_key(&lhs_expr.ty);
 
-            _ => {
-                return Err(self.error(
-                    "S005",
-                    format!("type '{}' has no methods", actual_type),
-                    span,
-                ));
-            }
-        };
+        if registry_key.is_empty() {
+            return Err(self.error(
+                "S005",
+                format!(
+                    "type '{}' has no methods",
+                    lhs_expr.ty
+                ),
+                span,
+            ));
+        }
 
         let method_def_id = {
             let type_methods = self
                 .impl_registry
-                .get(&struct_name)
+                .get(&registry_key)
                 .ok_or_else(|| {
                     self.error(
                         "S005",
-                        format!("type '{}' has no methods", actual_type),
+                        format!(
+                            "type '{}' has no methods",
+                            lhs_expr.ty
+                        ),
                         span,
                     )
                 })?;
@@ -804,7 +882,7 @@ impl<'ctx> Analyzer<'ctx> {
                         format!(
                             "method '{}' not found for type '{}'",
                             method_name,
-                            actual_type
+                            lhs_expr.ty
                         ),
                         span,
                     )
@@ -851,44 +929,51 @@ impl<'ctx> Analyzer<'ctx> {
                 )
             })?;
 
-        let self_arg = match (expected_self_ty, &lhs_expr.ty.clone()) {
-            (
-                IRType::REF(inner),
-                actual,
-            ) if inner.as_ref() == actual => {
-                HIRExpr {
-                    kind: HIRExprKind::Borrow {
-                        is_mut: true,
-                        target: Box::new(lhs_expr),
-                    },
-                    ty: IRType::REF(
-                        Box::new(actual.clone())
-                    ),
-                    span,
-                }
-            }
 
-            (
-                IRType::CONST_REF(inner),
-                actual,
-            ) if inner.as_ref() == actual => {
-                HIRExpr {
-                    kind: HIRExprKind::Borrow {
-                        is_mut: false,
-                        target: Box::new(lhs_expr),
-                    },
-                    ty: IRType::CONST_REF(
-                        Box::new(actual.clone())
-                    ),
-                    span,
-                }
-            }
+        let self_arg = if self.receiver_type_matches(expected_self_ty, &lhs_expr.ty) {
+            //
+            // already has the form the method expects.
+            //
+            // &[i32] passed to &[T]
+            //
+            lhs_expr
+        } else {
+            match expected_self_ty {
+                IRType::REF(_) => {
+                    let actual = lhs_expr.ty.clone();
 
-            _ => lhs_expr,
+                    HIRExpr {
+                        kind: HIRExprKind::Borrow {
+                            is_mut: true,
+                            target: Box::new(lhs_expr),
+                        },
+                        ty: IRType::REF(
+                            Box::new(actual),
+                        ),
+                        span,
+                    }
+                }
+
+                IRType::CONST_REF(_) => {
+                    let actual = lhs_expr.ty.clone();
+
+                    HIRExpr {
+                        kind: HIRExprKind::Borrow {
+                            is_mut: false,
+                            target: Box::new(lhs_expr),
+                        },
+                        ty: IRType::CONST_REF(
+                            Box::new(actual),
+                        ),
+                        span,
+                    }
+                }
+
+                _ => lhs_expr,
+            }
         };
 
-        let expected_user_args =
-        param_types.len().saturating_sub(1);
+        let expected_user_args = param_types.len().saturating_sub(1);
 
         if arguments.len() != expected_user_args {
             return Err(self.error(
@@ -1097,4 +1182,35 @@ impl<'ctx> Analyzer<'ctx> {
             _ => self.check_assignable_place(base),
         }
     }
+
+    fn receiver_type_matches(&self, expected: &IRType, actual: &IRType) -> bool {
+        match (expected, actual) {
+            //
+            // a generic can unify with any concrete type.
+            //
+            (IRType::GENERIC(_), _) => true,
+
+            (IRType::REF(expected), IRType::REF(actual)) | (IRType::CONST_REF(expected), IRType::CONST_REF(actual)) | 
+            (IRType::CONST_REF(expected), IRType::REF(actual)) | (IRType::POINTER(expected), IRType::POINTER(actual)) | 
+            (IRType::CONST_POINTER(expected), IRType::CONST_POINTER(actual)) | (IRType::SLICE(expected), IRType::SLICE(actual)) => 
+            {
+                self.receiver_type_matches(expected, actual)
+            }
+
+            (IRType::ARRAY(expected, expected_len), IRType::ARRAY(actual, actual_len)) => {
+                expected_len == actual_len && self.receiver_type_matches(expected, actual)
+            }
+
+            (IRType::GENERIC_INSTANCE(expected_base, expected_args), IRType::GENERIC_INSTANCE(actual_base, actual_args)) => 
+            {
+                self.receiver_type_matches(expected_base, actual_base) && expected_args.len() == actual_args.len() && 
+                expected_args.iter().zip(actual_args).all(|(expected, actual)| {
+                    self.receiver_type_matches(expected, actual)
+                })
+            }
+
+            _ => expected == actual,
+        }
+    }
+
 }
