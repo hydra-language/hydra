@@ -11,11 +11,53 @@ impl<'c> CodeGen<'c> {
     pub fn compile_rvalue(&mut self, rvalue: &Rvalue, mir_fn: &MIRFunction) -> Result<BasicValueEnum<'c>, String> {
         match rvalue {
             Rvalue::Use(op) => self.compile_operand(op, mir_fn),
-            Rvalue::Ref(_, place) => {
+
+            Rvalue::Ref(_is_mut, place) => {
+                //
+                // reborrowing a slice:
+                //
+                //     &mut [T] -> &[T]
+                //     &[T]     -> &[T]
+                //
+                // the representation is already a fat reference:
+                //
+                //     { T*, usize }
+                //
+                // do NOT call compile_place() through the Deref projection,
+                // because that produces only T* and loses the length metadata.
+                //
+                if matches!(place.projection.as_slice(), [mir::ProjectionElem::Deref]) {
+                    let base_ty = &mir_fn.locals[place.local.0].ty;
+
+                    let is_slice_ref = matches!(base_ty, Type::REF(inner) | Type::CONST_REF(inner)
+                        if matches!(inner.as_ref(), Type::SLICE(_))
+                    );
+
+                    if is_slice_ref {
+                        let base_ptr = self.locals.get(&place.local).ok_or_else(|| {
+                            format!(
+                                "ICE: missing slice local _{}",
+                                place.local.0
+                            )
+                        })?;
+
+                        //
+                        // copy the entire { ptr, len } fat value.
+                        //
+                        let slice = self.builder.build_load(*base_ptr, "slice_reborrow");
+
+                        return Ok(slice);
+                    }
+                }
+
+                //
+                // ordinary thin reference.
+                //
                 let ptr = self.compile_place(place, mir_fn)?;
+
                 Ok(ptr.into())
-            }
-            
+            }            
+
             Rvalue::SliceRef { place, len, element_ty, .. } => {
                 // 'place' is the hidden backing array [T, N]
                 let backing_ptr = self.compile_place(place, mir_fn)?;

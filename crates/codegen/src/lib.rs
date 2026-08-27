@@ -306,41 +306,27 @@ impl<'c> CodeGen<'c> {
                     );
                 }
 
-                let ptr = self.compile_operand(
-                    &args[0],
-                    mir_fn,
-                )?;
-
-                let size = self.compile_operand(
-                    &args[1],
-                    mir_fn,
-                )?;
-
-                let align = self.compile_operand(
-                    &args[2],
-                    mir_fn,
-                )?;
+                let ptr = self.compile_operand(&args[0], mir_fn)?;
+                let size = self.compile_operand(&args[1], mir_fn)?;
+                let align = self.compile_operand(&args[2], mir_fn)?;
 
                 let dealloc_fn = self.get_or_declare_dealloc();
-
-                self.builder.build_call(
-                    dealloc_fn,
-                    &[
-                        ptr.into(),
-                        size.into(),
-                        align.into(),
-                    ],
-                    "",
-                );
+                self.builder.build_call(dealloc_fn, &[ptr.into(), size.into(), align.into()], "");
 
                 // MIR currently represents void intrinsics as an Rvalue,
                 // so return a dummy LLVM value just like ptr_write.
-                Ok(
-                    self.context
-                        .i8_type()
-                        .const_zero()
-                        .into()
-                )
+                Ok(self.context.i8_type().const_zero().into())
+            }
+
+            IntrinsicKind::SliceLen => {
+                let slice = args.first().ok_or("slice_len requires one argument")?;
+                let slice_value = self.compile_operand(slice, mir_fn)?.into_struct_value();
+
+                let len = self.builder.build_extract_value(slice_value, 1,"slice_len")
+                    .ok_or("ICE: slice value has no length field")?
+                    .into_int_value();
+
+                Ok(len.into())
             }
         }
     }

@@ -142,11 +142,21 @@ impl<'ctx> Analyzer<'ctx> {
             },
 
             ASTExpr::SliceInitializer { elements, .. } => {
-                let expected_inner = match expected {
-                    Some(IRType::CONST_REF(inner)) | Some(IRType::REF(inner)) => {
+                let expected_slice = match expected {
+                    Some(IRType::REF(inner)) => {
                         match inner.as_ref() {
                             IRType::SLICE(element) => {
-                                Some(element.as_ref())
+                                Some((true, element.as_ref()))
+                            }
+
+                            _ => None,
+                        }
+                    }
+
+                    Some(IRType::CONST_REF(inner)) => {
+                        match inner.as_ref() {
+                            IRType::SLICE(element) => {
+                                Some((false, element.as_ref()))
                             }
 
                             _ => None,
@@ -156,41 +166,45 @@ impl<'ctx> Analyzer<'ctx> {
                     _ => None,
                 };
 
+                let expected_element = expected_slice.map(|(_, element)| element);
+
                 let mut ir_elements = Vec::new();
 
                 for element in elements {
-                    let mut value = self.lower_expr_with_type(element, expected_inner)?;
-                    if let Some(target) = expected_inner {
+                    let mut value = self.lower_expr_with_type(element, expected_element)?;
+
+                    if let Some(target) = expected_element {
                         value = self.coerce_primitive(value, target);
                     }
 
                     ir_elements.push(value);
                 }
 
-                let element_ty = if let Some(expected) = expected_inner {
-                    expected.clone()
+                let (is_mut, element_ty) = if let Some((is_mut, expected_element)) = expected_slice {
+                    (is_mut, expected_element.clone())
                 } else {
-                    ir_elements.first().map(|e| e.ty.clone()).ok_or_else(|| {
+                    (false, ir_elements.first().map(|e| e.ty.clone()).ok_or_else(|| {
                         self.error(
                             "S007",
                             "cannot infer type of empty slice",
                             span,
-                        )
-                    })?
+                        )})?
+                    )
                 };
 
-                // new HIR node; don't fake this as a normal array.
+                let slice_ty = IRType::SLICE(Box::new(element_ty));
+
+                let ty = if is_mut {
+                    IRType::REF(Box::new(slice_ty))
+                } else {
+                    IRType::CONST_REF(Box::new(slice_ty))
+                };
+
                 Ok(HIRExpr {
                     kind: HIRExprKind::SliceInit {
                         elements: ir_elements,
                     },
-                    ty: IRType::CONST_REF(
-                        Box::new(
-                            IRType::SLICE(
-                                Box::new(element_ty),
-                            )
-                        )
-                    ),
+                    ty,
                     span,
                 })
             }
@@ -984,47 +998,79 @@ impl<'ctx> Analyzer<'ctx> {
             })?;
 
 
-        let self_arg = if self.receiver_type_matches(expected_self_ty, &lhs_expr.ty) {
+        let self_arg = match (expected_self_ty, &lhs_expr.ty) {
             //
-            // already has the form the method expects.
+            // &mut T -> &T
             //
-            // &[i32] passed to &[T]
+            // shared reborrow from a mutable reference.
             //
-            lhs_expr
-        } else {
-            match expected_self_ty {
-                IRType::REF(_) => {
-                    let actual = lhs_expr.ty.clone();
+            (IRType::CONST_REF(expected_inner), IRType::REF(actual_inner)) 
+            if self.receiver_type_matches(expected_inner, actual_inner) => {
+                let pointee_ty = actual_inner.as_ref().clone();
 
-                    HIRExpr {
-                        kind: HIRExprKind::Borrow {
-                            is_mut: true,
-                            target: Box::new(lhs_expr),
-                        },
-                        ty: IRType::REF(
-                            Box::new(actual),
-                        ),
-                        span,
-                    }
+                let deref = HIRExpr {
+                    kind: HIRExprKind::Dereference {
+                        target: Box::new(lhs_expr),
+                    },
+                    ty: pointee_ty.clone(),
+                    span,
+                };
+
+                HIRExpr {
+                    kind: HIRExprKind::Borrow {
+                        is_mut: false,
+                        target: Box::new(deref),
+                    },
+                    ty: IRType::CONST_REF(
+                        Box::new(pointee_ty),
+                    ),
+                    span,
                 }
-
-                IRType::CONST_REF(_) => {
-                    let actual = lhs_expr.ty.clone();
-
-                    HIRExpr {
-                        kind: HIRExprKind::Borrow {
-                            is_mut: false,
-                            target: Box::new(lhs_expr),
-                        },
-                        ty: IRType::CONST_REF(
-                            Box::new(actual),
-                        ),
-                        span,
-                    }
-                }
-
-                _ => lhs_expr,
             }
+
+            //
+            // already exactly compatible.
+            //
+            _ if self.receiver_type_matches(expected_self_ty, &lhs_expr.ty) => lhs_expr,
+
+            //
+            // T -> &mut T
+            //
+            (IRType::REF(_), _) => {
+                let actual = lhs_expr.ty.clone();
+
+                HIRExpr {
+                    kind: HIRExprKind::Borrow {
+                        is_mut: true,
+                        target: Box::new(lhs_expr),
+                    },
+                    ty: IRType::REF(
+                        Box::new(actual),
+                    ),
+                    span,
+                }
+            }
+
+            //
+            // T -> &T
+            //
+            (IRType::CONST_REF(_), _) => {
+                let actual =
+                lhs_expr.ty.clone();
+
+                HIRExpr {
+                    kind: HIRExprKind::Borrow {
+                        is_mut: false,
+                        target: Box::new(lhs_expr),
+                    },
+                    ty: IRType::CONST_REF(
+                        Box::new(actual),
+                    ),
+                    span,
+                }
+            }
+
+            _ => lhs_expr,
         };
 
         let expected_user_args = param_types.len().saturating_sub(1);
@@ -1245,7 +1291,6 @@ impl<'ctx> Analyzer<'ctx> {
             (IRType::GENERIC(_), _) => true,
 
             (IRType::REF(expected), IRType::REF(actual)) | (IRType::CONST_REF(expected), IRType::CONST_REF(actual)) | 
-            (IRType::CONST_REF(expected), IRType::REF(actual)) | (IRType::POINTER(expected), IRType::POINTER(actual)) | 
             (IRType::CONST_POINTER(expected), IRType::CONST_POINTER(actual)) | (IRType::SLICE(expected), IRType::SLICE(actual)) => 
             {
                 self.receiver_type_matches(expected, actual)

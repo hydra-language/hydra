@@ -697,6 +697,70 @@ impl<'ctx> Analyzer<'ctx> {
                     ));
                 }
             }
+
+            IntrinsicKind::SliceLen => {
+                if generic_params.len() != 1 {
+                    return Err(self.error(
+                        "S017",
+                        "slice_len requires exactly one type parameter",
+                        span,
+                    ));
+                }
+
+                if params.len() != 1 {
+                    return Err(self.error(
+                        "S017",
+                        "slice_len requires exactly one argument",
+                        span,
+                    ));
+                }
+
+                let expected = &generic_params[0];
+
+                match &params[0] {
+                    IRType::CONST_REF(inner) | IRType::REF(inner) => {
+                        match inner.as_ref() {
+                            IRType::SLICE(element) => {
+                                match element.as_ref() {
+                                    IRType::GENERIC(name) if name == expected => {}
+
+                                    _ => {
+                                        return Err(self.error(
+                                            "S017",
+                                            "slice_len expects `&[T]`",
+                                            span,
+                                        ));
+                                    }
+                                }
+                            }
+
+                            _ => {
+                                return Err(self.error(
+                                    "S017",
+                                    "slice_len expects `&[T]`",
+                                    span,
+                                ));
+                            }
+                        }
+                    }
+
+                    _ => {
+                        return Err(self.error(
+                            "S017",
+                            "slice_len expects `&[T]`",
+                            span,
+                        ));
+                    }
+                }
+
+                if *return_type != IRType::USIZE {
+                    return Err(self.error(
+                        "S017",
+                        "slice_len must return `usize`",
+                        span,
+                    ));
+                }
+            }
         }
 
         Ok(())

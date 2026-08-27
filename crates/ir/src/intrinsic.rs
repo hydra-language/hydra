@@ -7,6 +7,7 @@ pub enum IntrinsicKind {
     PtrOffset,
     Alloc,
     Dealloc,
+    SliceLen,
 }
 
 impl IntrinsicKind {
@@ -14,31 +15,31 @@ impl IntrinsicKind {
     pub fn from_path(path: &[String]) -> Option<Self> {
         match path {
             [core, intrinsics, name]
-                if core == "core" && intrinsics == "intrinsics" && name == "size_of" =>
+                if core == "core" && intrinsics == "intrinsics" && name == "__size_of" =>
             {
                 Some(Self::SizeOf)
             }
 
             [core, intrinsics, name]
-                if core == "core" && intrinsics == "intrinsics" && name == "align_of" =>
+                if core == "core" && intrinsics == "intrinsics" && name == "__align_of" =>
             {
                 Some(Self::AlignOf)
             }
 
             [core, intrinsics, name]
-                if core == "core" && intrinsics == "intrinsics" && name == "ptr_read" =>
+                if core == "core" && intrinsics == "intrinsics" && name == "__ptr_read" =>
             {
                 Some(Self::PtrRead)
             }
 
             [core, intrinsics, name]
-                if core == "core" && intrinsics == "intrinsics" && name == "ptr_write" =>
+                if core == "core" && intrinsics == "intrinsics" && name == "__ptr_write" =>
             {
                 Some(Self::PtrWrite)
             }
 
             [core, intrinsics, name]
-                if core == "core" && intrinsics == "intrinsics" && name == "ptr_offset" =>
+                if core == "core" && intrinsics == "intrinsics" && name == "__ptr_offset" =>
             {
                 Some(Self::PtrOffset)
             }
@@ -55,6 +56,12 @@ impl IntrinsicKind {
                 Some(Self::Dealloc)
             }
 
+            [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__slice_len" => 
+            {
+                Some(Self::SliceLen)
+            }
+
 
             _ => None,
         }
@@ -65,7 +72,8 @@ impl IntrinsicKind {
             IntrinsicKind::PtrWrite | IntrinsicKind::Alloc | IntrinsicKind::Dealloc => true,
 
             IntrinsicKind::SizeOf | IntrinsicKind::AlignOf | 
-            IntrinsicKind::PtrRead | IntrinsicKind::PtrOffset => false,
+            IntrinsicKind::PtrRead | IntrinsicKind::PtrOffset |
+            IntrinsicKind::SliceLen => false,
         }
     }
 }
