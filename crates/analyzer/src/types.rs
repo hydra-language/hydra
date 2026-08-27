@@ -161,7 +161,6 @@ impl<'ctx> Analyzer<'ctx> {
 
         match (target, source) {
             (IRType::INFERRED_ARRAY(target_inner), IRType::ARRAY(source_inner, _)) => target_inner == source_inner,
-            (IRType::SLICE(target_inner), IRType::ARRAY(source_inner, _)) => target_inner == source_inner,
             (IRType::SLICE(t_inner), IRType::SLICE(s_inner)) if t_inner == s_inner => true,
             (IRType::REF(t_inner), IRType::REF(s_inner)) if t_inner == s_inner => true,
             (IRType::CONST_REF(t_inner), IRType::REF(s_inner)) if t_inner == s_inner => true,

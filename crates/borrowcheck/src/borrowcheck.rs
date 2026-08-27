@@ -116,15 +116,20 @@ impl<'a> BorrowChecker<'a> {
 
         let mut all_borrows = Vec::new();
         for block in &self.mir.basic_blocks {
-
             for stmt in &block.statements {
-                if let StatementKind::Assign(place, Rvalue::Ref(is_mut, target)) = &stmt.kind {
-                    all_borrows.push(Borrow {
-                        borrower: place.local,
-                        target: target.local,
-                        is_mut: *is_mut,
-                        creation_span: stmt.span,
-                    });
+                if let StatementKind::Assign(place, rvalue)= &stmt.kind {
+                    match rvalue {
+                        Rvalue::Ref(is_mut, target) | Rvalue::SliceRef { is_mut, place: target, .. } => {
+                            all_borrows.push(Borrow {
+                                borrower: place.local,
+                                target: target.local,
+                                is_mut: *is_mut,
+                                creation_span: stmt.span,
+                            });
+                        }
+
+                        _ => {}
+                    }
                 }
             }        
         }
@@ -193,12 +198,12 @@ impl<'a> BorrowChecker<'a> {
                 let (stmt_reads, stmt_writes) = self.get_stmt_reads_writes(stmt);
 
                 for active in active_borrows {
-                    if let StatementKind::Assign(p, Rvalue::Ref(..)) = &stmt.kind {
+                    if matches!(&stmt.kind, StatementKind::Assign(_, Rvalue::Ref(..) | Rvalue::SliceRef { .. })) {
                         continue;
                     }
 
-                    let (target_name, target_span) = self.resolve_local(active.target);
-                    let (borrower_name, _) = self.resolve_local(active.borrower);
+                    let (target_name, _) = self.resolve_local(active.target);
+                    let (_, _) = self.resolve_local(active.borrower);
                     
                     // RULE 1 & 2: Cannot mutate target while borrowed
                     if stmt_writes.contains(&active.target) {
@@ -330,13 +335,19 @@ impl<'a> BorrowChecker<'a> {
         let mut borrows: Vec<Borrow> = Vec::new();
         for block in &self.mir.basic_blocks {
             for stmt in &block.statements {
-                if let StatementKind::Assign(place, Rvalue::Ref(is_mut, target)) = &stmt.kind {
-                    borrows.push(Borrow {
-                        borrower: place.local,
-                        target: target.local,
-                        is_mut: *is_mut,
-                        span: stmt.span,
-                    });
+                if let StatementKind::Assign(place, rvalue) = &stmt.kind {
+                    match rvalue {
+                        Rvalue::Ref(is_mut, target) | Rvalue::SliceRef { is_mut, place: target, .. } => {
+                            borrows.push(Borrow {
+                                borrower: place.local,
+                                target: target.local,
+                                is_mut: *is_mut,
+                                span: stmt.span,
+                            });
+                        }
+
+                        _ => {}
+                    }
                 }
             }
         }
@@ -492,23 +503,25 @@ impl<'a> BorrowChecker<'a> {
             Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(_, op, _) => {
                 self.extract_uses_operand(op, gen, kill);
             }
+
             Rvalue::BinaryOp(_, lhs, rhs) => {
                 self.extract_uses_operand(lhs, gen, kill);
                 self.extract_uses_operand(rhs, gen, kill);
             }
-            Rvalue::Ref(_, place) => {
-                // Taking a reference to a place requires that place to be alive!
+
+            Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. } => {
+                // taking a reference to a place requires that place to be alive
                 if !kill.contains(&place.local) {
                     gen.insert(place.local);
                 }
             }
+
             Rvalue::Aggregate(_, operands) => {
                 for op in operands {
                     self.extract_uses_operand(op, gen, kill);
                 }
             }
 
-            
             Rvalue::Intrinsic { args, .. } => {
                 for op in args {
                     self.extract_uses_operand(op, gen, kill);
@@ -561,11 +574,11 @@ impl<'a> BorrowChecker<'a> {
                 if let Operand::Copy(p) | Operand::Move(p) = lhs { reads.insert(p.local); }
                 if let Operand::Copy(p) | Operand::Move(p) = rhs { reads.insert(p.local); }
             }
-            Rvalue::Ref(is_mut, place) => {
-                reads.insert(place.local); // Taking any ref requires reading the memory address
+            Rvalue::Ref(is_mut, place) | Rvalue::SliceRef { is_mut, place, .. } => {
+                reads.insert(place.local); // taking any ref requires reading the memory address
                 if *is_mut {
-                    // ENFORCING XOR RULE: Creating a &mut reference requires EXCLUSIVE access.
-                    // By registering this as a "write", it will instantly conflict with any 
+                    // ENFORCING XOR RULE: creating a &mut reference requires EXCLUSIVE access.
+                    // by registering this as a "write", it will instantly conflict with any 
                     // existing immutable or mutable borrows!
                     writes.insert(place.local);
                 }
@@ -625,7 +638,7 @@ impl<'a> BorrowChecker<'a> {
                 if let Operand::Copy(p) | Operand::Move(p) = lhs { reads.insert(p.local); }
                 if let Operand::Copy(p) | Operand::Move(p) = rhs { reads.insert(p.local); }
             }
-            Rvalue::Ref(_, place) => {
+            Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. } => {
                 reads.insert(place.local);
             }
             Rvalue::Aggregate(_, operands) => {
@@ -659,7 +672,7 @@ impl<'a> BorrowChecker<'a> {
         let operands: Vec<&Operand> = match rval {
             Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(_, op, _) => vec![op],
             Rvalue::BinaryOp(_, l, r) => vec![l, r],
-            Rvalue::Ref(_, place) => {
+            Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. }=> {
                 if moved.contains(&place.local) {
                     let (name, def_span) = self.resolve_local(place.local);
                     errors.push(self.error(
@@ -698,7 +711,7 @@ impl<'a> BorrowChecker<'a> {
         let operands: Vec<&Operand> = match rval {
             Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(_, op, _) => vec![op],
             Rvalue::BinaryOp(_, l, r) => vec![l, r],
-            Rvalue::Ref(_, _) => vec![], // borrows don't move
+            Rvalue::Ref(_, _) | Rvalue::SliceRef { .. } => vec![], // borrows don't move
             Rvalue::Aggregate(_, ops) => ops.iter().collect(),
             Rvalue::Intrinsic { args, .. } => {
                 args.iter().collect()

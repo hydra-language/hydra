@@ -30,7 +30,12 @@ impl<'ctx> Analyzer<'ctx> {
 
                 if let Some(ref target) = expected {
                     init_expr = self.coerce_primitive(init_expr, target);
+
+                    if !self.check_type_compatibility(target, &init_expr.ty) {
+                        return Err(self.error("S001", format!("type mismatch: expected {}, found {}", target, init_expr.ty), init_expr.span))
+                    }
                 }
+
 
                 let final_type = expected.unwrap_or(init_expr.ty.clone());
 

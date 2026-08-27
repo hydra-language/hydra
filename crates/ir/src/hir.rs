@@ -52,6 +52,10 @@ pub enum HIRExprKind {
         elements: Vec<HIRExpr>,
     },
 
+    SliceInit {
+        elements: Vec<HIRExpr>,
+    },
+
     ArrayAccess {
         array: Box<HIRExpr>,
         index: Box<HIRExpr>,
@@ -238,6 +242,15 @@ impl fmt::Display for HIRExprKind {
             }
 
             HIRExprKind::ArrayInit { elements } => {
+                write!(f, "{{")?;
+                for (i, val) in elements.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", val)?;
+                }
+                write!(f, "}}")
+            }
+
+            HIRExprKind::SliceInit { elements } => {
                 write!(f, "[")?;
                 for (i, val) in elements.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }

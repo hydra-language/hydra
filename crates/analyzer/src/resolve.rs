@@ -641,6 +641,12 @@ impl<'ctx> Resolver<'ctx> {
                 for el in elements { self.resolve_expr(el); }
             }
 
+            Expr::SliceInitializer { elements, .. } => {
+                for element in elements {
+                    self.resolve_expr(element);
+                }
+            }
+
             Expr::ArrayAccess { array, index, .. } => {
                 self.resolve_expr(array);
                 self.resolve_expr(index);

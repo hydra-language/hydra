@@ -77,8 +77,22 @@ pub struct Statement {
 // Rvalues (Right-values) are operations that compute a value
 #[derive(Debug, Clone)]
 pub enum Rvalue {
-    Use(Operand), // Just reading a value
+    Use(Operand), // just reading a value
     Ref(bool, Place),   // &place
+    
+    /// constructs a fat slice reference from backing storage.
+    ///
+    /// Runtime representation is conceptually:
+    ///
+    ///     { ptr: *T, len: usize }
+    ///
+    SliceRef {
+        is_mut: bool,
+        place: Place,
+        len: usize,
+        element_ty: Type,
+    },
+
     BinaryOp(HIRBinOp, Operand, Operand),
     UnaryOp(HIRUnaryOp, Operand),
     Cast(CastKind, Operand, Type),
@@ -217,6 +231,15 @@ impl fmt::Display for Rvalue {
                 if *is_mut { write!(f, "&mut {}", place) }
                 else { write!(f, "&{}", place) }
             },
+
+            Rvalue::SliceRef { is_mut, place, len, .. } => {
+                if *is_mut {
+                    write!(f, "&mut slice({}, len={})", place, len)
+                } else {
+                    write!(f, "&slice({}, len={})", place, len)
+                }
+            }
+
             Rvalue::BinaryOp(op, lhs, rhs) => write!(f, "{} {} {}", lhs, op, rhs),
             Rvalue::UnaryOp(op, operand) => write!(f, "{}{}", op, operand),
             Rvalue::Cast(_kind, operand, ty) => write!(f, "{} as {}", operand, ty),

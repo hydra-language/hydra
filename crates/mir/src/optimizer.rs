@@ -727,8 +727,6 @@ impl Optimizer {
                 for op in ops { changed |= Self::replace_operand(op, safe_constants); }
             }
 
-            Rvalue::Ref(_, _) => {}
-
             Rvalue::Intrinsic { args, .. } => {
                 for op in args {
                     changed |= Self::replace_operand(
@@ -737,6 +735,8 @@ impl Optimizer {
                     );
                 }
             }
+
+            Rvalue::Ref(_, _) | Rvalue::SliceRef { .. } => {}
         }
 
         changed
@@ -759,7 +759,7 @@ impl Optimizer {
             Rvalue::Aggregate(_, ops) => {
                 for op in ops { changed |= replace(op); }
             }
-            Rvalue::Ref(_, _) => {}
+            Rvalue::Ref(_, _) | Rvalue::SliceRef { .. } => {}
 
             Rvalue::Intrinsic { args, .. } => {
                 for op in args {
@@ -796,9 +796,12 @@ impl Optimizer {
             Rvalue::Aggregate(_, ops) => {
                 for op in ops { changed |= Self::replace_local(op, safe_copies); }
             }
-            Rvalue::Ref(_, place) => {
+
+            Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. } => {
                 if place.projection.is_empty() {
-                    if let Some(&src_local) = safe_copies.get(&place.local) {
+                    if let Some(&src_local) =
+                    safe_copies.get(&place.local)
+                    {
                         place.local = src_local;
                         changed = true;
                     }
@@ -841,11 +844,17 @@ impl Optimizer {
             Rvalue::Aggregate(_, ops) => {
                 for op in ops { Self::count_reads(op, counts); }
             }
-            Rvalue::Ref(_, place) => {
-                *counts.entry(place.local).or_insert(0) += 1;
+
+            Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. } => {
+                *counts
+                    .entry(place.local)
+                    .or_insert(0) += 1;
+
                 for proj in &place.projection {
                     if let ProjectionElem::Index(idx_local) = proj {
-                        *counts.entry(*idx_local).or_insert(0) += 1;
+                        *counts
+                            .entry(*idx_local)
+                            .or_insert(0) += 1;
                     }
                 }
             }
@@ -930,12 +939,15 @@ impl Optimizer {
             Rvalue::Aggregate(_, ops) => {
                 for op in ops { Self::shift_locals_in_operand(op, shift); }
             }
-            Rvalue::Ref(_, place) => shift(&mut place.local),
 
             Rvalue::Intrinsic { args, .. } => {
                 for op in args {
                     Self::shift_locals_in_operand(op, shift);
                 }
+            }
+
+            Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. } => {
+                shift(&mut place.local);
             }
         }
     }
@@ -980,11 +992,13 @@ impl Optimizer {
             Rvalue::UnaryOp(_, op) => Self::operand_uses_local(op, target),
             Rvalue::Use(op) | Rvalue::Cast(_, op, _) => Self::operand_uses_local(op, target),
             Rvalue::Aggregate(_, ops) => ops.iter().any(|op| Self::operand_uses_local(op, target)),
-            Rvalue::Ref(_, place) => place.local == target,
             Rvalue::Intrinsic { args, .. } => {
                 args.iter().any(|op| {
                     Self::operand_uses_local(op, target)
                 })
+            }
+            Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. } => {
+                place.local == target
             }
         }
     }

@@ -40,10 +40,26 @@ pub fn compile_type<'c>(context: &'c Context, target_data: &TargetData, ty: &Typ
         }
 
         Type::REF(inner) | Type::CONST_REF(inner) => {
-            let llvm_inner = compile_type(context, target_data, inner);
-            let basic_inner: BasicTypeEnum = llvm_inner;
+            match inner.as_ref() {
+                //
+                // &[T] / &mut [T]
+                // 
+                // physical representation:
+                //      { T*, usize }
+                //
+                Type::SLICE(element) => {
+                    let llvm_element = compile_type(context, target_data, element);
+                    let data_ptr = llvm_element.ptr_type(AddressSpace::default());
+                    let len_type = context.ptr_sized_int_type(target_data, None);
 
-            basic_inner.ptr_type(AddressSpace::default()).into()
+                    context.struct_type(&[data_ptr.into(), len_type.into()], false).as_basic_type_enum()
+                }
+
+                _ => {
+                    let llvm_inner = compile_type(context, target_data, inner);
+                    llvm_inner.ptr_type(AddressSpace::default()).into()
+                }
+            }
         }
 
         Type::POINTER(inner) | Type::CONST_POINTER(inner) => {
@@ -56,6 +72,10 @@ pub fn compile_type<'c>(context: &'c Context, target_data: &TargetData, ty: &Typ
             llvm_inner
                 .ptr_type(AddressSpace::default())
                 .into()
+        }
+
+        Type::SLICE(_) => {
+            panic!("cannot lower unsized slice as a standalone LLVM value")
         }
 
         _ => panic!("codegen not yet implemented for type {:?}", ty),

@@ -114,6 +114,9 @@ pub enum Expr {
     
     /// e.g., `{1, 2, 3}`
     ArrayInitializer { id: NodeID, elements: Vec<Expr>, token: Token },
+
+    /// e.g. `[1, 2, 3]`
+    SliceInitializer { id: NodeID, elements: Vec<Expr>, token: Token },
     
     /// e.g., `arr[0]`
     ArrayAccess { id: NodeID, array: Box<Expr>, index: Box<Expr>, token: Token },

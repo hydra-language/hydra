@@ -141,6 +141,60 @@ impl<'ctx> Analyzer<'ctx> {
                 })
             },
 
+            ASTExpr::SliceInitializer { elements, .. } => {
+                let expected_inner = match expected {
+                    Some(IRType::CONST_REF(inner)) | Some(IRType::REF(inner)) => {
+                        match inner.as_ref() {
+                            IRType::SLICE(element) => {
+                                Some(element.as_ref())
+                            }
+
+                            _ => None,
+                        }
+                    }
+
+                    _ => None,
+                };
+
+                let mut ir_elements = Vec::new();
+
+                for element in elements {
+                    let mut value = self.lower_expr_with_type(element, expected_inner)?;
+                    if let Some(target) = expected_inner {
+                        value = self.coerce_primitive(value, target);
+                    }
+
+                    ir_elements.push(value);
+                }
+
+                let element_ty = if let Some(expected) = expected_inner {
+                    expected.clone()
+                } else {
+                    ir_elements.first().map(|e| e.ty.clone()).ok_or_else(|| {
+                        self.error(
+                            "S007",
+                            "cannot infer type of empty slice",
+                            span,
+                        )
+                    })?
+                };
+
+                // new HIR node; don't fake this as a normal array.
+                Ok(HIRExpr {
+                    kind: HIRExprKind::SliceInit {
+                        elements: ir_elements,
+                    },
+                    ty: IRType::CONST_REF(
+                        Box::new(
+                            IRType::SLICE(
+                                Box::new(element_ty),
+                            )
+                        )
+                    ),
+                    span,
+                })
+            }
+
             ASTExpr::ArrayAccess { array, index, .. } => {
                 let mut arr = self.lower_expr_with_type(array, None)?;
 

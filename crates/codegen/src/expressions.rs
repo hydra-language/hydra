@@ -3,7 +3,6 @@ use inkwell::types::{BasicType, BasicTypeEnum};
 use ir::Constant;
 use ir::hir::{CastKind, HIRBinOp, HIRUnaryOp};
 use ir::types::Type;
-use ir::intrinsic::IntrinsicKind;
 use mir::{Rvalue, Operand, AggregateKind, MIRFunction};
 use crate::CodeGen;
 
@@ -15,6 +14,31 @@ impl<'c> CodeGen<'c> {
             Rvalue::Ref(_, place) => {
                 let ptr = self.compile_place(place, mir_fn)?;
                 Ok(ptr.into())
+            }
+            
+            Rvalue::SliceRef { place, len, element_ty, .. } => {
+                // 'place' is the hidden backing array [T, N]
+                let backing_ptr = self.compile_place(place, mir_fn)?;
+                let index_type = self.context.ptr_sized_int_type(&self.target_data, None);
+                let zero = index_type.const_zero();
+
+                // &[T, N] -> pointer to element zero
+                let data_ptr = unsafe {
+                    self.builder.build_gep(backing_ptr, &[zero, zero], "slice_data")
+                };
+
+                let llvm_element = crate::types::compile_type(self.context, &self.target_data, element_ty);
+                let data_ptr_type = llvm_element.ptr_type(inkwell::AddressSpace::default());
+                let len_type = self.context.ptr_sized_int_type(&self.target_data, None);
+                
+                let slice_type = self.context.struct_type(&[data_ptr_type.into(), len_type.into()], false);
+                let len_value = len_type.const_int(*len as u64, false);
+
+                let mut slice = slice_type.get_undef();
+                slice = self.builder.build_insert_value(slice, data_ptr, 0, "slice_ptr").unwrap().into_struct_value();
+                slice = self.builder.build_insert_value(slice, len_value, 1, "slice_len").unwrap().into_struct_value();
+
+                Ok(slice.into())
             }
 
             Rvalue::UnaryOp(op, operand) => {

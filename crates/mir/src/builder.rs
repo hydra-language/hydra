@@ -514,6 +514,120 @@ impl<'a> MIRBuilder<'a> {
                 Operand::Copy(target_place)
             }
 
+            HIRExprKind::SliceInit { elements } => {
+                //
+                // a slice literal:
+                //
+                //     [1, 2, 3]
+                //
+                // owns no storage itself. materialize a hidden backing array
+                // and then construct a fat slice reference to it.
+                //
+                let element_ty = match &expr.ty {
+                    Type::CONST_REF(inner) | Type::REF(inner) => {
+                        match inner.as_ref() {
+                            Type::SLICE(element) => {
+                                element.as_ref().clone()
+                            }
+
+                            other => {
+                                panic!(
+                                    "ICE: SliceInit expected slice reference, found reference to {}",
+                                    other
+                                );
+                            }
+                        }
+                    }
+
+                    other => {
+                        panic!(
+                            "ICE: SliceInit expected &[T] or &mut [T], found {}",
+                            other
+                        );
+                    }
+                };
+
+                let len = elements.len();
+
+                //
+                // first lower all literal elements.
+                //
+                let mut lowered_elements = Vec::new();
+                for element in elements {
+                    lowered_elements.push(
+                        self.lower_expr_to_operand(element)
+                    );
+                }
+
+                //
+                // hidden backing storage:
+                //
+                //     _tmp: [T, N]
+                //     _tmp = aggregate(...)
+                //
+                let backing_ty = Type::ARRAY(
+                    Box::new(element_ty.clone()),
+                    len,
+                );
+
+                let backing_local = self.new_local(
+                    backing_ty,
+                    false,
+                    None,
+                );
+
+                let backing_place = Place {
+                    local: backing_local,
+                    projection: vec![],
+                };
+
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(
+                        backing_place.clone(),
+                        Rvalue::Aggregate(
+                            AggregateKind::Array(
+                                element_ty.clone()
+                            ),
+                            lowered_elements,
+                        ),
+                    ),
+                    span: expr.span,
+                });
+
+                //
+                // then construct the actual &[T] fat reference.
+                //
+                let slice_local =
+                self.new_local(
+                    expr.ty.clone(),
+                    false,
+                    None,
+                );
+
+                let slice_place = Place {
+                    local: slice_local,
+                    projection: vec![],
+                };
+
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(
+                        slice_place.clone(),
+                        Rvalue::SliceRef {
+                            is_mut: matches!(
+                                expr.ty,
+                                Type::REF(_)
+                            ),
+                            place: backing_place,
+                            len,
+                            element_ty,
+                        },
+                    ),
+                    span: expr.span,
+                });
+
+                Operand::Copy(slice_place)
+            }
+
             HIRExprKind::ArrayAccess { array, index } => {
                 // 1. Evaluate the array down to a Place in memory
                 let array_op = self.lower_expr_to_operand(array);
@@ -723,28 +837,23 @@ impl<'a> MIRBuilder<'a> {
                 match &stmt.kind {
                     StatementKind::Assign(_, rval) => {
                         let moved = match rval {
-                            Rvalue::Use(op)
-                            | Rvalue::UnaryOp(_, op)
-                            | Rvalue::Cast(_, op, _) => {
+                            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(_, op, _) => {
                                 operand_moves(op, local)
                             }
 
                             Rvalue::BinaryOp(_, lhs, rhs) => {
-                                operand_moves(lhs, local)
-                                || operand_moves(rhs, local)
+                                operand_moves(lhs, local) || operand_moves(rhs, local)
                             }
 
                             Rvalue::Aggregate(_, ops) => {
-                                ops.iter()
-                                    .any(|op| operand_moves(op, local))
+                                ops.iter().any(|op| operand_moves(op, local))
                             }
 
                             Rvalue::Intrinsic { args, .. } => {
-                                args.iter()
-                                    .any(|op| operand_moves(op, local))
+                                args.iter().any(|op| operand_moves(op, local))
                             }
 
-                            Rvalue::Ref(_, _) => false,
+                            Rvalue::Ref(_, _) | Rvalue::SliceRef { .. } => false,
                         };
 
                         if moved {

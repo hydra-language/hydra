@@ -139,12 +139,29 @@ impl<'c> CodeGen<'c> {
         for proj in &place.projection {
             match proj {
                 mir::ProjectionElem::Deref => {
-                    ptr = self.builder.build_load(ptr, "deref").into_pointer_value();
+                    match &current_ty {
+                        Type::REF(inner) | Type::CONST_REF(inner) if matches!(inner.as_ref(), Type::SLICE(_)) => {
+                            //
+                            // a slice reference is { ptr, len }
+                            // 
+                            let slice = self.builder.build_load(ptr, "slice").into_struct_value();
+                            let data_ptr = self.builder.build_extract_value(slice, 0, "slice_data").unwrap().into_pointer_value();
+                            
+                            ptr = data_ptr;
+                            current_ty = *inner.clone();
+                        }
 
-                    if let Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) = current_ty {
-                        current_ty = *inner;
+                        Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) | Type::CONST_POINTER(inner) => {
+                            ptr = self.builder.build_load(ptr, "deref").into_pointer_value();
+                            current_ty = *inner.clone();
+                        }
+
+                        _ => {
+                            return Err(format!("ICE: cannot dereference type: {}", current_ty));
+                        }
                     }
                 }
+
                 mir::ProjectionElem::Field(idx) => {
                     // Auto-deref through any pointer/reference wrappers before GEP.
                     // This handles the case where the MIR emits a Field projection

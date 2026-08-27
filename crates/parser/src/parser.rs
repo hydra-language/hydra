@@ -1036,6 +1036,7 @@ impl Parser {
             }
 
             LeftBrace => self.parse_array_initializer(),
+            LeftBracket => self.parse_slice_initializer(),
 
             Star | ForwardSlash | Plus | Modulo => {
                 Err(self.error(current_token, "P004", format!("unexpected operator `{}` found here", current_token.lexeme)))
@@ -1066,6 +1067,34 @@ impl Parser {
         self.consume(TokenType::RightBrace, "expected '}' to close array initializer")?;
 
         Ok(Expr::ArrayInitializer { id, elements, token: start_token })
+    }
+
+    fn parse_slice_initializer(&mut self) -> Result<Expr, HydraError> {
+        let id = self.next_node_id();
+        let start_token = self.consume(TokenType::LeftBracket, "expected '[' to start slice initializer")?.clone();
+        let mut elements = Vec::new();
+
+        if !self.check(TokenType::RightBracket) {
+            loop {
+                elements.push(self.parse_expression()?);
+
+                if !self.match_token(TokenType::Comma) {
+                    break;
+                }
+
+                if self.check(TokenType::RightBracket) {
+                    break;
+                }
+            }
+        }
+
+        self.consume(TokenType::RightBracket, "expected ']' to close slice initializer")?;
+
+        Ok(Expr::SliceInitializer {
+            id,
+            elements,
+            token: start_token,
+        })
     }
 
     fn parse_if(&mut self) -> Result<Expr, HydraError> {
