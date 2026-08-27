@@ -1,13 +1,13 @@
 include core::intrinsics;
 
 pub fn read<T>(src: *const T) -> T {
-    return intrinsics::ptr_read::<T>(src);
+    return intrinsics::__ptr_read::<T>(src);
 }
 
 pub fn write<T>(dst: *mut T, value: T) -> void {
-    intrinsics::ptr_write::<T>(dst, value);
+    intrinsics::__ptr_write::<T>(dst, value);
 }
 
 pub fn offset<T>(ptr: *mut T, count: isize) -> *mut T {
-    return intrinsics::ptr_offset::<T>(ptr, count);
+    return intrinsics::__ptr_offset::<T>(ptr, count);
 }
