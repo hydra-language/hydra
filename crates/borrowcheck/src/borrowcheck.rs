@@ -15,6 +15,14 @@ pub struct BlockEffects {
     pub kill: HashSet<LocalID>, // variables overwritten
 }
 
+#[derive(Clone, Debug)]
+struct Borrow {
+    borrower: LocalID,
+    target: LocalID,
+    is_mut: bool,
+    creation_span: error::Span,
+}
+
 impl<'a> BorrowChecker<'a> {
 
     pub fn new(mir: &'a MIRFunction, context: &'a HIRContext) -> Self {
@@ -26,6 +34,57 @@ impl<'a> BorrowChecker<'a> {
 
     fn error(&self, code: &'static str, message: impl Into<String>, span: Option<error::Span>) -> HydraError {
         HydraError::new(code, message, span.unwrap_or_default())
+    }
+
+    fn collect_borrows(&self) -> Vec<Borrow> {
+        let mut borrows = Vec::new();
+
+        // direct borrows
+        for block in &self.mir.basic_blocks {
+            for stmt in &block.statements {
+                if let StatementKind::Assign(place, Rvalue::Ref(is_mut, target)) = &stmt.kind {
+                    borrows.push(Borrow {
+                        borrower: place.local,
+                        target: target.local,
+                        is_mut: *is_mut,
+                        creation_span: stmt.span
+                    });
+                }
+            }
+        }
+
+        let mut changed = true;
+
+        while changed {
+            changed = false;
+
+            for block in &self.mir.basic_blocks {
+                for stmt in &block.statements {
+                    let StatementKind::Assign(dest, Rvalue::Use(Operand::Copy(src) | Operand::Move(src))) = &stmt.kind else {
+                        continue;
+                    };
+
+                    let Some(parent) = borrows.iter().find(|b| b.borrower == src.local).cloned() else { continue };
+
+                    let already_tracked = borrows.iter().any(|b| {
+                        b.borrower == dest.local && b.target == parent.target && b.is_mut == parent.is_mut
+                    });
+
+                    if !already_tracked {
+                        borrows.push(Borrow {
+                            borrower: dest.local,
+                            target: parent.target,
+                            is_mut: parent.is_mut,
+                            creation_span: parent.creation_span
+                        });
+
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        borrows
     }
 
     pub fn check(&mut self) -> Result<(), Vec<HydraError>> {
@@ -106,59 +165,7 @@ impl<'a> BorrowChecker<'a> {
     }
 
     fn enforce_borrows(&self, live_out: &HashMap<BasicBlockID, HashSet<LocalID>>, errors: &mut Vec<HydraError>) {
-        #[derive(Clone, Debug)]
-        struct Borrow {
-            borrower: LocalID,
-            target: LocalID,
-            is_mut: bool,
-            creation_span: error::Span,
-        }
-
-        let mut all_borrows = Vec::new();
-        for block in &self.mir.basic_blocks {
-            for stmt in &block.statements {
-                if let StatementKind::Assign(place, rvalue)= &stmt.kind {
-                    match rvalue {
-                        Rvalue::Ref(is_mut, target) | Rvalue::SliceRef { is_mut, place: target, .. } => {
-                            all_borrows.push(Borrow {
-                                borrower: place.local,
-                                target: target.local,
-                                is_mut: *is_mut,
-                                creation_span: stmt.span,
-                            });
-                        }
-
-                        _ => {}
-                    }
-                }
-            }        
-        }
-
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for block in &self.mir.basic_blocks {
-                for stmt in &block.statements {
-                    if let StatementKind::Assign(dest, Rvalue::Use(Operand::Copy(src) | Operand::Move(src))) = &stmt.kind {
-                        // Check if src is a known borrower
-                        let inherited: Option<Borrow> = all_borrows.iter().find(|b| b.borrower == src.local).cloned();
-                        if let Some(parent) = inherited {
-                            // Check if dest is already registered as a borrower of the same target
-                            let already_tracked = all_borrows.iter().any(|b| b.borrower == dest.local && b.target == parent.target);
-                            if !already_tracked {
-                                all_borrows.push(Borrow {
-                                    borrower: dest.local,
-                                    target: parent.target,
-                                    is_mut: parent.is_mut,
-                                    creation_span: stmt.span,
-                                });
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let all_borrows = self.collect_borrows();
 
         // 2. Check every block for violations
         for (i, block) in self.mir.basic_blocks.iter().enumerate() {
@@ -250,7 +257,11 @@ impl<'a> BorrowChecker<'a> {
 
                     if term_writes.contains(&active.target) {
                         let kind = if active.is_mut { "mutably" } else { "immutably" };
-                        errors.push(self.error("BC001", format!("cannot assign to `{}` as it is currently {} borrowed", target_name, kind), Some(span)));
+                        errors.push(self.error(
+                            "BC001", 
+                            format!("cannot assign to `{}` as it is currently {} borrowed", target_name, kind), 
+                            Some(span))
+                        );
                     }
 
                     if active.is_mut && term_reads.contains(&active.target) {
@@ -324,33 +335,7 @@ impl<'a> BorrowChecker<'a> {
     }
 
     fn enforce_borrow_conflicts(&self, live_out: &HashMap<BasicBlockID, HashSet<LocalID>>, errors: &mut Vec<HydraError>) {
-        #[derive(Clone, Debug)]
-        struct Borrow {
-            borrower: LocalID,
-            target: LocalID,
-            is_mut: bool,
-            span: error::Span,
-        }
-
-        let mut borrows: Vec<Borrow> = Vec::new();
-        for block in &self.mir.basic_blocks {
-            for stmt in &block.statements {
-                if let StatementKind::Assign(place, rvalue) = &stmt.kind {
-                    match rvalue {
-                        Rvalue::Ref(is_mut, target) | Rvalue::SliceRef { is_mut, place: target, .. } => {
-                            borrows.push(Borrow {
-                                borrower: place.local,
-                                target: target.local,
-                                is_mut: *is_mut,
-                                span: stmt.span,
-                            });
-                        }
-
-                        _ => {}
-                    }
-                }
-            }
-        }
+        let borrows = self.collect_borrows();
 
         // Track reported pairs so we only flag a specific conflict once per function
         let mut reported_conflicts = HashSet::new();
@@ -386,6 +371,10 @@ impl<'a> BorrowChecker<'a> {
                         let a = active_borrows[idx_a];
                         let b = active_borrows[idx_b];
 
+                        if a.borrower == b.borrower {
+                            continue;
+                        }
+
                         if a.target != b.target { continue; }
 
                         // Conflict if either is mutable
@@ -410,10 +399,10 @@ impl<'a> BorrowChecker<'a> {
 
                                 let (first, second) = if a.borrower.0 < b.borrower.0 { (a, b) } else { (b, a) };
 
-                                errors.push(self.error("BC004", msg, Some(second.span))
+                                errors.push(self.error("BC004", msg, Some(second.creation_span))
                                     .with_note(
                                         format!("`{}` is first borrowed here", target_name),
-                                        first.span,
+                                        first.creation_span,
                                     )
                                 );
                             }
