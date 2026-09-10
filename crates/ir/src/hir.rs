@@ -140,6 +140,7 @@ pub enum HIRStmt {
     VarDecl {
         def_id: DefID,
         init: Option<HIRExpr>,
+        has_type_annotation: bool,
         span: Span,
     },
 

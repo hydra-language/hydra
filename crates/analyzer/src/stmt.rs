@@ -53,7 +53,12 @@ impl<'ctx> Analyzer<'ctx> {
                 }
                 self.context.update_def(def_id, info);
                 
-                Ok(HIRStmt::VarDecl { def_id, init: Some(init_expr), span: name.span })
+                Ok(HIRStmt::VarDecl { 
+                    def_id, 
+                    init: Some(init_expr), 
+                    has_type_annotation: type_annotation.is_some(), 
+                    span: name.span 
+                })
             },
 
             ASTStmt::Expr(expr) => {

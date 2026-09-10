@@ -113,7 +113,7 @@ impl<'a> MIRBuilder<'a> {
 
     fn lower_stmt(&mut self, stmt: &HIRStmt) {
         match stmt {
-            HIRStmt::VarDecl { def_id, init, span: decl_span } => {
+            HIRStmt::VarDecl { def_id, init, span: decl_span, .. } => {
                 let is_const = matches!(
                     self.context.get_def(*def_id).map(|i| &i.kind),
                     Some(DefKind::Constant { .. })

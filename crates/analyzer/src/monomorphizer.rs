@@ -114,14 +114,41 @@ impl<'a> Monomorphizer<'a> {
                 self.substitute_expr(expr, subs);
             }
 
-            HIRStmt::VarDecl { def_id, init, .. } => {
-                if let Some(init_expr) = init {
+            HIRStmt::VarDecl { def_id, init, has_type_annotation, .. } => {
+                let resolved_type = if let Some(init_expr) = init.as_mut() {
                     self.substitute_expr(init_expr, subs);
-                }
 
-                if let Some(mut info) = self.context.get_def(*def_id).cloned() {
-                    match &mut info.kind {
-                        DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } => {
+                    Some(init_expr.ty.clone())
+                } else {
+                    None
+                };
+
+                let Some(mut info) = self.context.get_def(*def_id).cloned() else { return; };
+
+                match &mut info.kind {
+                    DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } => {
+                        if *has_type_annotation {
+                            //
+                            // explicit:
+                            //
+                            //     let x: Foo = ...
+                            //
+                            // keep the declared type authoritative,
+                            // but substitute generics inside it.
+                            //
+                            let substituted = ty.substitute(subs);
+                            *ty = self.resolve_type(&substituted, subs);
+                        } else if let Some(init_ty) = resolved_type {
+                            //
+                            // inferred:
+                            //
+                            //     let x = foo::<i32>();
+                            //
+                            // the specialized initializer determines
+                            // the final local type.
+                            //
+                            *ty = init_ty;
+                        } else {
                             let substituted = ty.substitute(subs);
 
                             *ty = self.resolve_type(
@@ -129,12 +156,15 @@ impl<'a> Monomorphizer<'a> {
                                 subs,
                             );
                         }
-
-                        _ => {}
                     }
 
-                    self.context.update_def(*def_id, info);
+                    _ => {}
                 }
+
+                self.context.update_def(
+                    *def_id,
+                    info,
+                );
             }
         }
     }

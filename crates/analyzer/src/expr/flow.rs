@@ -71,6 +71,7 @@ impl<'ctx> Analyzer<'ctx> {
                 let init_stmt = HIRStmt::VarDecl { 
                     def_id: var_def_id, 
                     init: Some(start_expr.clone()), 
+                    has_type_annotation: false,
                     span: variable.span 
                 };
 
@@ -150,7 +151,12 @@ impl<'ctx> Analyzer<'ctx> {
                 };
 
                 let arr_def = self.context.insert_def(arr_info);
-                let init_arr = HIRStmt::VarDecl { def_id: arr_def, init: Some(iter_expr.clone()), span: item.span };
+                let init_arr = HIRStmt::VarDecl { 
+                    def_id: arr_def, 
+                    init: Some(iter_expr.clone()), 
+                    has_type_annotation: false,
+                    span: item.span 
+                };
 
                 // Create index def
                 let idx_name = format!("_idx_{}", item.span.line);
@@ -174,6 +180,7 @@ impl<'ctx> Analyzer<'ctx> {
                         ty: IRType::I32, 
                         span: item.span 
                     }), 
+                    has_type_annotation: false,
                     span: item.span 
                 };
 
@@ -223,6 +230,7 @@ impl<'ctx> Analyzer<'ctx> {
                         ty: inner_ty.clone(),
                         span: item.span
                     }),
+                    has_type_annotation: false,
                     span: item.span
                 };
                 loop_stmts.push(init_item);
