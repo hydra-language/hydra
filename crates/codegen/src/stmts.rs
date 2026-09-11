@@ -93,7 +93,7 @@ impl<'c> CodeGen<'c> {
             }
 
             Terminator::Call { callee, args, destination, target } => {
-                let func_info = self.module.get_function(callee)
+                let func_info = self.module.get_function(&callee.symbol)
                     .ok_or_else(|| format!("ICE: no LLVM function found for '{}'", callee))?;
 
                 let mut llvm_args = Vec::new();

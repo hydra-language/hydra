@@ -1,9 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use crate::{
-    MIRProgram, MIRFunction, StatementKind, Rvalue, 
-    Operand, Terminator, LocalID, ProjectionElem, Statement,
-    Place
+    FunctionRef, LocalID, MIRFunction, MIRProgram, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator
 };
+use ir::context::DefID;
 use ir::hir::{HIRBinOp, HIRUnaryOp};
 use ir::Constant;
 
@@ -567,13 +566,9 @@ impl Optimizer {
         let mut overall_changed = false;
 
         // 1. Identify which functions are eligible for inlining
-        let inlineable_fn_names: Vec<String> = program.functions
-            .iter()
-            .filter(|f| f.is_inline)
-            .map(|f| f.name.clone())
-            .collect();
+        let inlineables: HashSet<DefID> = program.functions.iter().filter(|f| f.is_inline).map(|f| f.def_id).collect();
 
-        if inlineable_fn_names.is_empty() { return false; }
+        if inlineables.is_empty() { return false; }
 
         // 2. Process functions one by one to avoid double-borrowing the whole program
         for i in 0..program.functions.len() {
@@ -586,9 +581,9 @@ impl Optimizer {
                 let mut target_site = None;
                 for (bb_idx, block) in program.functions[i].basic_blocks.iter().enumerate() {
                     if let Terminator::Call { callee, args, destination, target } = &block.terminator {
-                        if inlineable_fn_names.contains(callee) {
+                        if inlineables.contains(&callee.def_id) {
                             // Find the callee
-                            if let Some(callee_mir) = program.functions.iter().find(|f| &f.name == callee) {
+                            if let Some(callee_mir) = program.functions.iter().find(|f| f.def_id == callee.def_id) {
                                 target_site = Some((bb_idx, callee_mir.clone(), args.clone(), destination.clone(), *target));
                                 break;
                             }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    AggregateKind, BasicBlock, BasicBlockID, LocalDecl, LocalID, MIRFunction, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator
+    AggregateKind, BasicBlock, BasicBlockID, FunctionRef, LocalDecl, LocalID, MIRFunction, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator
 };
 use crate::Operand;
 
@@ -303,7 +303,7 @@ impl<'a> MIRBuilder<'a> {
 
             HIRExprKind::Call { callee, args, .. } => {
                 let info = self.context.get_def(*callee).expect("ICE: function definition not found");
-                let callee_name = if info.absolute_path.is_empty() {
+                let symbol = if info.absolute_path.is_empty() {
                     info.name.clone()
                 } else {
                     info.absolute_path.join("::")
@@ -319,7 +319,10 @@ impl<'a> MIRBuilder<'a> {
                 let success_block = self.new_block();
 
                 self.terminate_block(Terminator::Call {
-                    callee: callee_name,
+                    callee: FunctionRef {
+                        def_id: *callee,
+                        symbol
+                    },
                     args: lowered_args,
                     destination: destination.clone(),
                     target: success_block,
@@ -331,35 +334,30 @@ impl<'a> MIRBuilder<'a> {
             }
 
             HIRExprKind::IntrinsicCall { callee, kind, args, type_args } => {
-                let lowered_args = args
-                    .iter()
-                    .map(|arg| self.lower_expr_to_operand(arg))
-                    .collect();
-
-                let temp_local =
-                self.new_local(expr.ty.clone(), false, None);
+                let lowered_args = args.iter().map(|arg| self.lower_expr_to_operand(arg)).collect();
+                let temp_local = self.new_local(expr.ty.clone(), false, None);
 
                 let target_place = Place {
                     local: temp_local,
                     projection: vec![],
                 };
 
-                let callee_name = self.context
-                    .get_def(*callee)
-                    .map(|info| {
-                        if info.absolute_path.is_empty() {
-                            info.name.clone()
-                        } else {
-                            info.absolute_path.join("::")
-                        }
-                    })
-                    .unwrap_or_else(|| format!("{}", callee));
+                let symbol = self.context.get_def(*callee).map(|info| {
+                    if info.absolute_path.is_empty() {
+                        info.name.clone()
+                    } else {
+                        info.absolute_path.join("::")
+                    }
+                }).unwrap_or_else(|| format!("{}", callee));
 
                 self.push_statement(Statement {
                     kind: StatementKind::Assign(
                         target_place.clone(),
                         Rvalue::Intrinsic {
-                            callee: callee_name,
+                            callee: FunctionRef {
+                                def_id: *callee,
+                                symbol,
+                            },
                             kind: *kind,
                             type_args: type_args.clone(),
                             args: lowered_args,
