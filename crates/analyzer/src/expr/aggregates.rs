@@ -7,11 +7,9 @@ use errors::error::{
     Span,
 };
 use ir::context::DefKind;
-use ir::hir::{
-    HIRExpr,
-    HIRExprKind,
-};
-use ir::types::Type as IRType;
+use ir::hir::{HIRExpr, HIRExprKind};
+use ir::types::{Type as IRType, TypeRef};
+
 use parser::ast::Expr as ASTExpr;
 
 impl<'ctx> Analyzer<'ctx> {
@@ -246,7 +244,7 @@ impl<'ctx> Analyzer<'ctx> {
 
                 Ok(HIRExpr {
                     kind: HIRExprKind::StructInit { def_id, values: lowered_values },
-                    ty: IRType::STRUCT(absolute_struct_name),
+                    ty: IRType::STRUCT(TypeRef::new(def_id, absolute_struct_name)),
                     span,
                 })
             },

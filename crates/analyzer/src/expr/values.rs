@@ -5,7 +5,7 @@ use parser::ast::Expr as ASTExpr;
 
 use ir::context::DefKind;
 use ir::hir::{HIRExpr, HIRExprKind};
-use ir::types::Type as IRType;
+use ir::types::{Type as IRType, TypeRef};
 
 use crate::Analyzer;
 
@@ -20,6 +20,7 @@ impl<'ctx> Analyzer<'ctx> {
                         if let Some(exp) = expected { ty = exp.clone(); }
                         Ok(HIRExpr { kind: HIRExprKind::IntLiteral(*val), ty, span })
                     },
+
                     TokenType::FloatLiteral(val) => {
                         let mut ty = IRType::F64; 
                         if let Some(exp) = expected {
@@ -27,11 +28,13 @@ impl<'ctx> Analyzer<'ctx> {
                         }
                         Ok(HIRExpr { kind: HIRExprKind::FloatLiteral(*val), ty, span })
                     },
+
                     TokenType::StringLiteral(ref s) => Ok(HIRExpr {
                         kind: HIRExprKind::StringLiteral(s.clone()),
                         ty: IRType::ARRAY(Box::new(IRType::U8), s.len()),
                         span
                     }),
+
                     TokenType::CharLiteral(c) => Ok(HIRExpr { kind: HIRExprKind::CharLiteral(*c), ty: IRType::CHAR, span }),
                     TokenType::BoolLiteral(b) => Ok(HIRExpr { kind: HIRExprKind::BoolLiteral(*b), ty: IRType::BOOL, span }),
                     _ => Err(self.error("S003", format!("unexpected literal: {:?}", token.token_type), token.span))
@@ -43,10 +46,12 @@ impl<'ctx> Analyzer<'ctx> {
                     .ok_or_else(|| self.error("S002", format!("undefined variable `{}`", name.lexeme), name.span))?;
                 
                 let info = self.context.get_def(def_id).unwrap();
+
                 let ty = match &info.kind {
                     DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } | DefKind::Function { return_type: ty, .. } => ty.clone(),
                     _ => return Err(self.error("S003", format!("`{}` cannot be used as a value", name.lexeme), name.span))
                 };
+
                 Ok(HIRExpr { kind: HIRExprKind::VarRef(def_id), ty, span })
             },
 
@@ -56,10 +61,24 @@ impl<'ctx> Analyzer<'ctx> {
                 
                 let info = self.context.get_def(def_id).unwrap();
                 let ty = match &info.kind {
-                    DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } | DefKind::Function { return_type: ty, .. } => ty.clone(),
-                    DefKind::Struct { .. } => IRType::STRUCT(info.absolute_path.join("::")),
+                    DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } | 
+                    DefKind::Function { return_type: ty, .. } => {
+                        ty.clone()
+                    }
+
+                    DefKind::Struct { .. } => {
+                        let symbol = if info.absolute_path.is_empty() {
+                            info.name.clone()
+                        } else {
+                            info.absolute_path.join("::")
+                        };
+
+                        IRType::STRUCT(TypeRef::new(def_id, symbol))
+                    }
+
                     _ => return Err(self.error("S003", format!("`{}` cannot be used as a value", segments[0].lexeme), span))
                 };
+
                 Ok(HIRExpr { kind: HIRExprKind::VarRef(def_id), ty, span })
             },
 

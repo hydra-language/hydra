@@ -1,5 +1,29 @@
 use std::{collections::HashMap, fmt};
 
+use crate::context::DefID;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypeRef {
+    pub def_id: DefID,
+    pub symbol: String,
+}
+
+impl TypeRef {
+    
+    pub fn new(def_id: DefID, symbol: String) -> Self {
+        Self {
+            def_id,
+            symbol
+        }
+    }
+}
+
+impl fmt::Display for TypeRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.symbol)
+    }
+}
+    
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     VOID,
@@ -21,7 +45,7 @@ pub enum Type {
     REF(Box<Type>),
     CONST_REF(Box<Type>),
 
-    STRUCT(String),
+    STRUCT(TypeRef),
 
     GENERIC(String),
     GENERIC_INSTANCE(Box<Type>, Vec<Type>),
@@ -109,7 +133,9 @@ impl Type {
             Type::F32 => "f32".to_string(),
             Type::F64 => "f64".to_string(),
 
-            Type::STRUCT(name) => name.replace("::", "_"),
+            Type::STRUCT(name) => {
+                name.symbol.replace("::", "_")
+            }
 
             Type::POINTER(inner) => format!("ptr_{}", inner.mangle()),
             Type::CONST_POINTER(inner) => format!("cptr_{}", inner.mangle()),

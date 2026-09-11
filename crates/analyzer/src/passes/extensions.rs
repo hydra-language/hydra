@@ -42,7 +42,7 @@ impl<'ctx> Analyzer<'ctx> {
 
     pub(crate) fn get_impl_registry_key(&self, ty: &IRType) -> String {
         match ty {
-            IRType::STRUCT(name) => name.clone(),
+            IRType::STRUCT(name) => name.symbol.clone(),
 
             IRType::GENERIC_INSTANCE(base, _) => self.get_impl_registry_key(base),
 

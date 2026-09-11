@@ -1,7 +1,7 @@
 use super::Analyzer;
 use errors::error::{Span, HydraError};
 use parser::ast::Type as ASTType;
-use ir::types::Type as IRType;
+use ir::types::{Type as IRType, TypeRef};
 use ir::context::DefKind;
 
 impl<'ctx> Analyzer<'ctx> {
@@ -44,7 +44,16 @@ impl<'ctx> Analyzer<'ctx> {
                 let info = self.context.get_def(def_id).unwrap();
 
                 match info.kind {
-                    DefKind::Struct { .. } => Ok(IRType::STRUCT(info.absolute_path.join("::"))),
+                    DefKind::Struct { .. } => {
+                        let symbol = if info.absolute_path.is_empty() {
+                            info.name.clone()
+                        } else {
+                            info.absolute_path.join("::")
+                        };
+
+                        Ok(IRType::STRUCT(TypeRef::new(def_id, symbol)))
+                    }
+
                     DefKind::GenericParam => {
                         Ok(IRType::GENERIC(
                             info.name.clone()
@@ -121,17 +130,18 @@ impl<'ctx> Analyzer<'ctx> {
             IRType::SLICE(_) => Ok(16),
             
             IRType::STRUCT(name) => {
-                if let Some(def_id) = self.global_symbols.get(&name.split("::").map(|s| s.to_string()).collect::<Vec<_>>()) {
-                    if let Some(info) = self.context.get_def(*def_id) {
-                        if let DefKind::Struct { fields, .. } = &info.kind {
-                            let mut total_size = 0;
-                            for (_, field_ty, _) in fields {
-                                total_size += self.get_type_size(field_ty)?;
-                            }
-                            return Ok(total_size);
+                if let Some(info) = self.context.get_def(name.def_id) {
+                    if let DefKind::Struct { fields, .. } = &info.kind {
+                        let mut total_size = 0;
+
+                        for (_, field_type, _) in fields {
+                            total_size += self.get_type_size(field_type)?;
                         }
+
+                        return Ok(total_size);
                     }
                 }
+
                 Err(self.error("S002", format!("cannot determine size of undefined struct '{}'", name), Span::default()))
             },
             

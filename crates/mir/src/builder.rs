@@ -788,7 +788,7 @@ impl<'a> MIRBuilder<'a> {
     fn type_needs_drop(&self, ty: &Type) -> bool {
         match ty {
             Type::STRUCT(name) => {
-                self.context.get_drop_impl(name).is_some()
+                self.context.get_drop_impl(&name.symbol).is_some()
             }
 
             _ => false,

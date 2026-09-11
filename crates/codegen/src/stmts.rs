@@ -26,7 +26,7 @@ impl<'c> CodeGen<'c> {
                     return Ok(());
                 };
 
-                let Some(drop_def_id) = self.hir_context.get_drop_impl(type_name) else {
+                let Some(drop_def_id) = self.hir_context.get_drop_impl(&type_name.symbol) else {
                     return Ok(());
                 };
 
@@ -178,14 +178,14 @@ impl<'c> CodeGen<'c> {
                         )),
                     };
 
-                    let _struct_ty = self.module.get_struct_type(&struct_name)
+                    let _struct_ty = self.module.get_struct_type(&struct_name.symbol)
                         .ok_or_else(|| format!("ICE: struct type '{}' not found in module", struct_name))?;
 
                     ptr = self.builder.build_struct_gep(ptr, *idx as u32, "field_ptr")
                         .map_err(|_| format!("GEP failed: invalid field index {} on '{}'", idx, struct_name))?;
 
                     current_ty = self.hir_context
-                        .find_struct_by_name(&struct_name)
+                        .find_struct_by_name(&struct_name.symbol)
                         .map(|def_id| {
                             let fields = self.hir_context.get_struct_fields(def_id);
                             fields[*idx].1.clone()  // (String name, Type, bool) → take the Type
