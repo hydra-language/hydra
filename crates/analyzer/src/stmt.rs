@@ -9,10 +9,19 @@ impl<'ctx> Analyzer<'ctx> {
 
     pub(crate) fn lower_block(&mut self, block: &parser::ast::Block) -> Result<HIRBlock, HydraError> {
         let mut stmts = Vec::new();
+
         for stmt in &block.statements {
             stmts.push(self.lower_stmt(stmt)?);
         }
-        Ok(HIRBlock { stmts, span: crate::utils::get_stmt_span(block.statements.first().unwrap()) }) // approx span
+
+        let span = block.statements.first()
+            .map(crate::utils::get_stmt_span)
+            .unwrap_or_default();
+
+        Ok(HIRBlock { 
+            stmts, 
+            span  
+        }) // approx span
     }
 
     pub(crate) fn lower_stmt(&mut self, stmt: &ASTStmt) -> Result<HIRStmt, HydraError> {
