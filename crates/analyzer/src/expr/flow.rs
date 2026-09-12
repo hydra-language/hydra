@@ -59,73 +59,421 @@ impl<'ctx> Analyzer<'ctx> {
 
             ASTExpr::For { id, variable, start, end, is_inclusive, body } => {
                 let start_expr = self.lower_expr(start)?;
-                let end_expr = self.lower_expr(end)?;
+                let mut end_expr = self.lower_expr_with_type(end, Some(&start_expr.ty))?;
+
+                end_expr = self.coerce_primitive(end_expr, &start_expr.ty);
+
+                let loop_ty = start_expr.ty.clone();
 
                 let var_def_id = self.name_resolver.get_resolution(*id)
                     .ok_or_else(|| self.error("S002", "loop variable definition not found", variable.span))?;
                 
                 let mut info = self.context.get_def(var_def_id).unwrap().clone();
-                info.kind = DefKind::Variable { ty: start_expr.ty.clone(), is_mutable: true };
+                info.kind = DefKind::Variable { ty: loop_ty.clone(), is_mutable: true };
                 self.context.update_def(var_def_id, info);
 
+                //
+                // let i = start;
+                //
                 let init_stmt = HIRStmt::VarDecl { 
                     def_id: var_def_id, 
                     init: Some(start_expr.clone()), 
                     has_type_annotation: false,
                     span: variable.span 
+ 
+                };
+                //
+                // const _for_end = end;
+                //
+                // evaluate the ending bound exactly once.
+                //
+                let end_name = format!("_for_end_{}", variable.span.line);
+
+                let end_def = self.context.insert_def(SymbolInfo {
+                    name: end_name.clone(),
+                    span: variable.span,
+                    absolute_path: vec![end_name],
+                    kind: DefKind::Variable {
+                        ty: loop_ty.clone(),
+                        is_mutable: false,
+                    },
+                    is_pub: false,
+                });
+
+                let init_end = HIRStmt::VarDecl {
+                    def_id: end_def,
+                    init: Some(end_expr),
+                    has_type_annotation: false,
+                    span: variable.span,
                 };
 
-                let op = if *is_inclusive { HIRBinOp::Gt } else { HIRBinOp::Ge };
-                let check_cond = HIRExpr {
-                    kind: HIRExprKind::Binary {
-                        op,
-                        lhs: Box::new(HIRExpr { kind: HIRExprKind::VarRef(var_def_id), ty: start_expr.ty.clone(), span: variable.span }),
-                        rhs: Box::new(end_expr)
+                //
+                // const _for_descending = i > _for_end;
+                //
+                // direction is determined once before iteration begins.
+                //
+                let descending_name = format!("_for_descending_{}", variable.span.line);
+
+                let descending_def = self.context.insert_def(SymbolInfo {
+                    name: descending_name.clone(),
+                    span: variable.span,
+                    absolute_path: vec![descending_name],
+                    kind: DefKind::Variable {
+                        ty: IRType::BOOL,
+                        is_mutable: false,
                     },
-                    ty: IRType::BOOL,
-                    span: variable.span
+                    is_pub: false,
+                });
+
+                let init_descending = HIRStmt::VarDecl {
+                    def_id: descending_def,
+                    init: Some(HIRExpr {
+                        kind: HIRExprKind::Binary {
+                            op: HIRBinOp::Gt,
+
+                            lhs: Box::new(HIRExpr {
+                                kind: HIRExprKind::VarRef(
+                                    var_def_id,
+                                ),
+                                ty: loop_ty.clone(),
+                                span: variable.span,
+                            }),
+
+                            rhs: Box::new(HIRExpr {
+                                kind: HIRExprKind::VarRef(
+                                    end_def,
+                                ),
+                                ty: loop_ty.clone(),
+                                span: variable.span,
+                            }),
+                        },
+
+                        ty: IRType::BOOL,
+                        span: variable.span,
+                    }),
+
+                    has_type_annotation: false,
+                    span: variable.span,
                 };
-                let break_if = HIRExpr {
-                    kind: HIRExprKind::If {
-                        cond: Box::new(check_cond),
-                        then_block: Box::new(HIRBlock { stmts: vec![HIRStmt::Expr(HIRExpr { kind: HIRExprKind::Break, ty: IRType::VOID, span })], span }),
-                        else_block: None,
+
+                //
+                // ascending:
+                //
+                // exclusive: break when i >= end
+                // inclusive: break when i > end
+                //
+                let ascending_op = if *is_inclusive { HIRBinOp::Gt } else { HIRBinOp::Ge };
+
+                //
+                // descending:
+                //
+                // exclusive: break when i <= end
+                // inclusive: break when i < end
+                //
+                let descending_op = if *is_inclusive { HIRBinOp::Lt } else { HIRBinOp::Le };
+
+                let ascending_break_cond = HIRExpr {
+                    kind: HIRExprKind::Binary {
+                        op: ascending_op,
+
+                        lhs: Box::new(HIRExpr {
+                            kind: HIRExprKind::VarRef(
+                                var_def_id,
+                            ),
+                            ty: loop_ty.clone(),
+                            span: variable.span,
+                        }),
+
+                        rhs: Box::new(HIRExpr {
+                            kind: HIRExprKind::VarRef(
+                                end_def,
+                            ),
+                            ty: loop_ty.clone(),
+                            span: variable.span,
+                        }),
                     },
+
+                    ty: IRType::BOOL,
+                    span: variable.span,
+                };
+
+                let descending_break_cond = HIRExpr {
+                    kind: HIRExprKind::Binary {
+                        op: descending_op,
+
+                        lhs: Box::new(HIRExpr {
+                            kind: HIRExprKind::VarRef(
+                                var_def_id,
+                            ),
+                            ty: loop_ty.clone(),
+                            span: variable.span,
+                        }),
+
+                        rhs: Box::new(HIRExpr {
+                            kind: HIRExprKind::VarRef(
+                                end_def,
+                            ),
+                            ty: loop_ty.clone(),
+                            span: variable.span,
+                        }),
+                    },
+
+                    ty: IRType::BOOL,
+                    span: variable.span,
+                };
+
+                let break_expr = || HIRExpr {
+                    kind: HIRExprKind::Break,
                     ty: IRType::VOID,
                     span,
                 };
 
-                let mut loop_stmts = vec![HIRStmt::Expr(break_if)];
-                loop_stmts.extend(self.lower_block(body)?.stmts);
+                let ascending_break = HIRExpr {
+                    kind: HIRExprKind::If {
+                        cond: Box::new(
+                            ascending_break_cond,
+                        ),
 
+                        then_block: Box::new(HIRBlock {
+                            stmts: vec![
+                                HIRStmt::Expr(break_expr())
+                            ],
+                            span,
+                        }),
+
+                        else_block: None,
+                    },
+
+                    ty: IRType::VOID,
+                    span,
+                };
+
+                let descending_break = HIRExpr {
+                    kind: HIRExprKind::If {
+                        cond: Box::new(
+                            descending_break_cond,
+                        ),
+
+                        then_block: Box::new(HIRBlock {
+                            stmts: vec![
+                                HIRStmt::Expr(break_expr())
+                            ],
+                            span,
+                        }),
+
+                        else_block: None,
+                    },
+
+                    ty: IRType::VOID,
+                    span,
+                };
+
+                //
+                // if descending {
+                //     break if i <=/< end;
+                // } else {
+                //     break if i >=/> end;
+                // }
+                //
+                let range_check = HIRExpr {
+                    kind: HIRExprKind::If {
+                        cond: Box::new(HIRExpr {
+                            kind: HIRExprKind::VarRef(
+                                descending_def,
+                            ),
+                            ty: IRType::BOOL,
+                            span: variable.span,
+                        }),
+
+                        then_block: Box::new(HIRBlock {
+                            stmts: vec![
+                                HIRStmt::Expr(
+                                    descending_break
+                                )
+                            ],
+                            span,
+                        }),
+
+                        else_block: Some(Box::new(
+                            HIRBlock {
+                                stmts: vec![
+                                    HIRStmt::Expr(
+                                        ascending_break
+                                    )
+                                ],
+                                span,
+                            },
+                        )),
+                    },
+
+                    ty: IRType::VOID,
+                    span,
+                };
+
+                let mut loop_stmts = vec![
+                    HIRStmt::Expr(range_check)
+                ];
+
+                loop_stmts.extend(
+                    self.lower_block(body)?.stmts
+                );
+
+                //
+                // i = i + 1
+                //
                 let increment_expr = HIRExpr {
                     kind: HIRExprKind::Assign {
-                        target: Box::new(HIRExpr { kind: HIRExprKind::VarRef(var_def_id), ty: start_expr.ty.clone(), span: variable.span }),
+                        target: Box::new(HIRExpr {
+                            kind: HIRExprKind::VarRef(
+                                var_def_id,
+                            ),
+                            ty: loop_ty.clone(),
+                            span: variable.span,
+                        }),
+
                         value: Box::new(HIRExpr {
                             kind: HIRExprKind::Binary {
                                 op: HIRBinOp::Add,
-                                lhs: Box::new(HIRExpr { kind: HIRExprKind::VarRef(var_def_id), ty: start_expr.ty.clone(), span: variable.span }),
-                                rhs: Box::new(HIRExpr { kind: HIRExprKind::IntLiteral(1), ty: start_expr.ty.clone(), span: variable.span })
+
+                                lhs: Box::new(HIRExpr {
+                                    kind: HIRExprKind::VarRef(
+                                        var_def_id,
+                                    ),
+                                    ty: loop_ty.clone(),
+                                    span: variable.span,
+                                }),
+
+                                rhs: Box::new(HIRExpr {
+                                    kind: HIRExprKind::IntLiteral(1),
+                                    ty: loop_ty.clone(),
+                                    span: variable.span,
+                                }),
                             },
-                            ty: start_expr.ty.clone(),
-                            span: variable.span
-                        })
+
+                            ty: loop_ty.clone(),
+                            span: variable.span,
+                        }),
                     },
-                    ty: start_expr.ty,
-                    span: variable.span
+
+                    ty: loop_ty.clone(),
+                    span: variable.span,
                 };
-                loop_stmts.push(HIRStmt::Expr(increment_expr));
+
+                //
+                // i = i - 1
+                //
+                let decrement_expr = HIRExpr {
+                    kind: HIRExprKind::Assign {
+                        target: Box::new(HIRExpr {
+                            kind: HIRExprKind::VarRef(
+                                var_def_id,
+                            ),
+                            ty: loop_ty.clone(),
+                            span: variable.span,
+                        }),
+
+                        value: Box::new(HIRExpr {
+                            kind: HIRExprKind::Binary {
+                                op: HIRBinOp::Sub,
+
+                                lhs: Box::new(HIRExpr {
+                                    kind: HIRExprKind::VarRef(
+                                        var_def_id,
+                                    ),
+                                    ty: loop_ty.clone(),
+                                    span: variable.span,
+                                }),
+
+                                rhs: Box::new(HIRExpr {
+                                    kind: HIRExprKind::IntLiteral(1),
+                                    ty: loop_ty.clone(),
+                                    span: variable.span,
+                                }),
+                            },
+
+                            ty: loop_ty.clone(),
+                            span: variable.span,
+                        }),
+                    },
+
+                    ty: loop_ty.clone(),
+                    span: variable.span,
+                };
+
+                //
+                // if descending {
+                //     i = i - 1;
+                // } else {
+                //     i = i + 1;
+                // }
+                //
+                let step_expr = HIRExpr {
+                    kind: HIRExprKind::If {
+                        cond: Box::new(HIRExpr {
+                            kind: HIRExprKind::VarRef(
+                                descending_def,
+                            ),
+                            ty: IRType::BOOL,
+                            span: variable.span,
+                        }),
+
+                        then_block: Box::new(HIRBlock {
+                            stmts: vec![
+                                HIRStmt::Expr(
+                                    decrement_expr
+                                )
+                            ],
+                            span,
+                        }),
+
+                        else_block: Some(Box::new(
+                            HIRBlock {
+                                stmts: vec![
+                                    HIRStmt::Expr(
+                                        increment_expr
+                                    )
+                                ],
+                                span,
+                            },
+                        )),
+                    },
+
+                    ty: IRType::VOID,
+                    span,
+                };
+
+                loop_stmts.push(
+                    HIRStmt::Expr(step_expr)
+                );
 
                 let loop_expr = HIRExpr {
-                    kind: HIRExprKind::Loop(Box::new(HIRBlock { stmts: loop_stmts, span })),
+                    kind: HIRExprKind::Loop(
+                        Box::new(HIRBlock {
+                            stmts: loop_stmts,
+                            span,
+                        }),
+                    ),
+
                     ty: IRType::VOID,
-                    span
+                    span,
                 };
 
                 Ok(HIRExpr {
-                    kind: HIRExprKind::Block(HIRBlock { stmts: vec![init_stmt, HIRStmt::Expr(loop_expr)], span }),
+                    kind: HIRExprKind::Block(
+                        HIRBlock {
+                            stmts: vec![
+                                init_stmt,
+                                init_end,
+                                init_descending,
+                                HIRStmt::Expr(loop_expr),
+                            ],
+
+                            span,
+                        },
+                    ),
+
                     ty: IRType::VOID,
-                    span
+                    span,
                 })
             },
 
