@@ -1,7 +1,7 @@
 use crate::CodeGen;
 use ir::{context::DefKind, types::Type};
 use mir::{Statement, StatementKind, Terminator, Place, MIRFunction, LocalID};
-use inkwell::values::PointerValue;
+use inkwell::{IntPredicate, values::{IntValue, PointerValue}};
 
 impl<'c> CodeGen<'c> {
 
@@ -135,6 +135,7 @@ impl<'c> CodeGen<'c> {
 
         let mut ptr = *ptr;
         let mut current_ty = mir_fn.locals[place.local.0].ty.clone();
+        let mut slice_len: Option<IntValue<'c>> = None;
 
         for proj in &place.projection {
             match proj {
@@ -143,11 +144,20 @@ impl<'c> CodeGen<'c> {
                         Type::REF(inner) | Type::CONST_REF(inner) if matches!(inner.as_ref(), Type::SLICE(_)) => {
                             //
                             // a slice reference is { ptr, len }
-                            // 
+                            //
                             let slice = self.builder.build_load(ptr, "slice").into_struct_value();
-                            let data_ptr = self.builder.build_extract_value(slice, 0, "slice_data").unwrap().into_pointer_value();
-                            
+                            let data_ptr = self.builder
+                                .build_extract_value(slice, 0, "slice_data")
+                                .unwrap()
+                                .into_pointer_value();
+
+                            let len = self.builder
+                                .build_extract_value(slice, 1, "slice_len")
+                                .unwrap()
+                                .into_int_value();
+
                             ptr = data_ptr;
+                            slice_len = Some(len);
                             current_ty = *inner.clone();
                         }
 
@@ -163,10 +173,9 @@ impl<'c> CodeGen<'c> {
                 }
 
                 mir::ProjectionElem::Field(idx) => {
-                    // Auto-deref through any pointer/reference wrappers before GEP.
-                    // This handles the case where the MIR emits a Field projection
-                    // directly on a &T or *T without an explicit preceding Deref.
-                    while let Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) = &current_ty {
+                    while let Type::REF(inner) | Type::CONST_REF(inner) | 
+                        Type::POINTER(inner) | Type::CONST_POINTER(inner) = &current_ty
+                    {
                         ptr = self.builder.build_load(ptr, "auto_deref").into_pointer_value();
                         current_ty = *inner.clone();
                     }
@@ -188,24 +197,151 @@ impl<'c> CodeGen<'c> {
                         .find_struct_by_name(&struct_name.symbol)
                         .map(|def_id| {
                             let fields = self.hir_context.get_struct_fields(def_id);
-                            fields[*idx].1.clone()  // (String name, Type, bool) → take the Type
+                            fields[*idx].1.clone()
                         })
                         .unwrap_or(Type::VOID);
+
+                    slice_len = None;
                 }
+
                 mir::ProjectionElem::Index(local_idx) => {
-                    let idx_ptr = self.locals.get(local_idx).unwrap();
-                    let idx_val = self.builder.build_load(*idx_ptr, "idx_val").into_int_value();
-                    
-                    if let ir::types::Type::ARRAY(_, _) = current_ty {
-                        let zero = self.context.i64_type().const_zero();
-                        ptr = unsafe { self.builder.build_gep(ptr, &[zero, idx_val], "arr_idx") };
+                    let idx_ptr = self.locals.get(local_idx)
+                        .ok_or_else(|| format!("ICE: missing index local _{}", local_idx.0))?;
+
+                    let idx_val = self.builder
+                        .build_load(*idx_ptr, "idx_val")
+                        .into_int_value();
+
+                    let idx_ty = &mir_fn.locals[local_idx.0].ty;
+
+                    let (len, element_ty, is_array) = match &current_ty {
+                        Type::ARRAY(inner, size) => {
+                            let usize_type = self.context.ptr_sized_int_type(&self.target_data, None);
+                            let len = usize_type.const_int(*size as u64, false);
+
+                            (len, inner.as_ref().clone(), true)
+                        }
+
+                        Type::SLICE(inner) => {
+                            let len = slice_len.ok_or_else(|| {
+                                "ICE: slice index did not have length metadata".to_string()
+                            })?;
+
+                            (len, inner.as_ref().clone(), false)
+                        }
+
+                        _ => {
+                            return Err(format!(
+                                "ICE: index projection on non-array/slice type {}",
+                                current_ty
+                            ));
+                        }
+                    };
+
+                    let idx_val = self.emit_bounds_check(
+                        idx_val,
+                        idx_ty,
+                        len,
+                    )?;
+
+                    if is_array {
+                        let zero = self.context
+                            .ptr_sized_int_type(&self.target_data, None)
+                            .const_zero();
+
+                        ptr = unsafe {
+                            self.builder.build_gep(
+                                ptr,
+                                &[zero, idx_val],
+                                "arr_idx",
+                            )
+                        };
                     } else {
-                        ptr = unsafe { self.builder.build_gep(ptr, &[idx_val], "ptr_idx") };
+                        ptr = unsafe {
+                            self.builder.build_gep(
+                                ptr,
+                                &[idx_val],
+                                "ptr_idx",
+                            )
+                        };
                     }
+
+                    current_ty = element_ty;
+                    slice_len = None;
                 }
             }
         }
 
         Ok(ptr)
+    }
+
+    fn normalize_index(&self, value: IntValue<'c>, ty: &Type) -> IntValue<'c> {
+        let usize_type = self.context.ptr_sized_int_type(&self.target_data, None);
+        let source_width = value.get_type().get_bit_width();
+        let target_width = usize_type.get_bit_width();
+
+        if source_width == target_width {
+            return value;
+        }
+
+        if source_width > target_width {
+            return self.builder.build_int_truncate(value, usize_type, "index_trunc");
+        }
+
+        if matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::ISIZE) {
+            self.builder.build_int_s_extend(value, usize_type, "index_sext")
+        } else {
+            self.builder.build_int_z_extend(value, usize_type, "index_zext")
+        }
+    }
+
+    fn emit_bounds_check(&self, index: IntValue<'c>, index_ty: &Type, len: IntValue<'c>) -> Result<IntValue<'c>, String> {
+        let index = self.normalize_index(index, index_ty);
+
+        let in_bounds = self.builder.build_int_compare(
+            IntPredicate::ULT,
+            index,
+            len,
+            "index_in_bounds",
+        );
+
+        let function = self.current_fn.ok_or_else(|| "ICE: bounds check emitted outside of a function".to_string())?;
+        let success_bb = self.context.append_basic_block(function, "bounds_ok");
+        let failure_bb = self.context.append_basic_block(function, "bounds_fail");
+
+        self.builder.build_conditional_branch(
+            in_bounds,
+            success_bb,
+            failure_bb,
+        );
+
+        self.builder.position_at_end(failure_bb);
+
+        let void_type = self.context.void_type();
+        let usize_type = self.context.ptr_sized_int_type(&self.target_data, None);
+
+        let fail_fn = self.module.get_function("hydra_bounds_check_fail").unwrap_or_else(|| {
+            let fn_type = void_type.fn_type(
+                &[usize_type.into(), usize_type.into()],
+                false,
+            );
+
+            self.module.add_function(
+                "hydra_bounds_check_fail",
+                fn_type,
+                Some(inkwell::module::Linkage::External),
+            )
+        });
+
+        self.builder.build_call(
+            fail_fn,
+            &[index.into(), len.into()],
+            "bounds_fail",
+        );
+
+        self.builder.build_unreachable();
+        self.builder.position_at_end(success_bb);
+
+        Ok(index)
     }
 }

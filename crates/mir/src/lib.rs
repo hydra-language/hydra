@@ -1,7 +1,7 @@
 pub mod builder;
 pub mod display;
 pub mod optimizer;
-
+pub mod bounds;
 
 use errors::error;
 use ir::types::Type;

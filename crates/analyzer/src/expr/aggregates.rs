@@ -121,15 +121,12 @@ impl<'ctx> Analyzer<'ctx> {
                     Some(&IRType::USIZE),
                 )?;
 
-                if !idx_expr.ty.is_numeric() {
+                if !self.is_int_type(&idx_expr.ty) {
                     return Err(self.error(
                         "S001",
-                        format!(
-                            "index must be numeric, found {}",
-                            idx_expr.ty
-                        ),
-                        span,
-                    ));
+                        format!("index must be an integer, found {}", idx_expr.ty),
+                        span
+                    ))
                 }
 
                 //

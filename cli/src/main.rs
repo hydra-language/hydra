@@ -11,7 +11,7 @@ use parser::module::{ModuleTree, SourceMap};
 use analyzer::{Analyzer, Resolver, monomorphizer::Monomorphizer};
 use ir::context::HIRContext;
 
-use mir::{builder::MIRBuilder, MIRProgram, optimizer::Optimizer};
+use mir::{MIRProgram, bounds::BoundsChecker, builder::MIRBuilder, optimizer::Optimizer};
 use borrowcheck::borrowcheck::BorrowChecker;
 use codegen::CodeGen;
 
@@ -192,8 +192,28 @@ fn main() {
         println!("{}[INFO]{} MIR written to: {}", GREEN, RESET, fname.display());
     }
 
-    // --- PHASE 5: BORROW CHECKING ---
+    // --- PHASE 5: BOUNDS CHECKING ---
+    let mut has_bounds_errors = false;
+
+    for mir_fn in &mir_program.functions {
+        let checker = BoundsChecker::new(mir_fn, &context);
+
+        if let Err(errors) = checker.check() {
+            has_bounds_errors = true;
+
+            for error in errors {
+                error.report(&contents, input_path.to_str().unwrap());
+            }
+        }
+    }
+
+    if has_bounds_errors {
+        process::exit(1);
+    }
+
+    // --- PHASE 6: BORROW CHECKING ---
     let mut has_borrow_errors = false;
+
     for mir_fn in &mir_program.functions {
         let mut checker = BorrowChecker::new(mir_fn, &context);
         if let Err(errors) = checker.check() {
@@ -208,7 +228,7 @@ fn main() {
         process::exit(1);
     }
 
-    // --- PHASE 6: MIR OPTIMIZATION ---
+    // --- PHASE 7: MIR OPTIMIZATION ---
     if cli.release || emit_list.contains(&EmitStage::MIROpt) {
         Optimizer::optimize(&mut mir_program);
     }
@@ -232,7 +252,7 @@ fn main() {
         return;
     }
 
-    // --- PHASE 7: CODEGEN (LLVM IR) ---
+    // --- PHASE 8: CODEGEN (LLVM IR) ---
     let llvm_context = Context::create();
     let mut codegen = CodeGen::new(&llvm_context, &context, &module_name);
     
@@ -247,7 +267,7 @@ fn main() {
         println!("{}[INFO]{} LLVM ir written to: {}", GREEN, RESET, fname.display());
     }
 
-    // --- PHASE 8: IR OPTIMIZATION ---
+    // --- PHASE 9: IR OPTIMIZATION ---
     let mut ir_optimized = false;
     if cli.release || emit_list.contains(&EmitStage::IROpt) {
         CodeGen::run_ir_passes(&codegen.module);
@@ -260,7 +280,7 @@ fn main() {
         println!("{}[INFO]{} optimized LLVM ir written to: {}", GREEN, RESET, fname.display());
     }
 
-    // --- PHASE 9: ASSEMBLY ---
+    // --- PHASE 10: ASSEMBLY ---
     if emit_list.contains(&EmitStage::ASM) {
         let fname = input_path.with_extension("s");
         CodeGen::emit_asm(&codegen.module, &codegen.triple, opt_level, &fname);
@@ -272,7 +292,7 @@ fn main() {
         return;
     }
 
-    // --- PHASE 10: OBJECT COMPILATION & LINKING ---
+    // --- PHASE 11: OBJECT COMPILATION & LINKING ---
     let obj_file = PathBuf::from(format!("{}.o", module_name));
     
     if cli.release && !ir_optimized {

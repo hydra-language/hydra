@@ -192,7 +192,9 @@ impl<'c> CodeGen<'c> {
 
                 let slice = match value {
                     BasicValueEnum::StructValue(slice) => slice,
-                    _ => return Err("ICE: slice reference was not lowered as a fat slice".to_string()),
+                    other => {
+                        return Err(format!("ICE: expected fat slice value for type `{}`, found {:?}", ty, other))
+                    }
                 };
 
                 let ptr = self.builder
