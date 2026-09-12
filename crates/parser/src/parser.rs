@@ -406,9 +406,16 @@ impl Parser {
         } else if self.match_token(TokenType::CONTINUE) {
             self.parse_continue_stmt()
         } else {
-            // fallback to expression statement
             let expr = self.parse_expression()?;
-            self.consume(TokenType::Semicolon, "expected ';' after expression")?;
+
+            let is_block_expr = matches!(expr, Expr::If { .. } | Expr::While { .. } | Expr::For { .. } | Expr::ForEach { .. });
+
+            if is_block_expr {
+                self.match_token(TokenType::Semicolon);
+            } else {
+                self.consume(TokenType::Semicolon, "';' after expression")?;
+            }
+
             Ok(Stmt::Expr(Box::new(expr)))
         }
     }
