@@ -1,9 +1,11 @@
 use inkwell::values::{BasicValue, BasicValueEnum};
 use inkwell::types::{BasicType, BasicTypeEnum};
+use inkwell::AddressSpace;
 use ir::Constant;
 use ir::hir::{CastKind, HIRBinOp, HIRUnaryOp};
 use ir::types::Type;
 use mir::{Rvalue, Operand, AggregateKind, MIRFunction};
+
 use crate::CodeGen;
 
 impl<'c> CodeGen<'c> {
@@ -191,7 +193,11 @@ impl<'c> CodeGen<'c> {
                                 if src_width > dest_width {
                                     Ok(self.builder.build_int_truncate(int_val, dest_int_ty, "trunc").into())
                                 } else {
-                                    let is_unsigned = matches!(src, Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::USIZE | Type::CHAR | Type::BOOL);
+                                    let is_unsigned = matches!(
+                                        src, 
+                                        Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::USIZE | Type::CHAR | Type::BOOL
+                                    );
+
                                     if is_unsigned {
                                         Ok(self.builder.build_int_z_extend(int_val, dest_int_ty, "zext").into())
                                     } else {
@@ -200,9 +206,27 @@ impl<'c> CodeGen<'c> {
                                 }
                             }
                             // Float to Float (Resize)
-                            (Type::F32, Type::F64) => Ok(self.builder.build_float_ext(val.into_float_value(), dest_llvm_ty.into_float_type(), "fpext").into()),
-                            (Type::F64, Type::F32) => Ok(self.builder.build_float_trunc(val.into_float_value(), dest_llvm_ty.into_float_type(), "fptrunc").into()),
-                            _ => Err(format!("Unsupported cast from {:?} to {:?}", src_ty, dest_ty)),
+                            (Type::F32, Type::F64) => {
+                                Ok(
+                                    self.builder.build_float_ext(
+                                        val.into_float_value(), 
+                                        dest_llvm_ty.into_float_type(), 
+                                        "fpext"
+                                    ).into()
+                                )
+                            }
+
+                            (Type::F64, Type::F32) => {
+                                Ok(
+                                    self.builder.build_float_trunc(
+                                        val.into_float_value(), 
+                                        dest_llvm_ty.into_float_type(), 
+                                        "fptrunc"
+                                    ).into()
+                                )
+                            }
+
+                            _ => Err(format!("unsupported cast from {:?} to {:?}", src_ty, dest_ty)),
                         }
                     }
                 }
@@ -302,14 +326,90 @@ impl<'c> CodeGen<'c> {
                     }
 
                     Constant::String(s) => {
-                        Ok(self.get_global_string_ptr(s).into())
+                        self.compile_string_literal(s)
                     }
 
                     Constant::Char(c) => {
-                        Ok(self.context.i8_type().const_int(*c as u64, false).into())
+                        Ok(self.context.i32_type().const_int(*c as u32 as u64, false).into())
                     }
                 }
             }
         }
+    }
+
+    fn compile_string_literal(&mut self, value: &str) -> Result<BasicValueEnum<'c>, String> {
+        let backing_ptr = self.get_global_char_array_ptr(value);
+
+        let index_ty = self.context.ptr_sized_int_type(
+            &self.target_data,
+            None,
+        );
+
+        let zero = index_ty.const_zero();
+
+        //
+        // [char; N]* -> char*
+        //
+        let data_ptr = unsafe {
+            self.builder.build_gep(
+                backing_ptr,
+                &[zero, zero],
+                "str_data",
+            )
+        };
+
+        let char_ty = self.context.i32_type();
+
+        let char_ptr_ty = char_ty.ptr_type(
+            AddressSpace::default(),
+        );
+
+        let len_ty = self.context.ptr_sized_int_type(
+            &self.target_data,
+            None,
+        );
+
+        //
+        // IMPORTANT: this is the number of Unicode scalar
+        // values, NOT the UTF-8 byte length.
+        //
+        let len = value.chars().count();
+
+        let len_value = len_ty.const_int(
+            len as u64,
+            false,
+        );
+
+        let slice_ty = self.context.struct_type(
+            &[
+                char_ptr_ty.into(),
+                len_ty.into(),
+            ],
+            false,
+        );
+
+        let mut slice = slice_ty.get_undef();
+
+        slice = self.builder
+            .build_insert_value(
+                slice,
+                data_ptr,
+                0,
+                "str_ptr",
+            )
+            .unwrap()
+            .into_struct_value();
+
+        slice = self.builder
+            .build_insert_value(
+                slice,
+                len_value,
+                1,
+                "str_len",
+            )
+            .unwrap()
+            .into_struct_value();
+
+        Ok(slice.into())
     }
 }

@@ -115,9 +115,10 @@ impl<'ctx> Analyzer<'ctx> {
 
     pub(crate) fn get_type_size(&self, ty: &IRType) -> Result<i64, HydraError> {
         match ty {
-            IRType::I8 | IRType::U8 | IRType::BOOL | IRType::CHAR => Ok(1),
+            IRType::I8 | IRType::U8 | IRType::BOOL => Ok(1),
+
             IRType::I16 | IRType::U16 => Ok(2),
-            IRType::I32 | IRType::U32 | IRType::F32 => Ok(4),
+            IRType::I32 | IRType::U32 | IRType::F32 | IRType::CHAR => Ok(4),
             IRType::I64 | IRType::U64 | IRType::F64 | IRType::USIZE | IRType::ISIZE => Ok(8),
             
             IRType::POINTER(_) | IRType::CONST_POINTER(_) | IRType::REF(_) | IRType::CONST_REF(_) => Ok(8),

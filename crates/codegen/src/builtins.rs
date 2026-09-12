@@ -78,6 +78,21 @@ impl<'c> CodeGen<'c> {
         Ok(())
     }
 
+    fn call_print_chars(&mut self, ptr: inkwell::values::PointerValue<'c>, len: inkwell::values::IntValue<'c>) -> Result<(), String> {
+        let void_type = self.context.void_type();
+        let char_ptr_type = self.context.i32_type().ptr_type(AddressSpace::default());
+        let usize_type = self.context.ptr_sized_int_type(&self.target_data, None);
+
+        let fn_name = "print_chars";
+        let func = self.module.get_function(fn_name).unwrap_or_else(|| {
+            let fn_type = void_type.fn_type(&[char_ptr_type.into(), usize_type.into()], false);
+            self.module.add_function(fn_name, fn_type, Some(inkwell::module::Linkage::External))
+        });
+
+        self.builder.build_call(func, &[ptr.into(), len.into()], "call_print_chars");
+        Ok(())
+    }
+
     fn compile_print_value(&mut self, value: BasicValueEnum<'c>, ty: &Type) -> Result<(), String> {
         let void_type = self.context.void_type();
         let i64_type = self.context.i64_type();
@@ -89,9 +104,14 @@ impl<'c> CodeGen<'c> {
                     let fn_type = void_type.fn_type(&[i64_type.into()], false);
                     self.module.add_function("print_i64", fn_type, Some(inkwell::module::Linkage::External))
                 });
-                
-                // Ensure value is expanded to 64-bit for the assembly call
-                let extended = self.builder.build_int_s_extend(value.into_int_value(), i64_type, "sext_i64");
+
+                let int_value = value.into_int_value();
+                let extended = if int_value.get_type().get_bit_width() == 64 {
+                    int_value
+                } else {
+                    self.builder.build_int_s_extend(int_value, i64_type, "sext_i64")
+                };
+
                 self.builder.build_call(func, &[extended.into()], "call_print_i64");
             },
 
@@ -100,8 +120,14 @@ impl<'c> CodeGen<'c> {
                     let fn_type = void_type.fn_type(&[i64_type.into()], false);
                     self.module.add_function("print_u64", fn_type, Some(inkwell::module::Linkage::External))
                 });
-                
-                let extended = self.builder.build_int_z_extend(value.into_int_value(), i64_type, "zext_u64");
+
+                let int_value = value.into_int_value();
+                let extended = if int_value.get_type().get_bit_width() == 64 {
+                    int_value
+                } else {
+                    self.builder.build_int_z_extend(int_value, i64_type, "zext_u64")
+                };
+
                 self.builder.build_call(func, &[extended.into()], "call_print_u64");
             },
 
@@ -110,6 +136,7 @@ impl<'c> CodeGen<'c> {
                     let fn_type = void_type.fn_type(&[bool_type.into()], false);
                     self.module.add_function("print_bool", fn_type, Some(inkwell::module::Linkage::External))
                 });
+
                 self.builder.build_call(func, &[value.into()], "call_print_bool");
             },
 
@@ -135,6 +162,7 @@ impl<'c> CodeGen<'c> {
                          
                          self.builder.build_call(func, &[str_ptr.into(), len_value.into()], "call_print_str");
                      },
+
                      _ => {
                          self.call_print_str("<array>")?;
                      }
@@ -142,25 +170,57 @@ impl<'c> CodeGen<'c> {
             },
 
             Type::CHAR => {
-                 let temp_alloca = self.builder.build_alloca(value.get_type(), "tmp_print_char"); 
-                 self.builder.build_store(temp_alloca, value);
-                 let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
-                 let str_ptr = self.builder.build_bitcast(temp_alloca, i8_ptr_type, "str_ptr");
-                 let len_value = self.context.i64_type().const_int(1, false);
-                 
-                 let func = self.module.get_function("print_str").unwrap_or_else(|| {
-                     let fn_type = void_type.fn_type(&[i8_ptr_type.into(), i64_type.into()], false);
-                     self.module.add_function("print_str", fn_type, Some(inkwell::module::Linkage::External))
-                 });
-                 self.builder.build_call(func, &[str_ptr.into(), len_value.into()], "call_print_char");
+                let temp_alloca = self.builder.build_alloca(value.get_type(), "tmp_print_char");
+                self.builder.build_store(temp_alloca, value);
+
+                let len_value = self.context
+                    .ptr_sized_int_type(&self.target_data, None)
+                    .const_int(1, false);
+
+                self.call_print_chars(temp_alloca, len_value)?;
             },
 
-            Type::POINTER(_) | Type::REF(_) | Type::CONST_REF(_) => {
-                let ptr_to_int = self.builder.build_ptr_to_int(value.into_pointer_value(), i64_type, "ptr2int");
+            Type::REF(inner) | Type::CONST_REF(inner) if matches!(inner.as_ref(), Type::SLICE(_)) => {
+                let Type::SLICE(element_ty) = inner.as_ref() else {
+                    unreachable!();
+                };
+
+                if element_ty.as_ref() != &Type::CHAR {
+                    self.call_print_str("<slice>")?;
+                    return Ok(());
+                }
+
+                let slice = match value {
+                    BasicValueEnum::StructValue(slice) => slice,
+                    _ => return Err("ICE: slice reference was not lowered as a fat slice".to_string()),
+                };
+
+                let ptr = self.builder
+                    .build_extract_value(slice, 0, "chars_ptr")
+                    .ok_or_else(|| "ICE: failed to extract slice data pointer".to_string())?
+                    .into_pointer_value();
+
+                let len = self.builder
+                    .build_extract_value(slice, 1, "chars_len")
+                    .ok_or_else(|| "ICE: failed to extract slice length".to_string())?
+                    .into_int_value();
+
+                self.call_print_chars(ptr, len)?;
+            },
+
+            Type::POINTER(_) | Type::CONST_POINTER(_) | Type::REF(_) | Type::CONST_REF(_) => {
+                let ptr = match value {
+                    BasicValueEnum::PointerValue(ptr) => ptr,
+                    _ => return Err("ICE: thin pointer/reference did not lower to a pointer".to_string()),
+                };
+
+                let ptr_to_int = self.builder.build_ptr_to_int(ptr, i64_type, "ptr2int");
+
                 let func = self.module.get_function("print_u64").unwrap_or_else(|| {
                     let fn_type = void_type.fn_type(&[i64_type.into()], false);
                     self.module.add_function("print_u64", fn_type, Some(inkwell::module::Linkage::External))
                 });
+
                 self.builder.build_call(func, &[ptr_to_int.into()], "call_print_ptr");
             },
 
@@ -172,7 +232,51 @@ impl<'c> CodeGen<'c> {
                 self.call_print_str("<unknown>")?;
             }
         }
+
         Ok(())
+    }
+
+    fn get_place_type(&self, place: &mir::Place, mir_fn: &MIRFunction) -> Type {
+        let mut ty = mir_fn.locals[place.local.0].ty.clone();
+
+        for projection in &place.projection {
+            ty = match projection {
+                mir::ProjectionElem::Deref => {
+                    match ty {
+                        Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) | Type::CONST_POINTER(inner) => *inner,
+                        other => other,
+                    }
+                }
+
+                mir::ProjectionElem::Field(index) => {
+                    let mut base_ty = ty;
+
+                    while let Type::REF(inner) | Type::CONST_REF(inner) | 
+                        Type::POINTER(inner) | Type::CONST_POINTER(inner) = base_ty
+                    {
+                        base_ty = *inner;
+                    }
+
+                    match base_ty {
+                        Type::STRUCT(type_ref) => {
+                            let fields = self.hir_context.get_struct_fields(type_ref.def_id);
+                            fields[*index].1.clone()
+                        }
+
+                        other => other,
+                    }
+                }
+
+                mir::ProjectionElem::Index(_) => {
+                    match ty {
+                        Type::ARRAY(inner, _) | Type::INFERRED_ARRAY(inner) | Type::SLICE(inner) => *inner,
+                        other => other,
+                    }
+                }
+            };
+        }
+
+        ty
     }
 
     pub(crate) fn get_operand_type(&self, op: &Operand, mir_fn: &MIRFunction) -> Type {
@@ -182,12 +286,17 @@ impl<'c> CodeGen<'c> {
                 Constant::Float(_, ty) => ty.clone(),
                 Constant::Bool(_) => Type::BOOL,
                 Constant::Char(_) => Type::CHAR,
-                Constant::String(_) => Type::POINTER(Box::new(Type::U8)),
+
+                Constant::String(_) => {
+                    Type::CONST_REF(Box::new(
+                        Type::SLICE(Box::new(Type::CHAR))
+                    ))
+                }
             },
+
             Operand::Copy(place) |
             Operand::Move(place) => {
-                // If it's a simple local, this is 100% accurate.
-                mir_fn.locals[place.local.0].ty.clone()
+                self.get_place_type(place, mir_fn)
             }
         }
     }

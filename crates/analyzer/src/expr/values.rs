@@ -31,8 +31,10 @@ impl<'ctx> Analyzer<'ctx> {
 
                     TokenType::StringLiteral(ref s) => Ok(HIRExpr {
                         kind: HIRExprKind::StringLiteral(s.clone()),
-                        ty: IRType::ARRAY(Box::new(IRType::U8), s.len()),
-                        span
+                        ty: IRType::CONST_REF(Box::new(
+                            IRType::SLICE(Box::new(IRType::CHAR))
+                        )),
+                        span,
                     }),
 
                     TokenType::CharLiteral(c) => Ok(HIRExpr { kind: HIRExprKind::CharLiteral(*c), ty: IRType::CHAR, span }),
