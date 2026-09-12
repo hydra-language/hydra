@@ -85,12 +85,12 @@ pub enum Rvalue {
     Use(Operand), // just reading a value
     Ref(bool, Place),   // &place
     
-    /// constructs a fat slice reference from backing storage.
-    ///
-    /// Runtime representation is conceptually:
-    ///
-    ///     { ptr: *T, len: usize }
-    ///
+    // constructs a fat slice reference from backing storage.
+    //
+    // Runtime representation is conceptually:
+    //
+    //     { ptr: *T, len: usize }
+    //
     SliceRef {
         is_mut: bool,
         place: Place,
