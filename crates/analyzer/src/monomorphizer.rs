@@ -3,16 +3,16 @@ use std::collections::HashMap;
 use ir::context::{DefID, DefKind, HIRContext, SymbolInfo};
 use ir::hir::{HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRProgram, HIRStmt};
 use ir::types::{Type, TypeRef};
+use ir::instance::Instance;
 
 pub struct Monomorphizer<'a> {
     pub context: &'a mut HIRContext,
 
     original_functions: HashMap<DefID, HIRFunction>,
-    instantiation_cache: HashMap<(DefID, Vec<Type>), DefID>,
-    worklist: Vec<(DefID, Vec<Type>, DefID)>,
+    instantiation_cache: HashMap<Instance, DefID>,
+    worklist: Vec<(Instance, DefID)>,
     specialized_functions: Vec<HIRFunction>,
 
-    struct_worklist: Vec<(DefID, Vec<Type>)>,
     instantiated_structs: HashMap<(DefID, Vec<Type>), TypeRef>,
 }
 
@@ -24,13 +24,16 @@ impl<'a> Monomorphizer<'a> {
         let parts: Vec<&str> = func.name.split("::").collect();
         if parts.len() > 1 {
             let struct_name = parts[..parts.len() - 1].join("::");
+
             if let Some(def_id) = context.find_struct_by_name(&struct_name) {
                 let info = context.get_def(def_id).unwrap();
+
                 if let DefKind::Struct { generic_params, .. } = &info.kind {
                     return !generic_params.is_empty();
                 }
             }
         }
+
         false
     }
 
@@ -41,9 +44,13 @@ impl<'a> Monomorphizer<'a> {
 
         for func in program.functions {
             if !Self::is_function_generic(&func, context) {
-                worklist.push((func.def_id, vec![], func.def_id));
+                worklist.push(
+                    (Instance::monomorphic(func.def_id), func.def_id)
+                );
+
                 specialized_functions.push(func.clone());
             }
+
             original_functions.insert(func.def_id, func);
         }
 
@@ -53,14 +60,13 @@ impl<'a> Monomorphizer<'a> {
             instantiation_cache: HashMap::new(),
             worklist,
             specialized_functions,
-            struct_worklist: Vec::new(),
             instantiated_structs: HashMap::new(),
         }
     }
 
     pub fn run(mut self) -> HIRProgram {
-        while let Some((generic_def_id, type_args, specialized_def_id)) = self.worklist.pop() {
-            self.process_function(generic_def_id, type_args, specialized_def_id);
+        while let Some((instance, specialized_def_id)) = self.worklist.pop() {
+            self.process_function(instance, specialized_def_id);
         }
 
         HIRProgram {
@@ -70,14 +76,12 @@ impl<'a> Monomorphizer<'a> {
         }
     }
 
-    fn process_function(&mut self, generic_def_id: DefID, type_args: Vec<Type>, specialized_def_id: DefID) {
-        let generic_func = self.original_functions.get(&generic_def_id).unwrap().clone();
+    fn process_function(&mut self, instance: Instance, specialized_def_id: DefID) {
+        let generic_func = self.original_functions.get(&instance.def_id).unwrap().clone();
 
         let mut substitutions = HashMap::new();
-        for (i, param_name) in generic_func.generic_params.iter().enumerate() {
-            if let Some(concrete_ty) = type_args.get(i) {
-                substitutions.insert(param_name.clone(), concrete_ty.clone());
-            }
+        for (param_name, concrete_type) in generic_func.generic_params.iter().zip(instance.type_args.iter()) {
+            substitutions.insert(param_name.clone(), concrete_type.clone());
         }
 
         let mut specialized_body = generic_func.body.clone();
@@ -334,13 +338,14 @@ impl<'a> Monomorphizer<'a> {
     }
 
     fn get_or_create_specialization(&mut self, generic_def_id: DefID, type_args: Vec<Type>) -> DefID {
-        let cache_key = (generic_def_id, type_args.clone());
-        if let Some(&specialized_def_id) = self.instantiation_cache.get(&cache_key) {
+        let instance = Instance::new(generic_def_id, type_args);
+
+        if let Some(&specialized_def_id) = self.instantiation_cache.get(&instance) {
             return specialized_def_id;
         }
 
         let generic_info = self.context.get_def(generic_def_id).unwrap().clone();
-        let type_suffixes: Vec<String> = type_args.iter().map(|t| t.mangle()).collect();
+        let type_suffixes: Vec<String> = instance.type_args.iter().map(|t| t.mangle()).collect();
         let mangled_name = format!("{}__{}", generic_info.name, type_suffixes.join("_"));
 
         let mut specialized_path = generic_info.absolute_path.clone();
@@ -358,7 +363,7 @@ impl<'a> Monomorphizer<'a> {
 
         let subs: HashMap<String, Type> = match &generic_info.kind {
             DefKind::Function { generic_params, .. } => {
-                generic_params.iter().cloned().zip(type_args.clone()).collect()
+                generic_params.iter().cloned().zip(instance.type_args.clone()).collect()
             }
 
             _ => HashMap::new(),
@@ -377,7 +382,7 @@ impl<'a> Monomorphizer<'a> {
         let specialized_def_id = self.context.insert_def(specialized_info);
 
         self.instantiation_cache.insert(
-            cache_key,
+            instance.clone(),
             specialized_def_id,
         );
 
@@ -398,7 +403,7 @@ impl<'a> Monomorphizer<'a> {
         };
 
         self.specialized_functions.push(new_func);
-        self.worklist.push((generic_def_id, type_args, specialized_def_id));
+        self.worklist.push((instance, specialized_def_id));
 
         specialized_def_id
     }

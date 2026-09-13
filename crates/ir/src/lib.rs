@@ -4,6 +4,7 @@ pub mod stmt;
 pub mod context;
 pub mod intrinsic;
 pub mod hir;
+pub mod instance;
 
 use std::fmt;
 use types::Type;
