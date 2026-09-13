@@ -1,4 +1,5 @@
 include core::intrinsics;
+include core::mem;
 
 pub fn read<T>(src: *const T) -> T {
     return intrinsics::__ptr_read::<T>(src);
@@ -10,4 +11,49 @@ pub fn write<T>(dst: *mut T, value: T) -> void {
 
 pub fn offset<T>(ptr: *mut T, count: isize) -> *mut T {
     return intrinsics::__ptr_offset::<T>(ptr, count);
+}
+
+pub fn null<T>() -> *const T {
+    return intrinsics::__ptr_null::<T>();
+}
+
+pub fn null_mut<T>() -> *mut T {
+    return intrinsics::__ptr_null_mut::<T>();
+}
+
+pub fn is_null<T>(ptr: *const T) -> bool {
+    return intrinsics::__ptr_is_null::<T>(ptr);
+}
+
+pub struct NonNull<T> {
+    ptr: *mut T;
+}
+
+extension<T> NonNull<T> {
+
+    pub fn new_unchecked(ptr: *mut T) -> NonNull<T> {
+        return NonNull {
+            .ptr = ptr
+        };
+    }
+
+    pub fn dangling() -> NonNull<T> {
+        return NonNull {
+            .ptr = intrinsics::__ptr_from_addr::<T>(mem::align_of::<T>())
+        };
+    }
+
+    pub fn from_mut(value: &mut T) -> NonNull<T> {
+        return NonNull {
+            .ptr = value as *mut T
+        };
+    }
+
+    pub fn as_ptr(&self) -> *const T {
+        return self.ptr as *const T;
+    }
+
+    pub fn as_mut_ptr(&self) -> *mut T {
+        return self.ptr;
+    }
 }

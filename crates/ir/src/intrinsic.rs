@@ -5,6 +5,10 @@ pub enum IntrinsicKind {
     PtrRead,
     PtrWrite,
     PtrOffset,
+    PtrNull,
+    PtrNullMut,
+    PtrIsNull,
+    PtrFromAddr,
     Alloc,
     Dealloc,
     SliceLen,
@@ -45,6 +49,30 @@ impl IntrinsicKind {
             }
 
             [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__ptr_null" =>
+            {
+                Some(Self::PtrNull)
+            }
+
+            [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__ptr_null_mut" =>
+            {
+                Some(Self::PtrNullMut)
+            }
+
+            [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__ptr_is_null" =>
+            {
+                Some(Self::PtrIsNull)
+            }
+
+            [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__ptr_from_addr" =>
+            {
+                Some(Self::PtrFromAddr)
+            }
+
+            [core, intrinsics, name]
                 if core == "core" && intrinsics == "intrinsics" && name == "__alloc" =>
             {
                 Some(Self::Alloc)
@@ -62,7 +90,6 @@ impl IntrinsicKind {
                 Some(Self::SliceLen)
             }
 
-
             _ => None,
         }
     }
@@ -73,6 +100,8 @@ impl IntrinsicKind {
 
             IntrinsicKind::SizeOf | IntrinsicKind::AlignOf | 
             IntrinsicKind::PtrRead | IntrinsicKind::PtrOffset |
+            IntrinsicKind::PtrNull | IntrinsicKind::PtrNullMut |
+            IntrinsicKind::PtrIsNull | IntrinsicKind::PtrFromAddr |
             IntrinsicKind::SliceLen => false,
         }
     }

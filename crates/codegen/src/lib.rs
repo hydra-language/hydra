@@ -266,6 +266,40 @@ impl<'c> CodeGen<'c> {
                 Ok(result.into())
             }
 
+            IntrinsicKind::PtrNull | IntrinsicKind::PtrNullMut => {
+                let ty = type_args.first().ok_or("null pointer intrinsic requires one type argument")?;
+                let pointee_type = crate::types::compile_type(self.context, &self.target_data, ty);
+                let ptr_type = pointee_type.ptr_type(AddressSpace::default());
+
+                Ok(ptr_type.const_null().into())
+            }
+
+            IntrinsicKind::PtrIsNull => {
+                let ptr = args.first().ok_or("ptr_is_null requires one argument")?;
+                
+                let ptr = self.compile_operand(ptr, mir_fn)?.into_pointer_value();
+
+                Ok(
+                    self.builder.build_is_null(ptr, "ptr_is_null").into()
+                )
+            }
+
+            IntrinsicKind::PtrFromAddr => {
+                if args.len() != 1 {
+                    return Err("ptr_from_addr requires one argument".into());
+                }
+
+                let ty = type_args.first().ok_or("ptr_from_addr requires one type argument")?;
+                let addr = self.compile_operand(&args[0], mir_fn)?.into_int_value();
+
+                let pointee_ty = crate::types::compile_type(self.context, &self.target_data, ty);
+                let ptr_ty = pointee_ty.ptr_type(AddressSpace::default());
+
+                let ptr = self.builder.build_int_to_ptr(addr, ptr_ty, "ptr_from_addr");
+
+                Ok(ptr.into())
+            }
+
             IntrinsicKind::Alloc => {
                 if args.len() != 2 {
                     return Err(

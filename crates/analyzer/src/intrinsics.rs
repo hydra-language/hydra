@@ -238,6 +238,151 @@ impl<'ctx> Analyzer<'ctx> {
                 }
             }
 
+            IntrinsicKind::PtrNull | IntrinsicKind::PtrNullMut => {
+                if generic_params.len() != 1 {
+                    return Err(self.error(
+                        "S017",
+                        "null pointer intrinsic requires exactly one type parameter",
+                        span
+                    ));
+                }
+
+                if !params.is_empty() {
+                    return Err(self.error(
+                        "S017",
+                        "null pointer intrinsic accepts no value parameters",
+                        span,
+                    ));
+                }
+
+                let expected = &generic_params[0];
+
+                let matches_return = match (kind, return_type) {
+                    (IntrinsicKind::PtrNull, IRType::CONST_POINTER(inner)) | 
+                    (IntrinsicKind::PtrNullMut, IRType::POINTER(inner)) => {
+                        matches!(inner.as_ref(), IRType::GENERIC(name) if name == expected)
+                    }
+
+                    _ => false,
+                };
+
+                if !matches_return {
+                    let expected_return = match kind {
+                        IntrinsicKind::PtrNull => "*const T",
+                        IntrinsicKind::PtrNullMut => "*mut T",
+                        _ => unreachable!(),
+                    };
+
+                    return Err(self.error(
+                        "S017",
+                        format!("null pointer intrinsic must return `{}`", expected_return),
+                        span,
+                    ));
+                }
+            }
+
+            IntrinsicKind::PtrIsNull => {
+                if generic_params.len() != 1 {
+                    return Err(self.error(
+                        "S017",
+                        "ptr_is_null requires exactly one type parameter",
+                        span,
+                    ));
+                }
+
+                if params.len() != 1 {
+                    return Err(self.error(
+                        "S017",
+                        "ptr_is_null requires exactly one argument",
+                        span,
+                    ));
+                }
+
+                let expected = &generic_params[0];
+
+                match &params[0] {
+                    IRType::CONST_POINTER(inner) => {
+                        match inner.as_ref() {
+                            IRType::GENERIC(name) if name == expected => {}
+
+                            _ => return Err(self.error(
+                                "S017",
+                                "ptr_is_null expects `*const T`",
+                                span,
+                            ))
+                        }
+                    }
+
+                    _ => {
+                        return Err(self.error(
+                            "S017",
+                            "ptr_is_null expects `*const T`",
+                            span,
+                        ));
+                    }
+                }
+
+                if *return_type != IRType::BOOL {
+                    return Err(self.error(
+                        "S017",
+                        "ptr_is_null must return `bool`",
+                        span,
+                    ));
+                }
+            }
+
+            IntrinsicKind::PtrFromAddr => {
+                if generic_params.len() != 1 {
+                    return Err(self.error(
+                        "S017",
+                        "ptr_from_addr requires exactly one type parameter",
+                        span,
+                    ));
+                }
+
+                if params.len() != 1 {
+                    return Err(self.error(
+                        "S017",
+                        "ptr_from_addr requires exactly one argument",
+                        span,
+                    ));
+                }
+
+                if params[0] != IRType::USIZE {
+                    return Err(self.error(
+                        "S017",
+                        "ptr_from_addr expects address to be `usize`",
+                        span,
+                    ));
+                }
+
+                let expected = &generic_params[0];
+
+                match return_type {
+                    IRType::POINTER(inner) => {
+                        match inner.as_ref() {
+                            IRType::GENERIC(name) if name == expected => {}
+
+                            _ => {
+                                return Err(self.error(
+                                    "S017",
+                                    "ptr_from_addr must return `*mut T`",
+                                    span,
+                                ));
+                            }
+                        }
+                    }
+
+                    _ => {
+                        return Err(self.error(
+                            "S017",
+                            "ptr_from_addr must return `*mut T`",
+                            span,
+                        ));
+                    }
+                }
+            }
+
             IntrinsicKind::Alloc => {
                 if !generic_params.is_empty() {
                     return Err(self.error(
