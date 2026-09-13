@@ -44,7 +44,7 @@ impl<'ctx> Analyzer<'ctx> {
         match ty {
             IRType::STRUCT(name) => name.symbol.clone(),
 
-            IRType::GENERIC_INSTANCE(base, _) => self.get_impl_registry_key(base),
+            IRType::GENERIC_INSTANCE(base, _) => base.symbol.clone(),
 
             IRType::SLICE(_) => "slice".to_string(),
 

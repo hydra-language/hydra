@@ -485,23 +485,21 @@ impl<'a> Monomorphizer<'a> {
 
                 // do NOT instantiate Box<T>, Vec<T>, etc etc until every
                 // generic argument has become concrete
-                if concrete_args.iter().any(|ty| ty.contains_generic()) {
+                if concrete_args.iter().any(Type::contains_generic) {
                     return Type::GENERIC_INSTANCE(base.clone(), concrete_args);
                 }
 
-                if let Type::STRUCT(type_ref) = base.as_ref() {
-                    let def_id = type_ref.def_id;
+                let def_id = base.def_id.clone();
 
-                    if let Some(info) = self.context.get_def(def_id) {
-                        if let DefKind::Struct { generic_params, .. } = &info.kind {
-                            if !generic_params.is_empty() {
-                                let concrete = self.get_or_create_struct_specialization(
-                                    def_id,
-                                    concrete_args,
-                                );
+                if let Some(info) = self.context.get_def(def_id) {
+                    if let DefKind::Struct { generic_params, .. } = &info.kind {
+                        if !generic_params.is_empty() {
+                            let concrete = self.get_or_create_struct_specialization(
+                                def_id,
+                                concrete_args,
+                            );
 
-                                return Type::STRUCT(concrete);
-                            }
+                            return Type::STRUCT(concrete);
                         }
                     }
                 }
@@ -591,7 +589,11 @@ impl<'a> Monomorphizer<'a> {
                 self.infer_type_args(p, a, inferred);
             }
 
-            (Type::GENERIC_INSTANCE(_, p_args), Type::GENERIC_INSTANCE(_, a_args)) => {
+            (Type::GENERIC_INSTANCE(p_base, p_args), Type::GENERIC_INSTANCE(a_base, a_args)) => {
+                if p_base.def_id != a_base.def_id {
+                    return;
+                }
+
                 for (p, a) in p_args.iter().zip(a_args.iter()) {
                     self.infer_type_args(p, a, inferred);
                 }
@@ -600,11 +602,7 @@ impl<'a> Monomorphizer<'a> {
             //
             // Box<T> vs Box__i32
             //
-            (Type::GENERIC_INSTANCE(param_base, param_args), Type::STRUCT(concrete_ref)) => {
-                let Type::STRUCT(generic_ref) = param_base.as_ref() else {
-                    return;
-                };
-
+            (Type::GENERIC_INSTANCE(generic_ref, param_args), Type::STRUCT(concrete_ref)) => {
                 let generic_def_id = generic_ref.def_id;
 
                 // instantiated_structs:

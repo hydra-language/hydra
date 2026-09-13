@@ -34,11 +34,6 @@ impl<'ctx> Analyzer<'ctx> {
             _ => lhs_expr.ty.clone(),
         };
 
-        let lookup_type = match &actual_type {
-            IRType::GENERIC_INSTANCE(base, _) => *base.clone(),
-            other => other.clone(),
-        };
-
         let registry_key = self.get_impl_registry_key(&lhs_expr.ty);
 
         if registry_key.is_empty() {
@@ -278,7 +273,8 @@ impl<'ctx> Analyzer<'ctx> {
 
             (IRType::GENERIC_INSTANCE(expected_base, expected_args), IRType::GENERIC_INSTANCE(actual_base, actual_args)) => 
             {
-                self.receiver_type_matches(expected_base, actual_base) && expected_args.len() == actual_args.len() && 
+                expected_base.def_id == actual_base.def_id && 
+                expected_args.len() == actual_args.len() && 
                 expected_args.iter().zip(actual_args).all(|(expected, actual)| {
                     self.receiver_type_matches(expected, actual)
                 })

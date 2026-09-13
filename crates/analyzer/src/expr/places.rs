@@ -60,23 +60,18 @@ impl<'ctx> Analyzer<'ctx> {
                     _ => &lhs.ty
                 };
 
-                let lookup_type = match actual_type {
-                    IRType::GENERIC_INSTANCE(base, _) => base.as_ref(),
-                    other => other,
-                };
-
-                match lookup_type {
-                    IRType::STRUCT(type_ref) => {
-                        if let Some(info) = self.context.get_def(type_ref.def_id) {
+                match actual_type {
+                    IRType::STRUCT(type_ref) | IRType::GENERIC_INSTANCE(type_ref, _) => {
+                        if let Some(info) = self.context .get_def(type_ref.def_id) { 
                             if let DefKind::Struct { fields, .. } = &info.kind {
-                                if let Some(idx) = fields.iter().position(|(field_name, _, _)| {
-                                    field_name == &property.lexeme
-                                }) {
-                                    let (_, field_type, _) = &fields[idx];
+                                if let Some(idx) = fields.iter().position(|(field_name, _, _)| {field_name == &property.lexeme }) {
+                                    let  (_, field_type, _) = &fields[idx];
 
-                                    return Ok(HIRExpr {
-                                        kind: HIRExprKind::FieldAccess {
-                                            object: Box::new(lhs),
+                                    return Ok( HIRExpr {
+                                        kind:
+                                        HIRExprKind::FieldAccess {
+                                            object:
+                                            Box::new(lhs),
                                             field_index: idx,
                                         },
                                         ty: field_type.clone(),
@@ -86,18 +81,31 @@ impl<'ctx> Analyzer<'ctx> {
                             }
                         }
 
-                        Err(self.error("S005", format!("struct '{}' has no field '{}'", type_ref, property.lexeme), property.span))
+                        Err(self.error(
+                            "S005",
+                            format!("struct '{}' has no field '{}'", type_ref, property.lexeme),
+                            property.span,
+                        ))
                     },
 
                     IRType::ARRAY(_, size) if property.lexeme == "len" => {
-                        Ok(HIRExpr { 
-                            kind: HIRExprKind::IntLiteral(*size as i64), 
-                            ty: IRType::I32, 
-                            span 
+                        Ok( HIRExpr {
+                            kind:
+                            HIRExprKind::IntLiteral(
+                                *size as i64
+                            ),
+                            ty: IRType::I32,
+                            span,
                         })
                     }
 
-                    _ => Err(self.error("S005", format!("'{}' has no property '{}'", lhs.ty, property.lexeme), property.span))
+                    _ => {
+                        Err(self.error(
+                            "S005",
+                            format!("'{}' has no property '{}'", lhs.ty, property.lexeme),
+                            property.span,
+                        ))
+                    }
                 }
             },
 

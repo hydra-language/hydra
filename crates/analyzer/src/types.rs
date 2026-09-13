@@ -84,11 +84,23 @@ impl<'ctx> Analyzer<'ctx> {
 
             ASTType::Generic { base, args, .. } => {
                 let base_ty = self.lower_type(base)?;
+                
+                let base_ref = match base_ty {
+                    IRType::STRUCT(type_ref) => type_ref,
+
+                    other => return Err(self.error(
+                        "T001",
+                        format!("`{}` cannot be used as a generic type construction", other),
+                        span
+                    ))
+                };
+
                 let mut lowered_args = Vec::new();
                 for arg in args {
                     lowered_args.push(self.lower_type(arg)?);
                 }
-                Ok(IRType::GENERIC_INSTANCE(Box::new(base_ty), lowered_args))
+
+                Ok(IRType::GENERIC_INSTANCE(base_ref, lowered_args))
             },
 
             ASTType::Array { element_type, size, .. } => {

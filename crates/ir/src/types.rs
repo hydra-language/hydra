@@ -48,7 +48,7 @@ pub enum Type {
     STRUCT(TypeRef),
 
     GENERIC(String),
-    GENERIC_INSTANCE(Box<Type>, Vec<Type>),
+    GENERIC_INSTANCE(TypeRef, Vec<Type>),
 }
 
 impl Type {
@@ -71,9 +71,8 @@ impl Type {
             }
 
             Type::GENERIC_INSTANCE(base, args) => {
-                let new_base = Box::new(base.substitute(substitutions));
                 let new_args = args.iter().map(|arg| arg.substitute(substitutions)).collect();
-                Type::GENERIC_INSTANCE(new_base, new_args)
+                Type::GENERIC_INSTANCE(base.clone(), new_args)
             }
 
             Type::ARRAY(inner, size) => {
@@ -151,6 +150,13 @@ impl Type {
                 format!("array_{}", inner.mangle())
             }
 
+            Type::GENERIC_INSTANCE(base, args) => {
+                let base = base.symbol.replace("::", "_");
+                let args = args.iter().map(Type::mangle).collect::<Vec<_>>().join("_");
+
+                format!("{}__{}", base, args)
+            }
+
             _ => "unknown".to_string(),
         }
     }
@@ -159,9 +165,8 @@ impl Type {
         match self {
             Type::GENERIC(_) => true,
 
-            Type::GENERIC_INSTANCE(base, args) => {
-                base.contains_generic()
-                || args.iter().any(Type::contains_generic)
+            Type::GENERIC_INSTANCE(_, args) => {
+                args.iter().any(Type::contains_generic)
             }
 
             Type::POINTER(inner) | Type::CONST_POINTER(inner) | 
