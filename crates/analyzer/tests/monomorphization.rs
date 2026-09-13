@@ -12,7 +12,8 @@ use analyzer::{
 
 use ir::{
     context::HIRContext,
-    hir::HIRProgram,
+    hir::{HIRStmt, HIRProgram},
+    types::Type,
 };
 
 use parser::module::{
@@ -259,5 +260,97 @@ fn creates_distinct_function_instances_for_different_type_arguments() {
         bool_instances,
         1,
         "identity<bool> should produce a distinct specialization",
+    );
+}
+
+#[test]
+fn generic_specializations_keep_independent_local_types() {
+    let hir =
+        monomorphize(
+            r#"
+            fn foo<T>(value: T) -> T {
+                let local = value;
+                return local;
+            }
+
+            fn main() -> void {
+                let integer = foo(10);
+                let boolean = foo(true);
+            }
+            "#,
+        );
+
+    let i32_specialization =
+        hir.functions
+            .iter()
+            .find(|function| {
+                function.name == "foo__i32"
+            })
+            .expect(
+                "foo<i32> specialization should exist",
+            );
+
+    let bool_specialization =
+        hir.functions
+            .iter()
+            .find(|function| {
+                function.name == "foo__bool"
+            })
+            .expect(
+                "foo<bool> specialization should exist",
+            );
+
+    let i32_local_ty =
+        match i32_specialization
+            .body
+            .stmts
+            .first()
+            .expect(
+                "foo<i32> should contain a local declaration",
+            )
+        {
+            HIRStmt::VarDecl {
+                ty,
+                ..
+            } => ty,
+
+            other => {
+                panic!(
+                    "expected first foo<i32> statement to be a variable declaration, found {other:#?}"
+                );
+            }
+        };
+
+    let bool_local_ty =
+        match bool_specialization
+            .body
+            .stmts
+            .first()
+            .expect(
+                "foo<bool> should contain a local declaration",
+            )
+        {
+            HIRStmt::VarDecl {
+                ty,
+                ..
+            } => ty,
+
+            other => {
+                panic!(
+                    "expected first foo<bool> statement to be a variable declaration, found {other:#?}"
+                );
+            }
+        };
+
+    assert_eq!(
+        i32_local_ty,
+        &Type::I32,
+        "foo<i32> should specialize its local variable to i32",
+    );
+
+    assert_eq!(
+        bool_local_ty,
+        &Type::BOOL,
+        "foo<bool> should specialize its local variable to bool",
     );
 }

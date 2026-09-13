@@ -80,160 +80,127 @@ impl<'a> Monomorphizer<'a> {
         let generic_func = self.original_functions.get(&instance.def_id).unwrap().clone();
 
         let mut substitutions = HashMap::new();
+        
+        let specialized_params = self.specialized_functions.iter()
+            .find(|f| f.def_id == specialized_def_id)
+            .expect("specialized function should exist").params.clone();
+
+        let mut local_types: HashMap<DefID, Type> = specialized_params.into_iter().collect();
+
         for (param_name, concrete_type) in generic_func.generic_params.iter().zip(instance.type_args.iter()) {
             substitutions.insert(param_name.clone(), concrete_type.clone());
         }
 
         let mut specialized_body = generic_func.body.clone();
         for stmt in &mut specialized_body.stmts {
-            self.substitute_stmt(stmt, &substitutions);
+            self.substitute_stmt(stmt, &substitutions, &mut local_types);
         }
 
         if let Some(f) = self.specialized_functions.iter_mut().find(|f| f.def_id == specialized_def_id) {
             f.body = specialized_body;
         }
-
-        let specialized_func = self.specialized_functions.iter()
-            .find(|f| f.def_id == specialized_def_id)
-            .unwrap()
-            .clone();
-
-        for (param_def_id, _) in &specialized_func.params {
-            if let Some(mut info) = self.context.get_def(*param_def_id).cloned() {
-                match &mut info.kind {
-                    DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } => {
-                        *ty = ty.substitute(&substitutions);
-                        *ty = self.resolve_type(&ty.clone(), &substitutions);
-                    }
-                    _ => {}
-                }
-                self.context.update_def(*param_def_id, info);
-            }
-        }
     }
 
-    fn substitute_stmt(&mut self, stmt: &mut HIRStmt, subs: &HashMap<String, Type>) {
+    fn substitute_stmt(&mut self, stmt: &mut HIRStmt, subs: &HashMap<String, Type>, local_types: &mut HashMap<DefID, Type>) 
+    {
         match stmt {
             HIRStmt::Expr(expr) => {
-                self.substitute_expr(expr, subs);
+                self.substitute_expr(expr, subs, local_types);
             }
 
-            HIRStmt::VarDecl { def_id, init, has_type_annotation, .. } => {
+            HIRStmt::VarDecl { def_id, ty, init, has_type_annotation, .. } => {
                 let resolved_type = if let Some(init_expr) = init.as_mut() {
-                    self.substitute_expr(init_expr, subs);
+                    self.substitute_expr(init_expr, subs, local_types);
 
                     Some(init_expr.ty.clone())
                 } else {
                     None
                 };
 
-                let Some(mut info) = self.context.get_def(*def_id).cloned() else { return; };
+                if *has_type_annotation {
+                    let substituted = ty.substitute(subs);
 
-                match &mut info.kind {
-                    DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } => {
-                        if *has_type_annotation {
-                            //
-                            // explicit:
-                            //
-                            //     let x: Foo = ...
-                            //
-                            // keep the declared type authoritative,
-                            // but substitute generics inside it.
-                            //
-                            let substituted = ty.substitute(subs);
-                            *ty = self.resolve_type(&substituted, subs);
-                        } else if let Some(init_ty) = resolved_type {
-                            //
-                            // inferred:
-                            //
-                            //     let x = foo::<i32>();
-                            //
-                            // the specialized initializer determines
-                            // the final local type.
-                            //
-                            *ty = init_ty;
-                        } else {
-                            let substituted = ty.substitute(subs);
+                    *ty = self.resolve_type(&substituted, subs);
+                } else if let Some(init_ty) = resolved_type {
+                    *ty = init_ty;
+                } else {
+                    let substituted = ty.substitute(subs);
 
-                            *ty = self.resolve_type(
-                                &substituted,
-                                subs,
-                            );
-                        }
-                    }
-
-                    _ => {}
+                    *ty = self.resolve_type(&substituted, subs);
                 }
 
-                self.context.update_def(
-                    *def_id,
-                    info,
-                );
+                local_types.insert(*def_id, ty.clone());
             }
         }
     }
 
-    fn substitute_expr(&mut self, expr: &mut HIRExpr, subs: &HashMap<String, Type>) {
+    fn substitute_expr(&mut self, expr: &mut HIRExpr, subs: &HashMap<String, Type>, local_types: &mut HashMap<DefID, Type>) 
+    {
         let original_type = expr.ty.clone();
         expr.ty = self.resolve_type(&original_type.substitute(subs), subs);
 
         match &mut expr.kind {
             HIRExprKind::VarRef(def_id) => {
-                let current_ty = self.context.get_def(*def_id).and_then(|info| {
-                    match &info.kind {
-                        DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } => {
-                            Some(ty.clone())
-                        }
+                if let Some(ty) = local_types.get(def_id) {
+                    expr.ty = ty.clone();
+                } else {
+                    //
+                    // keep context as an immutable fallback for things
+                    // that aren't specialization-local, such as globals.
+                    //
+                    let source_ty = self.context.get_def(*def_id).and_then(|info| {
+                        match &info.kind {
+                                DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } => {
+                                    Some( ty.clone())
+                                }
 
-                        _ => None,
+                                _ => None,
+                            }
+                        });
+
+                    if let Some(ty) = source_ty {
+                        expr.ty = self.resolve_type(&ty.substitute(subs), subs);
                     }
-                });
-
-                if let Some(ty) = current_ty {
-                    expr.ty = self.resolve_type(
-                        &ty.substitute(subs),
-                        subs,
-                    );
                 }
             }
 
             HIRExprKind::Binary { lhs, rhs, .. } => {
-                self.substitute_expr(lhs, subs);
-                self.substitute_expr(rhs, subs);
+                self.substitute_expr(lhs, subs, local_types);
+                self.substitute_expr(rhs, subs, local_types);
             }
             HIRExprKind::Unary { operand, .. } |
             HIRExprKind::Cast { expr: operand, .. } |
             HIRExprKind::Borrow { target: operand, .. } |
             HIRExprKind::Dereference { target: operand, .. } => {
-                self.substitute_expr(operand, subs);
+                self.substitute_expr(operand, subs, local_types);
             }
             HIRExprKind::Assign { target, value } => {
-                self.substitute_expr(target, subs);
-                self.substitute_expr(value, subs);
+                self.substitute_expr(target, subs, local_types);
+                self.substitute_expr(value, subs, local_types);
             }
             
             HIRExprKind::If { cond, then_block, else_block } => {
-                self.substitute_expr(cond, subs);
-                for s in &mut then_block.stmts { self.substitute_stmt(s, subs); }
+                self.substitute_expr(cond, subs, local_types);
+                for s in &mut then_block.stmts { self.substitute_stmt(s, subs, local_types); }
                 if let Some(eb) = else_block {
-                    for s in &mut eb.stmts { self.substitute_stmt(s, subs); }
+                    for s in &mut eb.stmts { self.substitute_stmt(s, subs, local_types); }
                 }
             }
 
             HIRExprKind::Loop(block) => {
-                for s in &mut block.stmts { self.substitute_stmt(s, subs); }
+                for s in &mut block.stmts { self.substitute_stmt(s, subs, local_types); }
             }
             
             HIRExprKind::Block(block) => {
-                for s in &mut block.stmts { self.substitute_stmt(s, subs); }
+                for s in &mut block.stmts { self.substitute_stmt(s, subs, local_types); }
             }
 
             HIRExprKind::Return(Some(ret_expr)) => {
-                self.substitute_expr(ret_expr, subs);
+                self.substitute_expr(ret_expr, subs, local_types);
             }
             
             HIRExprKind::StructInit { def_id, values } => {
-                for v in values.iter_mut() { self.substitute_expr(v, subs); }
+                for v in values.iter_mut() { self.substitute_expr(v, subs, local_types); }
 
                 let info = self.context.get_def(*def_id).unwrap().clone();
                 if let DefKind::Struct { generic_params, fields } = &info.kind {
@@ -261,14 +228,14 @@ impl<'a> Monomorphizer<'a> {
             }
 
             HIRExprKind::ArrayInit { elements } => {
-                for e in elements.iter_mut() { self.substitute_expr(e, subs); }
+                for e in elements.iter_mut() { self.substitute_expr(e, subs, local_types); }
             }
             HIRExprKind::ArrayAccess { array, index } => {
-                self.substitute_expr(array, subs);
-                self.substitute_expr(index, subs);
+                self.substitute_expr(array, subs, local_types);
+                self.substitute_expr(index, subs, local_types);
             }
             HIRExprKind::FieldAccess { object, field_index } => {
-                self.substitute_expr(object, subs);
+                self.substitute_expr(object, subs, local_types);
 
                 let obj_ty = match &object.ty {
                     Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) => inner.as_ref(),
@@ -286,12 +253,12 @@ impl<'a> Monomorphizer<'a> {
             }
 
             HIRExprKind::BuiltinCall { args, .. } => {
-                for arg in args.iter_mut() { self.substitute_expr(arg, subs); }
+                for arg in args.iter_mut() { self.substitute_expr(arg, subs, local_types); }
             }
 
             HIRExprKind::IntrinsicCall { args, type_args, .. } => {
                 for arg in args.iter_mut() {
-                    self.substitute_expr(arg, subs);
+                    self.substitute_expr(arg, subs, local_types);
                 }
 
                 for ty in type_args.iter_mut() {
@@ -301,7 +268,7 @@ impl<'a> Monomorphizer<'a> {
             }
 
             HIRExprKind::Call { callee, args, generic_args } => {
-                for arg in args.iter_mut() { self.substitute_expr(arg, subs); }
+                for arg in args.iter_mut() { self.substitute_expr(arg, subs, local_types); }
 
                 let callee_info = self.context.get_def(*callee).unwrap().clone();
                 if let DefKind::Function { generic_params, params, .. } = &callee_info.kind {
@@ -494,7 +461,7 @@ impl<'a> Monomorphizer<'a> {
                     return Type::GENERIC_INSTANCE(base.clone(), concrete_args);
                 }
 
-                let def_id = base.def_id.clone();
+                let def_id = base.def_id;
 
                 if let Some(info) = self.context.get_def(def_id) {
                     if let DefKind::Struct { generic_params, .. } = &info.kind {

@@ -139,6 +139,7 @@ pub struct HIRBlock {
 pub enum HIRStmt {
     VarDecl {
         def_id: DefID,
+        ty: Type,
         init: Option<HIRExpr>,
         has_type_annotation: bool,
         span: Span,

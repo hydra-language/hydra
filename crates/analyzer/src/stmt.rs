@@ -64,6 +64,7 @@ impl<'ctx> Analyzer<'ctx> {
                 
                 Ok(HIRStmt::VarDecl { 
                     def_id, 
+                    ty: final_type,
                     init: Some(init_expr), 
                     has_type_annotation: type_annotation.is_some(), 
                     span: name.span 

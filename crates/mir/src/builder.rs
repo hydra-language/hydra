@@ -113,7 +113,7 @@ impl<'a> MIRBuilder<'a> {
 
     fn lower_stmt(&mut self, stmt: &HIRStmt) {
         match stmt {
-            HIRStmt::VarDecl { def_id, init, span: decl_span, .. } => {
+            HIRStmt::VarDecl { def_id, ty, init, span: decl_span, .. } => {
                 let is_const = matches!(
                     self.context.get_def(*def_id).map(|i| &i.kind),
                     Some(DefKind::Constant { .. })
@@ -137,15 +137,8 @@ impl<'a> MIRBuilder<'a> {
                     }
                 }
 
-                let ty = match self.context.get_def(*def_id).map(|info| &info.kind) {
-                    Some(DefKind::Variable { ty, .. }) | Some(DefKind::Constant { ty, .. }) => {
-                        ty.clone()
-                    }
+                let local_id = self.new_local(ty.clone(), false, Some(*def_id));
 
-                    _ => init.as_ref().map(|e| e.ty.clone()).unwrap_or(Type::VOID),
-                };
-
-                let local_id = self.new_local(ty, false, Some(*def_id));
                 self.var_map.insert(*def_id, local_id);
 
                 if let Some(expr) = init {

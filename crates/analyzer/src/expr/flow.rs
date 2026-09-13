@@ -77,6 +77,7 @@ impl<'ctx> Analyzer<'ctx> {
                 //
                 let init_stmt = HIRStmt::VarDecl { 
                     def_id: var_def_id, 
+                    ty: loop_ty.clone(),
                     init: Some(start_expr.clone()), 
                     has_type_annotation: false,
                     span: variable.span 
@@ -102,6 +103,7 @@ impl<'ctx> Analyzer<'ctx> {
 
                 let init_end = HIRStmt::VarDecl {
                     def_id: end_def,
+                    ty: loop_ty.clone(),
                     init: Some(end_expr),
                     has_type_annotation: false,
                     span: variable.span,
@@ -151,6 +153,7 @@ impl<'ctx> Analyzer<'ctx> {
                         ty: IRType::BOOL,
                         span: variable.span,
                     }),
+                    ty: IRType::BOOL,
 
                     has_type_annotation: false,
                     span: variable.span,
@@ -501,6 +504,7 @@ impl<'ctx> Analyzer<'ctx> {
                 let arr_def = self.context.insert_def(arr_info);
                 let init_arr = HIRStmt::VarDecl { 
                     def_id: arr_def, 
+                    ty: iter_expr.ty.clone(),
                     init: Some(iter_expr.clone()), 
                     has_type_annotation: false,
                     span: item.span 
@@ -523,6 +527,7 @@ impl<'ctx> Analyzer<'ctx> {
                 let idx_def = self.context.insert_def(idx_info);
                 let init_idx = HIRStmt::VarDecl { 
                     def_id: idx_def, 
+                    ty: IRType::I32,
                     init: Some(HIRExpr { 
                         kind: HIRExprKind::IntLiteral(0), 
                         ty: IRType::I32, 
@@ -570,6 +575,7 @@ impl<'ctx> Analyzer<'ctx> {
 
                 let init_item = HIRStmt::VarDecl {
                     def_id: item_def,
+                    ty: inner_ty.clone(),
                     init: Some(HIRExpr {
                         kind: HIRExprKind::ArrayAccess {
                             array: Box::new(HIRExpr { kind: HIRExprKind::VarRef(arr_def), ty: iter_expr.ty, span: item.span }),
