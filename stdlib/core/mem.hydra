@@ -7,3 +7,5 @@ pub fn size_of<T>() -> usize {
 pub fn align_of<T>() -> usize {
     return intrinsics::__align_of::<T>();
 }
+
+pub fn drop<T>(x: T) -> void {}
