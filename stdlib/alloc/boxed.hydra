@@ -1,8 +1,9 @@
 include core::alloc::{Layout, Allocator};
 include core::ptr;
+include core::ptr::NonNull;
 
 pub struct Box<T> {
-    ptr: *mut T;
+    ptr: NonNull<T>;
 }
 
 extension<T> Box<T> {
@@ -15,28 +16,29 @@ extension<T> Box<T> {
         ptr::write::<T>(pointer, value);
 
         return Box {
-            .ptr = pointer
+            .ptr = NonNull::<T>::new_unchecked(pointer)
         };
     }
 
-    pub fn as_ptr(&self) -> *const T {
-        return self.ptr as *const T;
+    pub fn as_ptr(&self) -> *mut T {
+        return self.ptr::as_ptr();
     }
 
-    pub fn as_mut_ptr(&self) -> *mut T {
-        return self.ptr;
+    pub fn as_const_ptr(&self) -> *const T {
+        return self.ptr::as_const_ptr();
     }
 
     pub fn into_inner(self) -> T {
-        const p = self.ptr;
-        const value = ptr::read::<T>(p as *const T);
+        const p = self.ptr::as_const_ptr();
+        const value = ptr::read::<T>(p);
 
         return value;
     }
 
     pub fn drop(&mut self) -> void {
         const layout = Layout::new::<T>();
+        const pointer = self.ptr::as_const_ptr();
 
-        Allocator::dealloc(self.ptr as *mut u8, layout);
+        Allocator::dealloc(pointer as *mut u8, layout);
     }
 }

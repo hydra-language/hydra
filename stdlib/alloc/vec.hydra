@@ -1,0 +1,220 @@
+include core::alloc::Allocator;
+include core::alloc::Layout;
+
+include core::ptr;
+include core::ptr::NonNull;
+
+include core::mem;
+
+// growable, heap allocated, array type
+pub struct Vec<T> {
+    ptr: NonNull<T>;
+    len: usize;
+    cap: usize;
+}
+
+extension<T> Vec<T> {
+
+    // FIXME: this shouldnt really work and result in LLVM
+    // saying that i cant assign to it. small fix but i didnt
+    // know i supported if statements as expressions lol
+    /* const MINIMUM_CAP: usize = if mem::size_of::<T>() == 1 {
+        8;
+    } else if mem::size_of::<T>() <= 1024 {
+        4;
+    } else {
+        1;
+    }; */
+    
+    // Constructs a new and empty Vec<T>
+    //
+    // NOTE: no allocations happen until an element is pushed
+    pub fn new() -> Vec<T> {
+        return Vec {
+            .ptr = NonNull::dangling(),
+            .len = 0,
+            .cap = 0,
+        };
+    }
+
+    // Constructs a new and empty Vec<T> with AT LEAST the specified capacity
+    // 
+    // NOTE: ZSTs do NOT allocate
+    //  - A ZST (Zero Sized Type) is a T whos size_of == 0
+    pub fn with_capacity(cap: usize) -> Vec<T> {
+
+        // ZSTs never allocate
+        if mem::size_of::<T>() == 0 {
+            return Vec {
+                .ptr = NonNull::dangling(),
+                .len = 0,
+                .cap = cap,
+            };
+        }
+
+        if cap == 0 { return Vec::new(); }
+
+        const layout = Layout::from_size_align(
+            mem::size_of::<T>() * cap,
+            mem::align_of::<T>()
+        );
+
+        const memory = Allocator::alloc(layout);
+        const p = memory as *mut T;
+
+        return Vec {
+            .ptr = NonNull::new_unchecked(p),
+            .len = 0,
+            .cap = cap
+        };
+    }
+
+    // Appends an element to the back of the Vec<T>
+    //
+    // NOTE: if the new capacity exceedes isize::MAX bytes
+    // a panic will occur
+    //
+    // IMPLEMENTATION: use the push_mut() documentation
+    // to write the push() method because deferring to
+    // a push_mut function is stupid if you cant do a push_const
+    pub fn push(&mut self, value: T) -> void {
+        //
+        // A ZST consumes no storage.
+        //
+        // There is deliberately no ptr::write here because
+        // NonNull::dangling() is not dereferenceable.
+        // 
+        if mem::size_of::<T>() == 0 {
+            self.len += 1;
+            return;
+        }
+
+        if self.len == self.cap {
+            self::grow();
+        }
+
+        const dst =  ptr::offset::<T>(self.ptr::as_ptr(), self.len as isize);
+        ptr::write::<T>(dst, value);
+
+        self.len += 1;
+    }
+
+    pub fn grow(&mut self) -> void {
+        // ZSTs have no backing allocation to grow
+        if mem::size_of::<T>() == 0 {
+            return;
+        }
+
+        const MINIMUM_CAP: usize = if mem::size_of::<T>() == 1 {
+            8;
+        } else if mem::size_of::<T>() <= 1024 {
+            4;
+        } else {
+            1;
+        };
+
+        const new_cap: usize = if self.cap == 0 { 
+            MINIMUM_CAP;
+        } else { 
+             self.cap * 2; 
+        };
+
+        const new_layout = Layout::from_size_align(
+            mem::size_of::<T>() * new_cap,
+            mem::align_of::<T>()
+        );
+
+        const new_memory = Allocator::alloc(new_layout);
+        const new_ptr = new_memory as *mut T;
+
+        let i = 0;
+        while i < self.len {
+            const src = ptr::offset::<T>(
+                self.ptr::as_ptr(), 
+                i as isize
+            );
+
+            const value = ptr::read::<T>(src);
+
+            const dst = ptr::offset::<T>(
+                new_ptr,
+                i as isize
+            );
+
+            ptr::write::<T>(dst, value);
+
+            i += 1;
+        }
+
+        if self.cap != 0 {
+            const old_layout = Layout::from_size_align(
+                mem::size_of::<T>() * self.cap,
+                mem::align_of::<T>()
+            );
+
+            Allocator::dealloc(self.ptr::as_ptr() as *mut u8, old_layout);
+        }
+
+        self.ptr = NonNull::new_unchecked(new_ptr);
+        self.cap = new_cap;
+    }
+
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        return self.cap;
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        return self.len;
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        return self.len == 0;
+    }
+
+    #[inline]
+    pub fn ptr(&self) -> *mut T {
+        return self.ptr::as_ptr();
+    }
+
+    pub fn drop(&mut self) -> void {
+        let i: usize = 0;
+
+        // drop every initialized element
+        //
+        // ptr::read() moves the element out of the allocation
+        // and mem::drop<T>() then runs whatever drop glue T
+        // requires
+        while i < self.len {
+            const element_ptr = ptr::offset::<T>(
+                self.ptr::as_ptr(), 
+                i as isize
+            );
+
+            const value = ptr::read::<T>(element_ptr as *const T);
+
+            mem::drop::<T>(value);
+
+            i += 1;
+        }
+
+        // ZST Vecs never allocated backing storage
+        if mem::size_of::<T>() == 0 {
+            return;
+        }
+
+        // cap == 0 means this is still using NonNull::dangling()
+        if self.cap == 0 {
+            return;
+        }
+
+        const layout = Layout::from_size_align(
+            mem::size_of::<T>() * self.cap,
+            mem::align_of::<T>()
+        );
+
+        Allocator::dealloc(self.ptr::as_ptr() as *mut u8, layout);
+    }
+}

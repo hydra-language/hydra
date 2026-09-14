@@ -22,10 +22,12 @@ extension Layout {
         };
     }
 
+    #[inline]
     pub fn size(&self) -> usize {
         return self.size;
     }
 
+    #[inline]
     pub fn align(&self) -> usize {
         return self.align;
     }

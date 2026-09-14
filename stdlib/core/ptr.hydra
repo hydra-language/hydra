@@ -1,26 +1,32 @@
 include core::intrinsics;
 include core::mem;
 
+#[inline]
 pub fn read<T>(src: *const T) -> T {
     return intrinsics::__ptr_read::<T>(src);
 }
 
+#[inline]
 pub fn write<T>(dst: *mut T, value: T) -> void {
     intrinsics::__ptr_write::<T>(dst, value);
 }
 
+#[inline]
 pub fn offset<T>(ptr: *mut T, count: isize) -> *mut T {
     return intrinsics::__ptr_offset::<T>(ptr, count);
 }
 
+#[inline]
 pub fn null<T>() -> *const T {
     return intrinsics::__ptr_null::<T>();
 }
 
+#[inline]
 pub fn null_mut<T>() -> *mut T {
     return intrinsics::__ptr_null_mut::<T>();
 }
 
+#[inline]
 pub fn is_null<T>(ptr: *const T) -> bool {
     return intrinsics::__ptr_is_null::<T>(ptr);
 }
@@ -49,11 +55,13 @@ extension<T> NonNull<T> {
         };
     }
 
-    pub fn as_ptr(&self) -> *const T {
-        return self.ptr as *const T;
+    #[inline]
+    pub fn as_ptr(&self) -> *mut T {
+        return self.ptr;
     }
 
-    pub fn as_mut_ptr(&self) -> *mut T {
-        return self.ptr;
+    #[inline]
+    pub fn as_const_ptr(&self) -> *const T {
+        return self.ptr as *const T;
     }
 }

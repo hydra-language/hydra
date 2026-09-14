@@ -1,11 +1,14 @@
 include core::intrinsics;
 
+#[inline]
 pub fn size_of<T>() -> usize {
     return intrinsics::__size_of::<T>();
 }
 
+#[inline]
 pub fn align_of<T>() -> usize {
     return intrinsics::__align_of::<T>();
 }
 
+#[inline]
 pub fn drop<T>(x: T) -> void {}
