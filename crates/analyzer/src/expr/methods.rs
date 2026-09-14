@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::super::Analyzer;
 
 use errors::error::{HydraError, Span};
@@ -11,7 +13,7 @@ use parser::ast::Expr as ASTExpr;
 
 impl<'ctx> Analyzer<'ctx> {
 
-    pub(crate) fn lower_method_expr(&mut self, node: &ASTExpr, _expected: Option<&IRType>, span: Span)
+    pub(crate) fn lower_method_expr(&mut self, node: &ASTExpr, expected: Option<&IRType>, span: Span)
         -> Result<HIRExpr, HydraError> 
     {
         let ASTExpr::MethodCall { object, method, arguments, generic_args, .. } = node else {
@@ -19,12 +21,13 @@ impl<'ctx> Analyzer<'ctx> {
         };
 
         let lhs_expr = self.lower_expr_with_type(object, None);
-        self.lower_instance_method_call(lhs_expr?, &method.lexeme, arguments, generic_args, span)
+        self.lower_instance_method_call(lhs_expr?, &method.lexeme, arguments, generic_args, expected, span)
     }
 
     pub(crate) fn lower_instance_method_call(
         &mut self, lhs_expr: HIRExpr, method_name: &str, 
-        arguments: &[ASTExpr], generic_args: &[Type], span: Span
+        arguments: &[ASTExpr], generic_args: &[Type], 
+        expected: Option<&IRType>, span: Span
     ) -> Result<HIRExpr, HydraError> 
     {
         let actual_type = match &lhs_expr.ty {
@@ -88,15 +91,11 @@ impl<'ctx> Analyzer<'ctx> {
                 )
             })?;
 
-        let (param_types, return_type) = match &info.kind {
-            DefKind::Function {
-                params,
-                return_type,
-                ..
-            } => (
-                params.clone(),
-                return_type.clone(),
-            ),
+        let (param_types, return_type, function_gp, owner_generic_count) = match &info.kind {
+            DefKind::Function { params, return_type, generic_params, owner_generic_count, .. } => 
+            {
+                (params.clone(), return_type.clone(), generic_params.clone(), *owner_generic_count)
+            }
 
             _ => {
                 return Err(self.error(
@@ -193,66 +192,90 @@ impl<'ctx> Analyzer<'ctx> {
             _ => lhs_expr,
         };
 
-        let expected_user_args = param_types.len().saturating_sub(1);
+        if owner_generic_count > function_gp.len() {
+            return Err(self.error("S006", "invalid generic metadata for method", span));
+        }
 
-        if arguments.len() != expected_user_args {
+        let callable_gp = &function_gp[owner_generic_count..];
+
+        if generic_args.len() > callable_gp.len() {
             return Err(self.error(
                 "S004",
-                format!(
-                    "method '{}' expected {} argument{}, found {}",
+                format!("method '{}' expected at most {} generic argument{}, found {}",
                     method_name,
-                    expected_user_args,
-                    if expected_user_args == 1 { "" } else { "s" },
-                    arguments.len(),
+                    callable_gp.len(),
+                    if callable_gp.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
+                    generic_args.len(),
                 ),
                 span,
             ));
         }
 
-        let mut args = Vec::new();
+        let mut substitutions = HashMap::<String, IRType>::new();
 
-        // self is always argument zero.
-        args.push(self_arg);
+        Self::infer_generic_bindings(expected_self_ty, &self_arg.ty, &mut substitutions);
+        for (name, node) in callable_gp.iter().zip(generic_args.iter()) {
+            substitutions.insert(name.clone(), self.lower_type(node)?);
+        }
+
+        // self arg is always argument zero
+        let mut args = vec![self_arg];
 
         for arg_node in arguments {
-            let expected_ty = param_types.get(args.len());
+            let declared_param = param_types.get(args.len());
+            let substituted_param = declared_param.map(|ty| ty.substitute(&substitutions));
 
-            let mut lowered_arg =
-            self.lower_expr_with_type(
-                arg_node,
-                expected_ty,
-            )?;
+            let argument_expected = substituted_param.as_ref().and_then(|ty| { 
+                if ty.contains_generic() {
+                    None
+                } else {
+                    Some(ty)
+                }
+            });
 
-            if let Some(target) = expected_ty {
-                lowered_arg =
-                    self.coerce_primitive(
-                        lowered_arg,
-                        target,
-                    );
+            let mut lowered_arg = self.lower_expr_with_type(arg_node, argument_expected)?;
+
+            if let Some(target) = argument_expected {
+                lowered_arg = self.coerce_primitive(lowered_arg, target);
+            }
+
+            if let Some(param_ty) = declared_param {
+                Self::infer_generic_bindings(param_ty, &lowered_arg.ty, &mut substitutions);
             }
 
             args.push(lowered_arg);
         }
 
-        let mut lowered_generics = Vec::new();
-
-        for node in generic_args {
-            lowered_generics.push(
-                self.lower_type(node)?
-            );
+        if let Some(expected_ty) = expected {
+            Self::infer_generic_bindings(&return_type, expected_ty, &mut substitutions);
         }
+
+        let resolved_generic_args = function_gp.iter().map(|name| {
+            substitutions.get(name).cloned().unwrap_or_else(|| {
+                IRType::GENERIC(
+                    name.clone()
+                )
+            })
+        }).collect();
+
+        let resolved_return_type = return_type.substitute(&substitutions);
 
         Ok(HIRExpr {
             kind: HIRExprKind::Call {
                 callee: method_def_id,
                 args,
-                generic_args: lowered_generics,
+                generic_args:
+                resolved_generic_args,
             },
-            ty: return_type,
+
+            ty: resolved_return_type,
             span,
         })
     }
-
 
     fn receiver_type_matches(&self, expected: &IRType, actual: &IRType) -> bool {
         match (expected, actual) {

@@ -12,18 +12,55 @@ use ir::hir::{
 use ir::types::Type as IRType;
 use parser::ast::Expr as ASTExpr;
 
+use std::collections::HashMap;
+
 impl<'ctx> Analyzer<'ctx> {
 
-
-    pub(crate) fn lower_call_expr(&mut self, node: &ASTExpr, _expected: Option<&IRType>, span: Span) 
+    pub(crate) fn lower_call_expr(&mut self, node: &ASTExpr, expected: Option<&IRType>, span: Span) 
         -> Result<HIRExpr, HydraError> 
     {
-        let ASTExpr::FunctionCall { callee, arguments, generic_args, .. } = node else {
+        let ASTExpr::FunctionCall { .. } = node else {
             unreachable!();
         };
 
         match node {
-            ASTExpr::FunctionCall { callee, arguments, generic_args, .. } => {
+            ASTExpr::FunctionCall { callee, arguments, generic_args, owner_generic_args, .. } => {
+
+                //
+                // a call whose callee is a member expression:
+                //
+                //     self.ptr::as_ptr()
+                //
+                // is instance-method dispatch on the projected receiver.
+                //
+                // plain local receivers such as:
+                //
+                //     ptr::as_ptr()
+                //
+                // arrive as Path expressions and are handled by the existing
+                // variable-path dispatch below.
+                //
+                if let ASTExpr::Member { object, property, .. } = &**callee {
+                    if !owner_generic_args.is_empty() {
+                        return Err(self.error(
+                            "S004",
+                            "owner generic arguments can only qualify a type",
+                            span,
+                        ));
+                    }
+
+                    let lhs_expr = self.lower_expr_with_type(object, None)?;
+
+                    return self.lower_instance_method_call(
+                        lhs_expr,
+                        &property.lexeme,
+                        arguments,
+                        generic_args,
+                        expected,
+                        span,
+                    );
+                }
+
                 let call_name_debug = match &**callee {
                     ASTExpr::Variable { name, .. } => name.lexeme.to_string(),
                     ASTExpr::Path { segments, .. } => segments.iter().map(|s| s.lexeme.as_str()).collect::<Vec<_>>().join("::"),
@@ -75,6 +112,7 @@ impl<'ctx> Analyzer<'ctx> {
                                 method_name,
                                 arguments,
                                 generic_args,
+                                expected,
                                 span,
                             );
                         }
@@ -96,7 +134,7 @@ impl<'ctx> Analyzer<'ctx> {
                             return Err(self.error("S005", format!("struct `{}` has no associated function `{}`", struct_name, method_name), span));
                         }
                     } else {
-                        return Err(self.error("S003", format!("target is a struct, not a function"), span));
+                        return Err(self.error("S003", "target is a struct, not a function", span));
                     }
                 } else {
                     def_id
@@ -104,18 +142,12 @@ impl<'ctx> Analyzer<'ctx> {
 
                 let actual_info = self.context.get_def(actual_def_id).unwrap();
 
-                let (param_types, return_type, intrinsic) =
-                match &actual_info.kind {
-                    DefKind::Function {
-                        params,
-                        return_type,
-                        intrinsic,
-                        ..
-                    } => (
-                        params.clone(),
-                        return_type.clone(),
-                        *intrinsic,
-                    ),
+                let (param_types, return_type, function_gp, intrinsic, owner_generic_count) = match &actual_info.kind 
+                {
+                    DefKind::Function { params, return_type, intrinsic, generic_params, owner_generic_count, .. } => 
+                    {
+                        (params.clone(), return_type.clone(), generic_params.clone(), *intrinsic, *owner_generic_count)
+                    }
 
                     _ => {
                         return Err(self.error(
@@ -126,16 +158,181 @@ impl<'ctx> Analyzer<'ctx> {
                     }
                 };
 
+                if owner_generic_count > function_gp.len() {
+                    return Err(self.error(
+                        "S006",
+                        "invalid generic metadata for function",
+                        span,
+                    ));
+                }
+
+                let owner_gp = &function_gp[..owner_generic_count];
+                let callable_gp = &function_gp[owner_generic_count..];
+
+                //
+                // Foo::<A, B>::method()
+                //
+                // if an owner fishtail is explicitly present, it describes
+                // the complete owner type.
+                //
+                if !owner_generic_args.is_empty() && owner_generic_args.len() != owner_gp.len() {
+                    return Err(self.error(
+                        "S004",
+                        format!("type expected {} generic argument{}, found {}",
+                            owner_gp.len(),
+                            if owner_gp.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            },
+                            owner_generic_args.len(),
+                        ),
+                        span,
+                    ));
+                }
+
+
+                //
+                // Foo::method::<U>()
+                //
+                // these can only bind the function's own generic parameters.
+                //
+                if generic_args.len() > callable_gp.len() {
+                    return Err(self.error(
+                        "S004",
+                        format!("function expected at most {} generic argument{}, found {}",
+                            callable_gp.len(),
+                            if callable_gp.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            },
+                            generic_args.len(),
+                        ),
+                        span,
+                    ));
+                }
+
                 let mut args = Vec::new();
                 for (i, node) in arguments.iter().enumerate() {
-                    let expected = param_types.get(i).and_then(|t| if matches!(t, IRType::GENERIC(_)) { None } else { Some(t) });
+                    let expected = param_types.get(i).filter(|&t| !matches!(t, IRType::GENERIC(_)));
                     let mut arg = self.lower_expr_with_type(node, expected)?;
                     if let Some(target) = expected { arg = self.coerce_primitive(arg, target); }
                     args.push(arg);
                 }
 
+                //
+                // start with explicitly supplied generic arguments:
+                //
+                //     Foo::<i32>::new()
+                //
                 let mut lowered_generics = Vec::new();
-                for node in generic_args { lowered_generics.push(self.lower_type(node)?); }
+
+                for node in generic_args {
+                    lowered_generics.push(self.lower_type(node)?);
+                }
+
+                if lowered_generics.len() > function_gp.len() {
+                    return Err(self.error(
+                        "S004",
+                        format!("function expected at most {} generic argument{}, found {}",
+                            function_gp.len(),
+                            if function_gp.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            },
+                            lowered_generics.len(),
+                        ),
+                        span,
+                    ));
+                }
+
+                let mut substitutions = HashMap::<String, IRType>::new();
+
+                //
+                // owner:
+                //     Foo::<i32>::bar()
+                //
+                for (name, node) in owner_gp.iter().zip(owner_generic_args.iter()) {
+                    substitutions.insert(name.clone(), self.lower_type(node)?);
+                }
+
+                //
+                // function:
+                //     Foo::bar::<u64>()
+                //
+                for (name, node) in callable_gp.iter().zip(generic_args.iter()) {
+                    substitutions.insert(name.clone(), self.lower_type(node)?);
+                }
+
+                //
+                // lower value arguments and infer generics from them.
+                //
+                //     fn identity<T>(value: T) -> T
+                //     identity(5)
+                //
+                // infers:
+                //
+                //     T = i32
+                //
+                let mut args = Vec::new();
+
+                for (i, node) in arguments.iter().enumerate() {
+                    let declared_param = param_types.get(i);
+
+                    let substituted_param = declared_param.map(
+                        |ty| ty.substitute(&substitutions)
+                    );
+
+                    let argument_expected = substituted_param.as_ref().filter(|&ty| !ty.contains_generic());
+
+                    let mut arg = self.lower_expr_with_type(node, argument_expected)?;
+                    if let Some(target) = argument_expected {
+                        arg = self.coerce_primitive(arg, target);
+                    }
+
+                    if let Some(param_ty) = declared_param {
+                        Self::infer_generic_bindings(param_ty, &arg.ty, &mut substitutions);
+                    }
+
+                    args.push(arg);
+                }
+
+                //
+                // infer generics from the expected result type.
+                //
+                // this is what makes:
+                //
+                //     const ptr: NonNull<i32> = NonNull::dangling();
+                //
+                // infer:
+                //
+                //     NonNull<T> == NonNull<i32>
+                //     T = i32
+                //
+                if let Some(expected_ty) = expected {
+                    Self::infer_generic_bindings(&return_type, expected_ty, &mut substitutions);
+                }
+
+                //
+                // store generic arguments in declaration order so the
+                // monomorphizer sees exactly the specialization it expects.
+                //
+                let resolved_generic_args: Vec<IRType> = function_gp.iter().map(|name| {
+                    substitutions.get(name).cloned().unwrap_or_else(|| {
+                        IRType::GENERIC(
+                            name.clone()
+                        )
+                    })
+                }).collect();
+
+                //
+                // the HIR expression itself also needs its concrete inferred
+                // result type now, because semantic checking happens before
+                // monomorphization.
+                //
+                let resolved_return_type = return_type.substitute(&substitutions);
 
                 if let Some(kind) = intrinsic {
                     return Ok(HIRExpr {
@@ -143,25 +340,78 @@ impl<'ctx> Analyzer<'ctx> {
                             callee: actual_def_id,
                             kind,
                             args,
-                            type_args: lowered_generics,
+                            type_args:
+                            resolved_generic_args,
                         },
-                        ty: return_type,
+
+                        ty: resolved_return_type,
                         span,
                     });
                 }
 
-                Ok(HIRExpr { 
+                Ok(HIRExpr {
                     kind: HIRExprKind::Call {
                         callee: actual_def_id,
                         args,
-                        generic_args: lowered_generics,
+                        generic_args:
+                        resolved_generic_args,
                     },
-                    ty: return_type,
+
+                    ty: resolved_return_type,
                     span,
                 })
             }
 
             _ => unreachable!()
+        }
+    }
+
+    pub(crate) fn infer_generic_bindings(pattern: &IRType, actual: &IRType, bindings: &mut HashMap<String, IRType>) 
+    {
+        match (pattern, actual) {
+            //
+            // T = concrete type
+            //
+            (IRType::GENERIC(name), actual) => {
+                bindings.entry(name.clone()).or_insert_with(|| { actual.clone() });
+            }
+
+            //
+            // Foo<T> = Foo<i32>
+            //
+            (
+                IRType::GENERIC_INSTANCE(
+                    pattern_base,
+                    pattern_args,
+                ),
+                IRType::GENERIC_INSTANCE(
+                    actual_base,
+                    actual_args,
+                ),
+            ) if pattern_base == actual_base && pattern_args.len() == actual_args.len() => 
+            {
+                for (pattern, actual) in pattern_args.iter().zip(actual_args.iter())
+                {
+                    Self::infer_generic_bindings(pattern, actual, bindings);
+                }
+            }
+
+            (IRType::POINTER(pattern), IRType::POINTER(actual)) | 
+            (IRType::CONST_POINTER(pattern), IRType::CONST_POINTER(actual)) | 
+            (IRType::REF(pattern), IRType::REF(actual)) | 
+            (IRType::CONST_REF(pattern), IRType::CONST_REF(actual)) | 
+            (IRType::SLICE(pattern), IRType::SLICE(actual)) => 
+            {
+                Self::infer_generic_bindings(pattern, actual, bindings);
+            }
+
+            (IRType::ARRAY(pattern, pattern_len), IRType::ARRAY(actual, actual_len)) 
+                if pattern_len == actual_len => 
+            {
+                Self::infer_generic_bindings(pattern, actual, bindings);
+            }
+
+            _ => {}
         }
     }
 }

@@ -29,7 +29,14 @@ pub enum DefKind {
         params: Vec<Type>,
         annotations: Vec<Annotation>,
         return_type: Type,
+
+        // flattened order:
+        //      [owner_generics, function generics]
         generic_params: Vec<String>,
+
+        // number of entries at the beginning of generic_params
+        // inherited from the extension owner
+        owner_generic_count: usize,
         intrinsic: Option<IntrinsicKind>,
     },
 

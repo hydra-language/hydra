@@ -860,49 +860,136 @@ impl Parser {
 
     fn parse_call(&mut self) -> Result<Expr, HydraError> {
         let mut expr = self.parse_primary()?;
+
+        //
+        // these belong to the type/owner:
+        //
+        //     Foo::<T>::bar()
+        //
+        let mut owner_generic_args = Vec::new();
         
         loop {
             if self.match_token(TokenType::LeftParen) {
                 let id = self.next_node_id();
                 let arguments = self.finish_parse_fn_call_args()?;
-                expr = Expr::FunctionCall { id, callee: Box::new(expr), arguments, generic_args: Vec::new() };
+
+                expr = Expr::FunctionCall { 
+                    id,
+                    callee: Box::new(expr),
+                    arguments,
+                    owner_generic_args: std::mem::take(&mut owner_generic_args),
+                    generic_args: Vec::new(),
+                };
             } else if self.match_token(TokenType::AS) {
                 let id = self.next_node_id();
                 let target = self.parse_type()?;
+
                 expr = Expr::Cast { id, value: Box::new(expr), target: Box::new(target) };
             } else if self.match_token(TokenType::DoubleColon) {
+                //
+                // fishtail generic arguments:
+                //
+                //     foo::<T>()
+                //     Foo::<T>::new()
+                //     Foo::new::<T>()
+                //
                 if self.match_token(TokenType::LeftAngle) {
-                    let id = self.next_node_id();
-                    let mut generic_args = Vec::new();
+                    let mut parsed_generic_args = Vec::new();
+
                     loop {
-                        generic_args.push(self.parse_type()?);
-                        if self.match_token(TokenType::RightAngle) { break; }
+                        parsed_generic_args.push(self.parse_type()?);
+
+                        if self.match_token(TokenType::RightAngle) {
+                            break;
+                        }
+
                         self.consume(TokenType::Comma, "expected ',' in generic args")?;
                     }
 
-                    self.consume(TokenType::LeftParen, "expected '(' after generic arguments")?;
-                    let arguments = self.finish_parse_fn_call_args()?;
-                    expr = Expr::FunctionCall { id, callee: Box::new(expr), arguments, generic_args };
-                } else {
-                    let next_name = self.consume_identifier("expected identifier after '::'")?.clone();
+                    //
+                    // followed immediately by '(':
+                    //
+                    //     foo::<T>()
+                    //     Foo::bar::<T>()
+                    //
+                    // therefore these are function generic arguments
+                    //
+                    if self.match_token(TokenType::LeftParen) {
+                        let id = self.next_node_id();
+                        let arguments = self.finish_parse_fn_call_args()?;
 
-                    expr = match expr {
-                        Expr::Variable { name, .. } => {
-                            Expr::Path { id: self.next_node_id(), segments: vec![name, next_name] }
-                        },
-                        Expr::Path { mut segments, .. } => {
-                            segments.push(next_name);
-                            Expr::Path { id: self.next_node_id(), segments }
-                        },
-                        other => {
-                            Expr::Member { id: self.next_node_id(), object: Box::new(other), property: next_name }
+                        expr = Expr::FunctionCall {
+                            id,
+                            callee: Box::new(expr),
+                            arguments,
+                            owner_generic_args: std::mem::take(&mut owner_generic_args),
+                            generic_args: parsed_generic_args
+                        };
+
+                        continue;
+                    }
+
+
+                    //
+                    // followed by another '::':
+                    //
+                    //     Foo::<T>::bar
+                    //
+                    // therefore these qualify the owner
+                    //
+                    if self.check(TokenType::DoubleColon) {
+                        if !owner_generic_args.is_empty() {
+                            return Err(self.error(
+                                self.peek(),
+                                "P002",
+                                "owner generic arguments already specified"
+                            ))
                         }
-                    };
+
+                        owner_generic_args = parsed_generic_args;
+
+                        continue;
+                    }
+
+                    return Err(self.error(
+                        self.peek(),
+                        "P002",
+                        "expected '(' or '::' after generic arguments",
+                    ));
+                }
+
+                let next_name = self.consume_identifier("expected identifier after '::'")?.clone();
+
+                expr = match expr {
+                    Expr::Variable { name, .. } => {
+                        Expr::Path { 
+                            id: self.next_node_id(), 
+                            segments: vec![name, next_name] 
+                        } 
+                    }
+
+                    Expr::Path { mut segments, .. } => { 
+                        segments.push(next_name);
+
+                        Expr::Path {
+                            id: self.next_node_id(),
+                            segments
+                        }
+                    }
+
+                    other => {
+                        Expr::Member {
+                            id: self.next_node_id(),
+                            object: Box::new(other),
+                            property: next_name
+                        }
+                    }
                 }
             } else if self.allow_struct && self.check(TokenType::LeftBrace) {
                 expr = self.parse_struct_initializer(expr)?;
             } else if self.match_token(TokenType::Dot) {
                 let id = self.next_node_id();
+
                 let name = if let TokenType::IDENTIFIER(_) = self.peek().token_type {
                     self.advance().clone()
                 } else {
@@ -910,58 +997,31 @@ impl Parser {
                 };
 
                 expr = Expr::Member { id, object: Box::new(expr), property: name };
-            } else if self.match_token(TokenType::DoubleColon) {
-                if self.match_token(TokenType::LeftAngle) {
-                    let id = self.next_node_id();
-                    let mut generic_args = Vec::new();
-                    loop {
-                        generic_args.push(self.parse_type()?);
-                        if self.match_token(TokenType::RightAngle) { break; }
-                        self.consume(TokenType::Comma, "expected ',' in generic args")?;
-                    }
-                    self.consume(TokenType::LeftParen, "expected '(' after generic arguments")?;
-                    let arguments = self.finish_parse_fn_call_args()?;
-                    expr = Expr::FunctionCall { id, callee: Box::new(expr), arguments, generic_args };
-                } else {
-                    let next_name = self.consume_identifier("expected identifier after '::'")?.clone();
-
-                    expr = match expr {
-                        Expr::Variable { name, .. } => {
-                            Expr::Path { id: self.next_node_id(), segments: vec![name, next_name] }
-                        },
-                        Expr::Path { mut segments, .. } => {
-                            segments.push(next_name);
-                            Expr::Path { id: self.next_node_id(), segments }
-                        },
-                        other => {
-                            let mut generic_args = Vec::new();
-                            if self.match_token(TokenType::DoubleColon) {
-                                self.consume(TokenType::LeftAngle, "expected '<' after '::' for method generics")?;
-                                loop {
-                                    generic_args.push(self.parse_type()?);
-                                    if self.match_token(TokenType::RightAngle) { break; }
-                                    self.consume(TokenType::Comma, "expected ',' in generic args")?;
-                                }
-                            }
-                            if self.match_token(TokenType::LeftParen) {
-                                let arguments = self.finish_parse_fn_call_args()?;
-                                Expr::MethodCall { id: self.next_node_id(), object: Box::new(other), method: next_name, arguments, generic_args }
-                            } else {
-                                Expr::Member { id: self.next_node_id(), object: Box::new(other), property: next_name }
-                            }
-                        }
-                    }
-                }
             } else if self.match_token(TokenType::PlusPlus) || self.match_token(TokenType::MinusMinus) {
                 let id = self.next_node_id();
-                expr = Expr::PostfixUnary { id, operator: self.previous().clone(), left: Box::new(expr) };
+
+                expr = Expr::PostfixUnary { 
+                    id, 
+                    operator: self.previous().clone(), 
+                    left: Box::new(expr) 
+                };
             } else if self.match_token(TokenType::LeftBracket) {
                 let id = self.next_node_id();
                 let token = self.previous().clone();
                 let index = self.parse_expression()?;
+
                 self.consume(TokenType::RightBracket, "expected ']' after array index")?;
+
                 expr = Expr::ArrayAccess { id, array: Box::new(expr), index: Box::new(index), token };
             } else {
+                if !owner_generic_args.is_empty() {
+                    return Err(self.error(
+                        self.peek(),
+                        "P002",
+                        "expected associated item after owner generic arguments"
+                    ));
+                }
+
                 break;
             }
         }
@@ -1224,7 +1284,7 @@ impl Parser {
         if self.check(token) {
             Ok(self.advance())
         } else {
-            Err(self.error(self.peek(), "P002", format!("expected {}, but found `{}`", expected, self.peek().lexeme)))
+            Err(self.error(self.peek(), "P002", format!("{}, but found `{}`", expected, self.peek().lexeme)))
         }
     }
 

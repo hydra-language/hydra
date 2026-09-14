@@ -1,23 +1,23 @@
 use crate::{context::DefID, types::Type };
 
-/// A concrete instantiation request for a function definition.
-///
-/// `def_id` identifies the original declared function.
-/// `type_args` identifies the concrete generic substitution.
-///
-/// Examples:
-///
-///     foo::<i32>
-///         Instance {
-///             def_id: DefID(foo),
-///             type_args: [i32],
-///         }
-///
-///     main
-///         Instance {
-///             def_id: DefID(main),
-///             type_args: [],
-///         }
+// a concrete instantiation request for a function definition.
+//
+// `def_id` identifies the original declared function.
+// `type_args` identifies the concrete generic substitution.
+//
+// Examples:
+//
+//     foo::<i32>
+//         Instance {
+//             def_id: DefID(foo),
+//             type_args: [i32],
+//         }
+//
+//     main
+//         Instance {
+//             def_id: DefID(main),
+//             type_args: [],
+//         }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Instance {
     pub def_id: DefID,

@@ -86,7 +86,13 @@ pub enum Expr {
     Path { id: NodeID, segments: Vec<Token> },
     
     /// e.g., `foo()`
-    FunctionCall { id: NodeID, callee: Box<Expr>, arguments: Vec<Expr>, generic_args: Vec<Type> },
+    FunctionCall { 
+        id: NodeID, 
+        callee: Box<Expr>, 
+        arguments: Vec<Expr>, 
+        owner_generic_args: Vec<Type>, // Foo::<T>::bar()
+        generic_args: Vec<Type> // Foo::bar::<U>() or foo::<U>() 
+    },
     
     /// e.g., `object::method()`
     MethodCall { id: NodeID, object: Box<Expr>, method: Token, arguments: Vec<Expr>, generic_args: Vec<Type> },

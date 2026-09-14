@@ -338,9 +338,16 @@ impl<'a> Monomorphizer<'a> {
 
         if let DefKind::Function { params, return_type, annotations, .. } = generic_info.kind {
             specialized_info.kind = DefKind::Function {
-                params: params.into_iter().map(|ty| self.resolve_type(&ty.substitute(&subs), &subs)).collect(),
-                return_type: self.resolve_type(&return_type.substitute(&subs), &subs),
+                params: params.into_iter().map(|ty| {
+                    self.resolve_type(
+                        &ty.substitute(&subs),
+                        &subs,
+                    )
+                }).collect(),
+
+                return_type: self.resolve_type( &return_type.substitute(&subs), &subs),
                 generic_params: vec![],
+                owner_generic_count: 0,
                 intrinsic: None,
                 annotations,
             };

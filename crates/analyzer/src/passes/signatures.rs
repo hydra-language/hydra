@@ -278,8 +278,9 @@ impl<'ctx> Analyzer<'ctx> {
             params: param_types,
             return_type,
             generic_params,
+            owner_generic_count: inherited_generics.len(),
             annotations: decl.annotations.clone(),
-            intrinsic
+            intrinsic,
         };
 
         self.context.update_def(

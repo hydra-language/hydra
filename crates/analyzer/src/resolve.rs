@@ -144,7 +144,11 @@ impl<'ctx> Resolver<'ctx> {
                             span: decl.name.span,
                             absolute_path: full_path.clone(),
                             kind: DefKind::Function { 
-                                params: vec![], annotations: vec![], return_type: ir::types::Type::VOID, generic_params: vec![],
+                                params: vec![], 
+                                annotations: vec![], 
+                                return_type: ir::types::Type::VOID, 
+                                generic_params: vec![],
+                                owner_generic_count: 0,
                                 intrinsic: None
                             },
                             is_pub: decl.is_pub,
@@ -303,7 +307,8 @@ impl<'ctx> Resolver<'ctx> {
                         kind: DefKind::Function { 
                             params: vec![], 
                             annotations: vec![], 
-                            return_type: ir::types::Type::VOID, 
+                            return_type: ir::types::Type::VOID,
+                            owner_generic_count: 0,
                             generic_params: vec![],
                             intrinsic: None
                         },
@@ -446,7 +451,8 @@ impl<'ctx> Resolver<'ctx> {
                         kind: DefKind::Function { 
                             params: vec![], 
                             annotations: vec![], 
-                            return_type: ir::types::Type::VOID, 
+                            return_type: ir::types::Type::VOID,
+                            owner_generic_count: 0,
                             generic_params: vec![],
                             intrinsic: None
                         },
@@ -597,10 +603,20 @@ impl<'ctx> Resolver<'ctx> {
                 );
             }
 
-            Expr::FunctionCall { callee, arguments, generic_args, .. } => {
+            Expr::FunctionCall { callee, arguments, generic_args, owner_generic_args, .. } => {
                 self.resolve_expr(callee);
-                for arg in arguments { self.resolve_expr(arg); }
-                for ty in generic_args { self.resolve_type(ty); }
+
+                for arg in arguments { 
+                    self.resolve_expr(arg); 
+                }
+
+                for ty in owner_generic_args {
+                    self.resolve_type(ty);
+                }
+
+                for ty in generic_args { 
+                    self.resolve_type(ty); 
+                }
             }
 
             Expr::MethodCall { object, arguments, generic_args, .. } => {

@@ -263,30 +263,46 @@ impl<'a> MIRBuilder<'a> {
 
             HIRExprKind::Return(ret_expr_opt) => {
                 if let Some(ret_expr) = ret_expr_opt {
-                    let ret_operand = self.lower_expr_to_operand(ret_expr);
+                    //
+                    // a void expression still needs to be lowered because it may
+                    // have side effects:
+                    //
+                    //     return foo();
+                    //
+                    // where foo() -> void.
+                    //
+                    // but `void` has no runtime value and therefore must never be
+                    // copied into the MIR return place.
+                    //
+                    if ret_expr.ty == Type::VOID {
+                        self.lower_expr_to_operand(ret_expr);
+                    } else {
+                        let ret_operand = self.lower_expr_to_operand(ret_expr);
 
-                    self.push_statement(Statement {
-                        kind: StatementKind::Assign(
-                            Place {
+                        self.push_statement(Statement {
+                            kind: StatementKind::Assign(Place {
                                 local: LocalID(0),
                                 projection: vec![],
                             },
-                            Rvalue::Use(ret_operand),
-                        ),
-                        span: ret_expr.span,
-                    });
+
+                            Rvalue::Use(ret_operand)
+
+                            ),
+                            span: ret_expr.span,
+                        });
+                    }
                 }
 
-                // drop everything still owned before leaving this function.
                 self.emit_pending_drops(expr.span);
 
                 self.terminate_block(Terminator::Return);
 
+                //
                 // anything lowered after this point is unreachable.
+                //
                 self.current_block = self.new_block();
 
-                let unit_local =
-                self.new_local(Type::VOID, false, None);
+                let unit_local = self.new_local(Type::VOID, false, None);
 
                 Operand::Copy(Place {
                     local: unit_local,
