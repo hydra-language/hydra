@@ -1,0 +1,33 @@
+include core::mem;
+
+pub struct Layout {
+    size: usize;
+    align: usize;
+}
+
+extension Layout {
+
+    pub fn new<T>() -> Layout {
+        return Layout {
+            .size = mem::size_of::<T>(),
+            .align = mem::align_of::<T>(),
+        };
+    }
+    
+    pub fn from_size_align(size: usize, align: usize) -> Layout {
+        return Layout {
+            .size = size,
+            .align = align
+        };
+    }
+
+    #[inline]
+    pub fn size(&self) -> usize {
+        return self.size;
+    }
+
+    #[inline]
+    pub fn align(&self) -> usize {
+        return self.align;
+    }
+}

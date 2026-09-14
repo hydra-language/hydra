@@ -1,0 +1,37 @@
+include core::intrinsics;
+include core::mem;
+
+pub struct NonNull<T> {
+    ptr: *mut T;
+}
+
+extension<T> NonNull<T> {
+
+    pub fn new_unchecked(ptr: *mut T) -> NonNull<T> {
+        return NonNull {
+            .ptr = ptr
+        };
+    }
+
+    pub fn dangling() -> NonNull<T> {
+        return NonNull {
+            .ptr = intrinsics::__ptr_from_addr::<T>(mem::align_of::<T>())
+        };
+    }
+
+    pub fn from_mut(value: &mut T) -> NonNull<T> {
+        return NonNull {
+            .ptr = value as *mut T
+        };
+    }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *mut T {
+        return self.ptr;
+    }
+
+    #[inline]
+    pub fn as_const_ptr(&self) -> *const T {
+        return self.ptr as *const T;
+    }
+}

@@ -1,0 +1,40 @@
+include core::intrinsics;
+
+// Blanket extension on slice types
+extension<T> [T] {
+    
+    #[inline]
+    pub fn len(&self) -> usize {
+        return intrinsics::__slice_len(self);
+    }
+
+    #[inline]
+    pub fn first(&self) -> T {
+        // no safety checks until T?
+        // is implemented and can guarantee
+        // that the callee has at least one element
+        //
+        // in the event that the callee does
+        // not have at least one element
+        // we will return an error path
+        return self[0];
+    }
+
+    #[inline]
+    pub fn last(&self) -> T {
+        // no safety checks until T?
+        // is implemented and can guarantee
+        // that the callee has at least one element
+        //
+        // in the event that the callee does
+        // not have at least one element
+        // we will return an error path
+        return self[self::len() - 1];
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        return self::len() == 0;
+    }
+}
+

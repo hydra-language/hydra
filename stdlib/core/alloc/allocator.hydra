@@ -1,0 +1,23 @@
+include core::intrinsics;
+include core::alloc::Layout;
+
+pub struct Allocator {}
+
+extension Allocator {
+    
+    pub fn alloc(layout: Layout) -> *mut u8 {
+        return intrinsics::__alloc(
+            layout::size(),
+            layout::align()
+        );
+}
+
+    pub fn dealloc(ptr: *mut u8, layout: Layout) -> void {
+        intrinsics::__dealloc(
+            ptr,
+            layout::size(),
+            layout::align()
+        );
+    }
+}
+
