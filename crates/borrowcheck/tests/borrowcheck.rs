@@ -53,6 +53,7 @@ impl MirFixture {
                 annotations: vec![],
                 return_type: Type::VOID,
                 generic_params: vec![],
+                owner_generic_count: 0,
                 intrinsic: None,
             },
             is_pub: false,
