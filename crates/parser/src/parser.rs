@@ -142,7 +142,7 @@ impl Parser {
 
     fn parse_include(&mut self) -> Result<Item, HydraError> {
         let id = self.next_node_id();
-        let first_token = self.consume_identifier("expected module path")?.clone();
+        let first_token = self.consume_include_name("expected module path")?.clone();
         let mut segments = vec![first_token];
 
         while self.check(TokenType::DoubleColon) {
@@ -150,7 +150,7 @@ impl Parser {
                 break;
             }
             self.advance();
-            segments.push(self.consume_identifier("expected identifier after '::'")?.clone());
+            segments.push(self.consume_include_name("expected identifier after '::'")?.clone());
         }
 
         let path = Type::Path { id: self.next_node_id(), segments };
@@ -158,11 +158,22 @@ impl Parser {
         let mut symbols = None;
         if self.match_token(TokenType::DoubleColon) {
             self.consume(TokenType::LeftBrace, "expected '{' for selective include")?;
+
             let mut syms = Vec::new();
             if !self.check(TokenType::RightBrace) {
                 loop {
-                    syms.push(self.consume_identifier("expected symbol name")?.clone());
-                    if !self.match_token(TokenType::Comma) { break; }
+                    syms.push(self.consume_include_name("expected symbol name")?.clone());
+
+                    if !self.match_token(TokenType::Comma) { 
+                        break; 
+                    }
+
+                    // allow trailing comma
+                    //
+                    // include foo::{bar, baz,};
+                    if self.check(TokenType::RightBrace) {
+                        break;
+                    }
                 }
             }
             self.consume(TokenType::RightBrace, "expected '}' after symbols")?;
@@ -1377,7 +1388,25 @@ impl Parser {
         if let TokenType::IDENTIFIER(_) = self.peek().token_type {
             Ok(self.advance().clone())
         } else {
-            Err(self.error(self.peek(), "P002", format!("expected {}, found '{}'", expected, self.peek().lexeme)))
+            Err(self.error(self.peek(), "P002", format!("{}, found '{}'", expected, self.peek().lexeme)))
+        }
+    }
+
+    fn consume_include_name(&mut self, expected: &str) -> Result<Token, HydraError> {
+        match &self.peek().token_type {
+            TokenType::IDENTIFIER(_) | 
+            TokenType::ISIZE | TokenType::I8 | TokenType::I16 | TokenType::I32 | 
+            TokenType::I64 | TokenType::USIZE | TokenType::U8 | TokenType::U16 | 
+            TokenType::U32 | TokenType::U64 | TokenType::F32 | TokenType::F64 | 
+            TokenType::CHAR | TokenType::BOOL => {
+                Ok(self.advance().clone())
+            }
+
+            _ => Err(self.error(
+                self.peek(), 
+                "P002",
+                format!("expected {}, found '{}'", expected, self.peek().lexeme)
+            ))
         }
     }
 

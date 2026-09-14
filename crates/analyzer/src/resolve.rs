@@ -259,12 +259,36 @@ impl<'ctx> Resolver<'ctx> {
                                 full_path.push(sym.lexeme.clone());
                                 
                                 if let Some(&def_id) = self.global_symbols.get(&full_path) {
+                                    // importing a normal named item
                                     let info = self.context.get_def(def_id).unwrap();
+
                                     let namespace = match info.kind {
                                         DefKind::Function { .. } | DefKind::Constant { .. } | DefKind::Variable { .. } => Namespace::Value,
                                         _ => Namespace::Type,
                                     };
+
                                     self.current_scope.define_or_update(namespace, sym.lexeme.clone(), def_id);
+                                } else if self.program.is_module(&full_path) {
+                                    //
+                                    // selective imports may also name child modules:
+                                    //
+                                    //     include core::primitives::{
+                                    //         i8,
+                                    //         u8,
+                                    //         slice,
+                                    //     };
+                                    //
+                                    let info = SymbolInfo {
+                                        name: sym.lexeme.clone(),
+                                        span: sym.span,
+                                        absolute_path: full_path.clone(),
+                                        kind: DefKind::Alias { target_path: full_path.clone() },
+                                        is_pub: false,
+                                    };
+
+                                    let def_id = self.context.insert_def(info);
+
+                                    self.current_scope.define_or_update(Namespace::Type, sym.lexeme.clone(), def_id);
                                 } else {
                                     self.error(sym.span, "R003", format!("could not resolve import `{}`", full_path.join("::")));
                                 }
