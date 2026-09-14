@@ -48,21 +48,10 @@ impl<'c> CodeGen<'c> {
     }
 
     fn call_print_str(&mut self, s: &str) -> Result<(), String> {
-        let void_type = self.context.void_type();
-        let i64_type = self.context.i64_type();
-        let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
-
-        let fn_name = "print_str";
-        let func = self.module.get_function(fn_name).unwrap_or_else(|| {
-            let fn_type = void_type.fn_type(&[i8_ptr_type.into(), i64_type.into()], false);
-            self.module.add_function(fn_name, fn_type, Some(inkwell::module::Linkage::External))
-        });
-
         let ptr = self.get_global_string_ptr(s);
-        let len = self.context.i64_type().const_int(s.len() as u64, false);
+        let len = self.context.ptr_sized_int_type(&self.target_data, None).const_int(s.len() as u64, false);
 
-        self.builder.build_call(func, &[ptr.into(), len.into()], "call_print_str");
-        Ok(())
+        self.call_print_bytes(ptr, len)
     }
 
     fn call_print_newline(&mut self) -> Result<(), String> {
@@ -90,6 +79,30 @@ impl<'c> CodeGen<'c> {
         });
 
         self.builder.build_call(func, &[ptr.into(), len.into()], "call_print_chars");
+        Ok(())
+    }
+
+    fn call_print_bytes(&mut self, ptr: inkwell::values::PointerValue<'c>, len: inkwell::values::IntValue<'c>) 
+        -> Result<(), String> 
+    {
+        let void_type = self.context.void_type();
+        let byte_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let usize_type = self.context.ptr_sized_int_type(&self.target_data, None);
+
+        let fn_name = "print_str";
+
+        let func = self.module.get_function(fn_name).unwrap_or_else(|| {
+            let fn_type = void_type.fn_type(&[byte_ptr_type.into(), usize_type.into()], false);
+
+            self.module.add_function(
+                fn_name,
+                fn_type,
+                Some(inkwell::module::Linkage::External)
+            )
+        });
+
+        self.builder.build_call(func, &[ptr.into(), len.into()], "call_print_str");
+
         Ok(())
     }
 
@@ -185,29 +198,34 @@ impl<'c> CodeGen<'c> {
                     unreachable!();
                 };
 
-                if element_ty.as_ref() != &Type::CHAR {
-                    self.call_print_str("<slice>")?;
-                    return Ok(());
-                }
-
                 let slice = match value {
-                    BasicValueEnum::StructValue(slice) => slice,
+                    BasicValueEnum::StructValue(slice) => {
+                        slice
+                    }
+
                     other => {
-                        return Err(format!("ICE: expected fat slice value for type `{}`, found {:?}", ty, other))
+                        return Err(format!(
+                            "ICE: expected fat slice value for type `{}`, found {:?}",
+                            ty,
+                            other,
+                        ));
                     }
                 };
 
-                let ptr = self.builder
-                    .build_extract_value(slice, 0, "chars_ptr")
+                let ptr = self.builder.build_extract_value(slice, 0, "slice_ptr")
                     .ok_or_else(|| "ICE: failed to extract slice data pointer".to_string())?
                     .into_pointer_value();
 
-                let len = self.builder
-                    .build_extract_value(slice, 1, "chars_len")
+                let len = self.builder.build_extract_value(slice, 1, "slice_len")
                     .ok_or_else(|| "ICE: failed to extract slice length".to_string())?
                     .into_int_value();
 
-                self.call_print_chars(ptr, len)?;
+                match element_ty.as_ref() {
+                    Type::U8 | Type::I8 => self.call_print_bytes(ptr, len)?,
+                    Type::CHAR => self.call_print_chars(ptr, len)?,
+
+                    _ => self.call_print_str("<slice>")?
+                }
             },
 
             Type::POINTER(_) | Type::CONST_POINTER(_) | Type::REF(_) | Type::CONST_REF(_) => {
@@ -291,7 +309,7 @@ impl<'c> CodeGen<'c> {
 
                 Constant::String(_) => {
                     Type::CONST_REF(Box::new(
-                        Type::SLICE(Box::new(Type::CHAR))
+                        Type::SLICE(Box::new(Type::U8))
                     ))
                 }
             },

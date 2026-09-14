@@ -465,7 +465,7 @@ impl<'a> BoundsChecker<'a> {
             }
 
             Rvalue::Use(Operand::Const( Constant::String(value))) => {
-                Some(value.chars().count())
+                Some(value.len())
             }
 
             Rvalue::Use( Operand::Copy(place) | Operand::Move(place)) if place.projection.is_empty() => 

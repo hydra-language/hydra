@@ -32,7 +32,7 @@ impl<'ctx> Analyzer<'ctx> {
                     TokenType::StringLiteral(ref s) => Ok(HIRExpr {
                         kind: HIRExprKind::StringLiteral(s.clone()),
                         ty: IRType::CONST_REF(Box::new(
-                            IRType::SLICE(Box::new(IRType::CHAR))
+                            IRType::SLICE(Box::new(IRType::U8))
                         )),
                         span,
                     }),

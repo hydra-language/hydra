@@ -33,18 +33,21 @@ use parser::module::{
 static NEXT_TEST_ID: AtomicUsize =
     AtomicUsize::new(0);
 
+
 struct TestProject {
     dir: PathBuf,
     entry: PathBuf,
 }
 
+
 impl TestProject {
 
     fn new(source: &str) -> Self {
-        let id = NEXT_TEST_ID.fetch_add(
-            1,
-            Ordering::Relaxed,
-        );
+        let id =
+            NEXT_TEST_ID.fetch_add(
+                1,
+                Ordering::Relaxed,
+            );
 
         let dir =
             std::env::temp_dir().join(
@@ -55,12 +58,17 @@ impl TestProject {
                 ),
             );
 
-        fs::create_dir_all(&dir)
-            .expect(
-                "failed to create temporary test directory",
-            );
+        fs::create_dir_all(
+            &dir
+        )
+        .expect(
+            "failed to create temporary test directory",
+        );
 
-        let entry = dir.join("main.hydra");
+        let entry =
+            dir.join(
+                "main.hydra"
+            );
 
         fs::write(
             &entry,
@@ -77,7 +85,9 @@ impl TestProject {
     }
 }
 
+
 impl Drop for TestProject {
+
     fn drop(&mut self) {
         let _ =
             fs::remove_dir_all(
@@ -86,16 +96,21 @@ impl Drop for TestProject {
     }
 }
 
+
 fn analyze(source: &str) -> HIRProgram {
     let project =
-        TestProject::new(source);
+        TestProject::new(
+            source
+        );
 
     let mut source_map =
         SourceMap::new();
 
     let mut module_tree =
         ModuleTree::build(
-            Path::new(&project.entry),
+            Path::new(
+                &project.entry
+            ),
             project.dir.clone(),
             &mut source_map,
         )
@@ -138,13 +153,14 @@ fn analyze(source: &str) -> HIRProgram {
     let (
         name_resolver,
         global_symbols,
-    ) = resolver
-        .resolve()
-        .unwrap_or_else(|errors| {
-            panic!(
-                "name resolution failed:\n{errors:#?}"
-            );
-        });
+    ) =
+        resolver
+            .resolve()
+            .unwrap_or_else(|errors| {
+                panic!(
+                    "name resolution failed:\n{errors:#?}"
+                );
+            });
 
     Analyzer::new(
         &module_tree,
@@ -161,6 +177,7 @@ fn analyze(source: &str) -> HIRProgram {
     })
 }
 
+
 fn main_body(
     program: &HIRProgram,
 ) -> &[HIRStmt] {
@@ -168,7 +185,8 @@ fn main_body(
         .functions
         .iter()
         .find(|function| {
-            function.name == "main"
+            function.name
+                == "main"
         })
         .expect(
             "expected main function",
@@ -177,21 +195,28 @@ fn main_body(
         .stmts
 }
 
+
 #[test]
-fn string_literals_have_const_char_slice_type() {
-    let program = analyze(
-        r#"
+fn string_literals_have_const_u8_slice_type() {
+    let program =
+        analyze(
+            r#"
 fn main() -> void {
     let text = "Aé你🦀";
 }
 "#,
-    );
+        );
 
     let body =
-        main_body(&program);
+        main_body(
+            &program
+        );
 
     let HIRStmt::VarDecl {
-        init: Some(init),
+        init:
+            Some(
+                init
+            ),
         ..
     } = &body[0]
     else {
@@ -205,22 +230,27 @@ fn main() -> void {
         Type::CONST_REF(
             Box::new(
                 Type::SLICE(
-                    Box::new(Type::CHAR),
+                    Box::new(
+                        Type::U8
+                    ),
                 ),
             ),
         ),
     );
 
     match &init.kind {
-        HIRExprKind::StringLiteral(value) => {
+        HIRExprKind::StringLiteral(
+            value
+        ) => {
             assert_eq!(
                 value,
                 "Aé你🦀",
             );
 
             assert_eq!(
-                value.chars().count(),
-                4,
+                value.len(),
+                10,
+                "string literal length should be its UTF-8 byte length",
             );
         }
 
@@ -234,20 +264,64 @@ fn main() -> void {
 
 
 #[test]
+fn indexing_string_literal_produces_u8() {
+    let program =
+        analyze(
+            r#"
+fn main() -> void {
+    let text = "abc";
+    let byte = text[0];
+}
+"#,
+        );
+
+    let body =
+        main_body(
+            &program
+        );
+
+    let HIRStmt::VarDecl {
+        init:
+            Some(
+                init
+            ),
+        ..
+    } = &body[1]
+    else {
+        panic!(
+            "expected byte variable declaration"
+        );
+    };
+
+    assert_eq!(
+        init.ty,
+        Type::U8,
+        "indexing &[u8] string data must produce u8",
+    );
+}
+
+
+#[test]
 fn unicode_char_literal_has_char_type() {
-    let program = analyze(
-        r#"
+    let program =
+        analyze(
+            r#"
 fn main() -> void {
     let value: char = '🦀';
 }
 "#,
-    );
+        );
 
     let body =
-        main_body(&program);
+        main_body(
+            &program
+        );
 
     let HIRStmt::VarDecl {
-        init: Some(init),
+        init:
+            Some(
+                init
+            ),
         ..
     } = &body[0]
     else {
@@ -264,7 +338,9 @@ fn main() -> void {
     assert!(
         matches!(
             init.kind,
-            HIRExprKind::CharLiteral('🦀')
+            HIRExprKind::CharLiteral(
+                '🦀'
+            )
         ),
         "expected Unicode char literal, got {:?}",
         init.kind,

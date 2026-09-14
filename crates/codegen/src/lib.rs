@@ -29,7 +29,7 @@ pub struct CodeGen<'c> {
     pub module: Module<'c>,
     pub builder: Builder<'c>,
     pub string_constants: HashMap<String, PointerValue<'c>>, // utf8 byte strings used internally
-    pub char_string_constants: HashMap<String, PointerValue<'c>>, // hydra string literals
+    pub byte_string_constants: HashMap<String, PointerValue<'c>>, // hydra string literals
     
     // MIR-specific state:
     pub current_fn: Option<FunctionValue<'c>>,
@@ -64,7 +64,7 @@ impl<'c> CodeGen<'c> {
             module,
             builder: context.create_builder(),
             string_constants: HashMap::new(),
-            char_string_constants: HashMap::new(),
+            byte_string_constants: HashMap::new(),
             current_fn: None,
             blocks: HashMap::new(),
             locals: HashMap::new(),
@@ -445,30 +445,26 @@ impl<'c> CodeGen<'c> {
         ptr
     }
 
-    pub fn get_global_char_array_ptr(&mut self, value: &str) -> PointerValue<'c> {
-        if let Some(ptr) = self.char_string_constants.get(value) {
+    pub fn get_global_byte_array_ptr(&mut self, value: &str) -> PointerValue<'c> {
+        if let Some(ptr) = self.byte_string_constants.get(value) {
             return *ptr;
         }
 
-        let char_ty = self.context.i32_type();
+        let byte_ty = self.context.i8_type();
 
-        let chars: Vec<_> = value.chars().map(|ch| {
-            char_ty.const_int(
-                ch as u32 as u64,
-                false,
-            )
+        let bytes: Vec<_> = value.as_bytes().iter().map(|byte| {
+            byte_ty.const_int(*byte as u64, false)
         }).collect();
 
-        let array = char_ty.const_array(&chars);
-        let name = format!("str.chars.{}", self.char_string_constants.len());
+        let array = byte_ty.const_array(&bytes);
+        let name = format!("str.bytes.{}", self.byte_string_constants.len());
         let global = self.module.add_global(array.get_type(), None, &name);
 
         global.set_constant(true);
         global.set_initializer(&array);
 
         let ptr = global.as_pointer_value();
-
-        self.char_string_constants.insert(value.to_string(), ptr);
+        self.byte_string_constants.insert(value.to_string(), ptr);
 
         ptr
     }

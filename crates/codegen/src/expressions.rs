@@ -338,78 +338,46 @@ impl<'c> CodeGen<'c> {
     }
 
     fn compile_string_literal(&mut self, value: &str) -> Result<BasicValueEnum<'c>, String> {
-        let backing_ptr = self.get_global_char_array_ptr(value);
-
-        let index_ty = self.context.ptr_sized_int_type(
-            &self.target_data,
-            None,
-        );
-
+        let backing_ptr = self.get_global_byte_array_ptr(value);
+        let index_ty = self.context.ptr_sized_int_type(&self.target_data, None);
         let zero = index_ty.const_zero();
 
         //
-        // [char; N]* -> char*
+        // [u8; N]* -> u8*
         //
         let data_ptr = unsafe {
-            self.builder.build_gep(
-                backing_ptr,
-                &[zero, zero],
-                "str_data",
-            )
+            self.builder.build_gep(backing_ptr, &[zero, zero], "str_data")
         };
 
-        let char_ty = self.context.i32_type();
-
-        let char_ptr_ty = char_ty.ptr_type(
-            AddressSpace::default(),
-        );
-
-        let len_ty = self.context.ptr_sized_int_type(
-            &self.target_data,
-            None,
-        );
+        let byte_ty = self.context.i8_type();
+        let byte_ptr_ty = byte_ty.ptr_type(AddressSpace::default());
+        let len_ty = self.context.ptr_sized_int_type(&self.target_data, None);
 
         //
-        // IMPORTANT: this is the number of Unicode scalar
-        // values, NOT the UTF-8 byte length.
+        // a Hydra string literal is &[u8], so its
+        // length is its UTF-8 byte length.
         //
-        let len = value.chars().count();
-
-        let len_value = len_ty.const_int(
-            len as u64,
-            false,
-        );
-
-        let slice_ty = self.context.struct_type(
-            &[
-                char_ptr_ty.into(),
-                len_ty.into(),
-            ],
-            false,
-        );
+        let len = value.len();
+        let len_value = len_ty.const_int(len as u64, false);
+        let slice_ty = self.context.struct_type(&[byte_ptr_ty.into(), len_ty.into()], false);
 
         let mut slice = slice_ty.get_undef();
 
-        slice = self.builder
-            .build_insert_value(
-                slice,
-                data_ptr,
-                0,
-                "str_ptr",
-            )
-            .unwrap()
-            .into_struct_value();
+        slice = self.builder.build_insert_value(
+            slice,
+            data_ptr,
+            0,
+            "str_ptr",
+        ).unwrap().into_struct_value();
 
-        slice = self.builder
-            .build_insert_value(
-                slice,
-                len_value,
-                1,
-                "str_len",
-            )
-            .unwrap()
-            .into_struct_value();
+        slice = self.builder.build_insert_value(
+            slice,
+            len_value,
+            1,
+            "str_len",
+        ).unwrap().into_struct_value();
 
         Ok(slice.into())
+
     }
 }
