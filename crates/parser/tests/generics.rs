@@ -1,4 +1,4 @@
-use lexer::Lexer;
+use lexer::{Lexer, TokenType};
 
 use parser::{
     ast::{
@@ -92,6 +92,32 @@ fn first_call(
 
 
 fn assert_type_name(
+    ty: &Type,
+    expected: &str,
+) {
+    let Type::Path {
+        segments,
+        ..
+    } = ty
+    else {
+        panic!(
+            "expected path type, found {ty:#?}"
+        );
+    };
+
+    assert_eq!(
+        segments.len(),
+        1,
+    );
+
+    assert_eq!(
+        segments[0].lexeme,
+        expected,
+    );
+}
+
+
+fn assert_path(
     ty: &Type,
     expected: &str,
 ) {
@@ -274,5 +300,267 @@ fn main() -> void {
     assert_type_name(
         &function_args[0],
         "Allocator",
+    );
+}
+
+fn assert_nested_vec_box_i32(
+    ty: &Type,
+) {
+    let Type::Generic {
+        base,
+        args,
+        ..
+    } = ty
+    else {
+        panic!(
+            "expected Vec<Box<i32>>, found {ty:#?}"
+        );
+    };
+
+    assert_path(
+        base,
+        "Vec",
+    );
+
+    assert_eq!(
+        args.len(),
+        1,
+    );
+
+    let Type::Generic {
+        base,
+        args,
+        ..
+    } = &args[0]
+    else {
+        panic!(
+            "expected Box<i32>, found {:#?}",
+            args[0],
+        );
+    };
+
+    assert_path(
+        base,
+        "Box",
+    );
+
+    assert_eq!(
+        args.len(),
+        1,
+    );
+
+    assert_path(
+        &args[0],
+        "i32",
+    );
+}
+
+
+#[test]
+fn parses_nested_generic_type_without_whitespace() {
+    let items =
+        parse(
+            r#"
+fn consume(
+    value: Vec<Box<i32>>
+) -> void {
+}
+"#,
+        );
+
+    let Item::Function(
+        function
+    ) = &items[0]
+    else {
+        panic!(
+            "expected function"
+        );
+    };
+
+    assert_eq!(
+        function.parameters.len(),
+        1,
+    );
+
+    assert_nested_vec_box_i32(
+        &function.parameters[0].1,
+    );
+}
+
+
+#[test]
+fn parses_three_nested_generic_closers() {
+    let items =
+        parse(
+            r#"
+fn consume(
+    value: Outer<Middle<Inner<i32>>>
+) -> void {
+}
+"#,
+        );
+
+    let Item::Function(
+        function
+    ) = &items[0]
+    else {
+        panic!(
+            "expected function"
+        );
+    };
+
+    let Type::Generic {
+        base,
+        args,
+        ..
+    } = &function.parameters[0].1
+    else {
+        panic!(
+            "expected Outer<...>"
+        );
+    };
+
+    assert_path(
+        base,
+        "Outer",
+    );
+
+    let Type::Generic {
+        base,
+        args,
+        ..
+    } = &args[0]
+    else {
+        panic!(
+            "expected Middle<...>"
+        );
+    };
+
+    assert_path(
+        base,
+        "Middle",
+    );
+
+    let Type::Generic {
+        base,
+        args,
+        ..
+    } = &args[0]
+    else {
+        panic!(
+            "expected Inner<i32>"
+        );
+    };
+
+    assert_path(
+        base,
+        "Inner",
+    );
+
+    assert_path(
+        &args[0],
+        "i32",
+    );
+}
+
+
+#[test]
+fn parses_nested_generic_function_argument() {
+    let items =
+        parse(
+            r#"
+fn main() -> void {
+    create::<Vec<Box<i32>>>();
+}
+"#,
+        );
+
+    let Item::Function(
+        function
+    ) = &items[0]
+    else {
+        panic!(
+            "expected main function"
+        );
+    };
+
+    let body =
+        function
+            .body
+            .as_ref()
+            .expect(
+                "main should have a body"
+            );
+
+    let Stmt::Expr(
+        expr
+    ) = &body.statements[0]
+    else {
+        panic!(
+            "expected expression statement"
+        );
+    };
+
+    let Expr::FunctionCall {
+        generic_args,
+        ..
+    } = expr.as_ref()
+    else {
+        panic!(
+            "expected generic function call"
+        );
+    };
+
+    assert_eq!(
+        generic_args.len(),
+        1,
+    );
+
+    assert_nested_vec_box_i32(
+        &generic_args[0],
+    );
+}
+
+#[test]
+fn nested_generics_can_touch_assignment_operator() {
+    let items =
+        parse(
+            r#"
+fn main() -> void {
+    const value: Vec<Box<i32>>=create();
+}
+"#,
+        );
+
+    let Item::Function(
+        function
+    ) = &items[0]
+    else {
+        panic!(
+            "expected main function"
+        );
+    };
+
+    let body =
+        function
+            .body
+            .as_ref()
+            .expect(
+                "main should have a body"
+            );
+
+    let Stmt::VariableDecl {
+        type_annotation:
+            Some(ty),
+        ..
+    } = &body.statements[0]
+    else {
+        panic!(
+            "expected typed variable declaration"
+        );
+    };
+
+    assert_nested_vec_box_i32(
+        ty,
     );
 }
