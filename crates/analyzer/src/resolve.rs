@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use parser::{ast::*, module::SourceMap};
-use parser::module::ModuleTree;
+use parser::module::{ModuleTree, ResolvedState};
 use ir::context::{HIRContext, DefID, DefKind, SymbolInfo};
 use errors::error::{HydraError, Span};
 
@@ -71,11 +71,23 @@ impl<'ctx> Resolver<'ctx> {
     pub fn resolve(mut self) -> Result<ResolutionSymbols, Vec<HydraError>> {
         self.harvest_globals();
 
+        //
+        // actual declarations have DefIDs now, so module-level re-exports
+        // can simply become alternate paths to those same definitions.
+        //
+        self.harvest_reexports();
 
-        if !self.errors.is_empty() { return Err(self.errors); }
+        if !self.errors.is_empty() { 
+            return Err(self.errors); 
+        }
 
         self.resolve_bodies();
-        if !self.errors.is_empty() { Err(self.errors) } else { Ok((self.name_resolver, self.global_symbols)) }
+
+        if !self.errors.is_empty() { 
+            Err(self.errors) 
+        } else { 
+            Ok((self.name_resolver, self.global_symbols)) 
+        }
     }
 
     fn harvest_globals(&mut self) {
@@ -160,6 +172,54 @@ impl<'ctx> Resolver<'ctx> {
 
                     _ => {} 
                 }
+            }
+        }
+    }
+
+    fn harvest_reexports(&mut self) {
+        //
+        // re-exports may themselves target re-exports:
+        //
+        //     a/mod.hydra -> include a::b::Thing;
+        //     a/b/mod.hydra -> include a::b::impl_::Thing;
+        //
+        // build aliases to a fixed point
+        //
+        loop {
+            let mut changed = false;
+
+            for import in &self.program.worklist {
+                if !import.is_reexport {
+                    continue;
+                }
+
+                if !matches!(&import.state, ResolvedState::RESOLVED(_)) {
+                    continue;
+                }
+
+                let Some(target_def) = self.global_symbols.get(&import.path).copied() else {
+                    continue;
+                };
+
+                let Some(export_name) = import.alias.clone().or_else(|| import.path.last().cloned()) else { 
+                    continue;
+                };
+
+                let mut export_path = import.in_module.clone();
+
+                export_path.push(export_name);
+
+                if self.global_symbols.contains_key(&export_path) {
+                    continue;
+                }
+
+                self.global_symbols.insert(export_path, target_def);
+
+                changed = true;
+            }
+
+            if !changed {
+                break;
             }
         }
     }

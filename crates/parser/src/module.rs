@@ -21,6 +21,56 @@ pub struct ModuleTree {
     stdlib_root: PathBuf,
 }
 
+
+pub struct ModuleNode {
+    pub name: String,
+    pub path: Vec<String>,
+    pub file: Option<PathBuf>,
+    pub children: HashMap<String, ModuleNode>,
+    pub items: HashMap<String, ItemHeader>,
+}
+
+#[derive(Clone)]
+pub struct ItemHeader {
+    pub name: String,
+    pub kind: ItemKind,
+    pub is_pub: bool,
+    pub id: NodeID,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ItemKind {
+    FUNCTION,
+    STRUCT,
+    TRAIT,
+    EXTENSION,
+}
+
+pub struct UnresolvedUse {
+    pub in_module: Vec<String>,
+    pub path: Vec<String>,
+    pub alias: Option<String>,
+    pub is_reexport: bool,
+    pub state: ResolvedState,
+}
+
+pub enum ResolvedState {
+    UNRESOLVED,
+    RESOLVED(NodeID),
+    ERROR(String),
+}
+
+enum ResolveStatus {
+    DefinitelyMissing(String),
+    BlockedOn(Vec<String>),
+}
+
+pub struct SourceMap {
+    files: HashMap<PathBuf, String>,
+    source_ids: HashMap<PathBuf, u32>,
+    next_source_id: u32,
+}
+
 impl ModuleTree {
 
     pub fn build(entry: &Path, stdlib_root: PathBuf, source_map: &mut SourceMap)
@@ -82,16 +132,13 @@ impl ModuleTree {
         for segment in module_path {
             accumulated_path.push(segment.clone());
 
-            current = current
-                .children
-                .entry(segment.clone())
-                .or_insert_with(|| ModuleNode {
-                    name: segment.clone(),
-                    path: accumulated_path.clone(),
-                    file: None,
-                    children: HashMap::new(),
-                    items: HashMap::new(),
-                });
+            current = current.children.entry(segment.clone()).or_insert_with(|| ModuleNode {
+                name: segment.clone(),
+                path: accumulated_path.clone(),
+                file: None,
+                children: HashMap::new(),
+                items: HashMap::new(),
+            });
         }
 
         current
@@ -109,10 +156,7 @@ impl ModuleTree {
             let work_len = self.worklist.len();
 
             for i in 0..work_len {
-                if !matches!(
-                    self.worklist[i].state,
-                    ResolvedState::UNRESOLVED
-                ) {
+                if !matches!(self.worklist[i].state, ResolvedState::UNRESOLVED) {
                     continue;
                 }
 
@@ -121,8 +165,7 @@ impl ModuleTree {
                 // it might already be resolvable from modules that have
                 // previously been loaded.
                 if let Ok(node_id) = self.try_resolve_path(&path) {
-                    self.worklist[i].state =
-                        ResolvedState::RESOLVED(node_id);
+                    self.finish_import(i, node_id)?;
 
                     progress = true;
                     continue;
@@ -130,10 +173,7 @@ impl ModuleTree {
 
                 // not currently resolvable: try to pull the corresponding
                 // module source file into the compilation.
-                let loaded = self.ensure_import_loaded(
-                    &path,
-                    source_map,
-                )?;
+                let loaded = self.ensure_import_loaded(&path, source_map)?;
 
                 if loaded {
                     progress = true;
@@ -142,8 +182,7 @@ impl ModuleTree {
                 // loading the file populates ModuleNode::children/items,
                 // so retry the resolution immediately.
                 if let Ok(node_id) = self.try_resolve_path(&path) {
-                    self.worklist[i].state =
-                        ResolvedState::RESOLVED(node_id);
+                    self.finish_import(i, node_id)?;
 
                     progress = true;
                 }
@@ -155,10 +194,7 @@ impl ModuleTree {
         let mut errors = Vec::new();
 
         for i in 0..self.worklist.len() {
-            if !matches!(
-                self.worklist[i].state,
-                ResolvedState::UNRESOLVED
-            ) {
+            if !matches!(self.worklist[i].state, ResolvedState::UNRESOLVED) {
                 continue;
             }
 
@@ -166,13 +202,11 @@ impl ModuleTree {
 
             match self.try_resolve_path(&path) {
                 Ok(node_id) => {
-                    self.worklist[i].state =
-                        ResolvedState::RESOLVED(node_id);
+                    self.finish_import(i, node_id)?;
                 }
 
                 Err(ResolveStatus::DefinitelyMissing(msg)) => {
-                    self.worklist[i].state =
-                        ResolvedState::ERROR(msg.clone());
+                    self.worklist[i].state = ResolvedState::ERROR(msg.clone());
 
                     errors.push(HydraError::new(
                         "M002",
@@ -245,8 +279,9 @@ impl ModuleTree {
         // 3. is it an unresolved re-export?
         // if `current_node` has `pub include` statements that are UNRESOLVED, 
         // the item *might* exist, we just don't know yet.
-        let has_pending_reexports = self.worklist.iter().any(|u| {
-            u.in_module == current_node.path && u.is_pub && matches!(u.state, ResolvedState::UNRESOLVED)
+        let has_pending_reexports = self.worklist.iter().any(|use_| {
+            use_.in_module == current_node.path &&
+            use_.is_reexport && matches!(use_.state, ResolvedState::UNRESOLVED)
         });
 
         if has_pending_reexports {
@@ -305,6 +340,8 @@ impl ModuleTree {
             }
         };
 
+        let reexport_includes = file.file_name().and_then(|name| name.to_str()) == Some("mod.hydra");
+
         let mut headers = HashMap::new();
         let mut imports = Vec::new();
 
@@ -348,21 +385,39 @@ impl ModuleTree {
 
                 Item::Include(decl) => {
                     if let Type::Path { segments, .. } = &decl.path {
-                        let path = segments
-                            .iter()
-                            .map(|segment| segment.lexeme.clone())
-                            .collect();
+                        let base_path: Vec<String> = segments.iter().map(|s| s.lexeme.clone()).collect();
 
-                        imports.push(UnresolvedUse {
-                            in_module: current_module.to_vec(),
-                            path,
-                            alias: decl
-                                .alias
-                                .as_ref()
-                                .map(|token| token.lexeme.clone()),
-                            is_pub: false,
-                            state: ResolvedState::UNRESOLVED,
-                        });
+                        //
+                        // include foo::bar::{A, B};
+                        //
+                        // represent each imported item individually in the dependency
+                        // graph
+                        //
+                        // this also means a mod.hydra can re-export selective
+                        // imports correctly
+                        //
+                        if let Some(symbols) = &decl.symbols {
+                            for symbol in symbols {
+                                let mut path = base_path.clone();
+                                path.push(symbol.lexeme.clone());
+
+                                imports.push(UnresolvedUse {
+                                    in_module: current_module.to_vec(),
+                                    path,
+                                    alias: None,
+                                    is_reexport: reexport_includes,
+                                    state: ResolvedState::UNRESOLVED
+                                });
+                            }
+                        } else {
+                            imports.push(UnresolvedUse {
+                                in_module: current_module.to_vec(),
+                                path: base_path,
+                                alias: decl.alias.as_ref().map(|t| t.lexeme.clone()),
+                                is_reexport: reexport_includes,
+                                state: ResolvedState::UNRESOLVED
+                            })
+                        }
                     }
                 }
 
@@ -401,12 +456,7 @@ impl ModuleTree {
             return Ok(false);
         }
 
-        let (ast, headers, imports) =
-        ModuleTree::parse_file(
-            &file,
-            &module_path,
-            source_map,
-        )?;
+        let (ast, headers, imports) = ModuleTree::parse_file(&file, &module_path, source_map)?;
 
         {
             let node = self.module_node_mut(&module_path);
@@ -416,11 +466,7 @@ impl ModuleTree {
         }
 
         self.worklist.extend(imports);
-
-        self.parsed_files.insert(
-            file,
-            (module_path, ast),
-        );
+        self.parsed_files.insert(file, (module_path, ast));
 
         Ok(true)
     }
@@ -433,36 +479,63 @@ impl ModuleTree {
         }
 
         // decide which physical source tree owns this logical path.
-        let source_root = self
-            .source_root_for(path)
-            .to_path_buf();
+        let source_root = self.source_root_for(path).to_path_buf();
 
-        // An import path may refer either to a module:
         //
-        //     include math::ops;
+        // an import may refer to either:
         //
-        // or directly to an item:
+        //     foo/bar.hydra
         //
-        //     include math::ops::multiply;
+        // or:
         //
-        // Search for the deepest module prefix.
+        //     foo/bar/mod.hydra
+        //
+        // both represent the logical module `foo::bar`
+        //
+        // as before, search for the deepest module prefix
+        //
         for prefix_len in (1..=path.len()).rev() {
             let module_path = &path[..prefix_len];
-
-            let mut candidate = source_root.clone();
+            let mut module_stem = source_root.clone();
 
             for segment in module_path {
-                candidate.push(segment);
+                module_stem.push(segment);
             }
 
-            candidate.set_extension("hydra");
+            let mut file_candidate = module_stem.clone();
+            file_candidate.set_extension("hydra");
 
-            if candidate.is_file() {
-                return self.load_module_file(
-                    &candidate,
-                    module_path.to_vec(),
-                    source_map,
-                );
+            let directory_candidate = module_stem.join("mod.hydra");
+
+            let has_file = file_candidate.is_file();
+            let has_directory_module = directory_candidate.is_file();
+
+            if has_file && has_directory_module {
+                return Err(vec![HydraError::new(
+                    "M003",
+                    format!(
+                        "module `{}` is defined by both `{}` and `{}`",
+                        module_path.join("::"),
+                        file_candidate.display(),
+                        directory_candidate.display(),
+                    ),
+                    Span::default(),
+                )]);
+            }
+
+            let candidate = if has_file {
+                Some(file_candidate)
+            } else if has_directory_module {
+                Some(directory_candidate)
+            } else {
+                None
+            };
+
+            let Some(candidate) = candidate else { continue; };
+
+            let loaded = self.load_module_file(&candidate, module_path.to_vec(), source_map)?;
+            if loaded {
+                return Ok(true)
             }
         }
 
@@ -492,54 +565,62 @@ impl ModuleTree {
             }
         }
     }
-}
 
-pub struct ModuleNode {
-    pub name: String,
-    pub path: Vec<String>,
-    pub file: Option<PathBuf>,
-    pub children: HashMap<String, ModuleNode>,
-    pub items: HashMap<String, ItemHeader>,
-}
+    fn item_header(&self, path: &[String]) -> Option<&ItemHeader> {
+        if path.is_empty() {
+            return None;
+        }
 
-pub struct ItemHeader {
-    pub name: String,
-    pub kind: ItemKind,
-    pub is_pub: bool,
-    pub id: NodeID,
-}
+        let mut current = &self.root;
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum ItemKind {
-    FUNCTION,
-    STRUCT,
-    TRAIT,
-    EXTENSION,
-}
+        for segment in &path[..path.len() - 1] {
+            current = current.children.get(segment)?;
+        }
 
-pub struct UnresolvedUse {
-    pub in_module: Vec<String>,
-    pub path: Vec<String>,
-    pub alias: Option<String>,
-    pub is_pub: bool,
-    pub state: ResolvedState,
-}
+        current.items.get(path.last()?)
+    }
 
-pub enum ResolvedState {
-    UNRESOLVED,
-    RESOLVED(NodeID),
-    ERROR(String),
-}
+    fn finish_import(&mut self, index: usize, node_id: NodeID) -> Result<(), Vec<HydraError>> {
+        let is_reexport = self.worklist[index].is_reexport;
+        let target_path = self.worklist[index].path.clone();
 
-enum ResolveStatus {
-    DefinitelyMissing(String),
-    BlockedOn(Vec<String>),
-}
+        let in_module = self.worklist[index].in_module.clone();
+        let export_name = self.worklist[index].alias.clone().or_else(|| target_path.last().cloned());
 
-pub struct SourceMap {
-    files: HashMap<PathBuf, String>,
-    source_ids: HashMap<PathBuf, u32>,
-    next_source_id: u32,
+        if is_reexport {
+            if let (Some(export_name), Some(mut header)) = (export_name, self.item_header(&target_path).cloned()) 
+            {
+                header.name = export_name.clone();
+
+                //
+                // the item is visible through the module facade even though
+                // its canonical definition path remains unchanged.
+                //
+                header.is_pub = true;
+                let module = self.module_node_mut(&in_module);
+
+                if let Some(existing) = module.items.get(&export_name) {
+                    if existing.id != header.id {
+                        return Err(vec![HydraError::new(
+                            "M003",
+                            format!(
+                                "module `{}` already defines `{}`",
+                                in_module.join("::"),
+                                export_name,
+                            ),
+                            Span::default(),
+                        )]);
+                    }
+                } else {
+                    module.items.insert(export_name, header);
+                }
+            }
+        }
+
+        self.worklist[index].state = ResolvedState::RESOLVED(node_id);
+
+        Ok(())
+    }
 }
 
 impl SourceMap {
