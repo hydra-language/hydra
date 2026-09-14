@@ -1,4 +1,4 @@
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use errors::error::{self, HydraError};
 use ir::context::HIRContext;
@@ -273,63 +273,202 @@ impl<'a> BorrowChecker<'a> {
     }
 
     fn enforce_moves(&self, errors: &mut Vec<HydraError>) {
-        for block in &self.mir.basic_blocks {
-            let mut moved: HashSet<LocalID> = HashSet::new();
+        let moved_in = self.compute_moved_in();
+
+        for (index, block) in self.mir.basic_blocks.iter().enumerate() {
+            let Some(mut moved) = moved_in[index].clone() else {
+                continue;
+            };
 
             for stmt in &block.statements {
-                match &stmt.kind {
-                    StatementKind::Assign(place, rval) => {
-                        // Check rvalue for moves of already-moved locals
-                        self.check_rvalue_moves(rval, &moved, errors, stmt.span);
+                if let StatementKind::Assign(_, rval) = &stmt.kind {
+                    self.check_rvalue_moves(rval, &moved, errors, stmt.span);
+                }
 
-                        // If this is a direct assignment (not a projection),
-                        // it reinitializes the local — clear its moved status
-                        if place.projection.is_empty() {
-                            moved.remove(&place.local);
+                self.apply_statement_move_state(stmt, &mut moved);
+            }
+
+            self.check_terminator_moves(&block.terminator, &mut moved, errors);
+        }
+    }
+
+    fn compute_moved_in(&self) -> Vec<Option<HashSet<LocalID>>> {
+        let mut incoming = vec![None; self.mir.basic_blocks.len()];
+
+        if self.mir.basic_blocks.is_empty() {
+            return incoming;
+        }
+
+        let mut worklist = VecDeque::new();
+
+        incoming[0] = Some(HashSet::new());
+        worklist.push_back(BasicBlockID(0));
+
+        while let Some(block_id) = worklist.pop_front() {
+            let Some(mut moved) = incoming[block_id.0].clone() else {
+                continue;
+            };
+
+            let block = &self.mir.basic_blocks[block_id.0];
+
+            for stmt in &block.statements {
+                self.apply_statement_move_state(stmt, &mut moved);
+            }
+
+            self.apply_terminator_move_state(&block.terminator, &mut moved);
+
+            for successor in Self::successors(&block.terminator) {
+                let changed = match &incoming[successor.0] {
+                    Some(existing) => {
+                        let mut merged = existing.clone();
+                        merged.extend(moved.iter().copied());
+
+                        if merged != *existing {
+                            incoming[successor.0] = Some(merged);
+                            true
+                        } else {
+                            false
                         }
+                    }
 
-                        // Record any moves in the rvalue
-                        self.record_rvalue_moves(rval, &mut moved);
+                    None => {
+                        incoming[successor.0] = Some(moved.clone());
+                        true
                     }
-                    StatementKind::Drop(place) => {
-                        moved.insert(place.local);
-                    }
+                };
+
+                if changed {
+                    worklist.push_back(successor);
+                }
+            }
+        }
+
+        incoming
+    }
+
+    fn apply_statement_move_state(&self, stmt: &Statement, moved: &mut HashSet<LocalID>) {
+        match &stmt.kind {
+            StatementKind::Assign(place, rval) => {
+                // RHS is evaluated before the destination is written.
+                self.record_rvalue_moves(rval, moved);
+
+                // Assigning directly to a local reinitializes it.
+                if place.projection.is_empty() {
+                    moved.remove(&place.local);
                 }
             }
 
-            // Check terminator args for use-after-move
-            match &block.terminator {
-                Terminator::Call { args, .. } | Terminator::BuiltinCall { args, .. } => {
-                    for arg in args {
-                        if let Operand::Move(place) = arg {
-                            if moved.contains(&place.local) {
-                                let (name, span) = self.resolve_local(place.local);
-                                errors.push(self.error(
-                                    "BC003",
-                                    format!("use of moved value `{}`", name),
-                                    span,
-                                ));
-                            }
-                            moved.insert(place.local);
-                        }
-                        if let Operand::Copy(place) = arg {
-                            if moved.contains(&place.local) {
-                                let (name, span) = self.resolve_local(place.local);
-                                errors.push(self.error(
-                                    "BC003",
-                                    format!("use of moved value `{}`", name),
-                                    span,
-                                ));
-                            }
-                        }
-                    }
+            StatementKind::Drop(place) => {
+                moved.insert(place.local);
+            }
+        }
+    }
+
+    fn apply_terminator_move_state(&self, terminator: &Terminator, moved: &mut HashSet<LocalID>) {
+        match terminator {
+            Terminator::SwitchInt { discriminant, .. } => {
+                Self::record_operand_move(discriminant, moved);
+            }
+
+            Terminator::Call { args, destination, .. } => {
+                for arg in args {
+                    Self::record_operand_move(arg, moved);
                 }
-                Terminator::Return => {
-                    if moved.contains(&LocalID(0)) {
-                        errors.push(self.error("BC003", "use of moved return value", None));
-                    }
+
+                // On the success edge, the call has initialized its destination.
+                if destination.projection.is_empty() {
+                    moved.remove(&destination.local);
                 }
-                _ => {}
+            }
+
+            Terminator::BuiltinCall { args, .. } => {
+                for arg in args {
+                    Self::record_operand_move(arg, moved);
+                }
+            }
+
+            Terminator::Goto { .. } | Terminator::Return | Terminator::Unreachable => {}
+        }
+    }
+
+    fn check_terminator_moves(&self, terminator: &Terminator, moved: &mut HashSet<LocalID>, errors: &mut Vec<HydraError>) {
+        match terminator {
+            Terminator::SwitchInt { discriminant, .. } => {
+                self.check_terminator_operand_move(discriminant, moved, errors);
+                Self::record_operand_move(discriminant, moved);
+            }
+
+            Terminator::Call { args, destination, .. } => {
+                for arg in args {
+                    self.check_terminator_operand_move(arg, moved, errors);
+                    Self::record_operand_move(arg, moved);
+                }
+
+                if destination.projection.is_empty() {
+                    moved.remove(&destination.local);
+                }
+            }
+
+            Terminator::BuiltinCall { args, .. } => {
+                for arg in args {
+                    self.check_terminator_operand_move(arg, moved, errors);
+                    Self::record_operand_move(arg, moved);
+                }
+            }
+
+            Terminator::Return => {
+                if moved.contains(&LocalID(0)) {
+                    errors.push(self.error(
+                        "BC003",
+                        "use of moved return value",
+                        None,
+                    ));
+                }
+            }
+
+            Terminator::Goto { .. } | Terminator::Unreachable => {}
+        }
+    }
+
+    fn check_terminator_operand_move(&self, operand: &Operand, moved: &HashSet<LocalID>, errors: &mut Vec<HydraError>) {
+        let (Operand::Copy(place) | Operand::Move(place)) = operand else {
+            return;
+        };
+
+        if moved.contains(&place.local) {
+            let (name, span) = self.resolve_local(place.local);
+
+            errors.push(self.error(
+                "BC003",
+                format!("use of moved value `{}`", name),
+                span,
+            ));
+        }
+    }
+
+    fn record_operand_move(operand: &Operand, moved: &mut HashSet<LocalID>) {
+        if let Operand::Move(place) = operand {
+            moved.insert(place.local);
+        }
+    }
+
+    fn successors(terminator: &Terminator) -> Vec<BasicBlockID> {
+        match terminator {
+            Terminator::Goto { target } => {
+                vec![*target]
+            }
+
+            Terminator::SwitchInt { true_target, false_target, .. } => {
+                vec![*true_target, *false_target]
+            }
+
+            Terminator::Call { target, .. } | Terminator::BuiltinCall { target, .. } => 
+            {
+                vec![*target]
+            }
+
+            Terminator::Return | Terminator::Unreachable => {
+                vec![]
             }
         }
     }
