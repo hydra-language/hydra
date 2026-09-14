@@ -571,7 +571,11 @@ impl Parser {
                     let mut args = Vec::new();
                     loop {
                         args.push(self.parse_type()?);
-                        if self.match_token(TokenType::RightAngle) { break; }
+
+                        if self.match_generic_right_angle() { 
+                            break; 
+                        }
+
                         self.consume(TokenType::Comma, "expected ',' between generic types")?;
                     }
 
@@ -601,7 +605,10 @@ impl Parser {
                 let name = self.consume_identifier("expected generic parameter name")?.clone();
                 params.push(GenericParam { id: self.next_node_id(), name });
                 
-                if self.match_token(TokenType::RightAngle) { break; }
+                if self.match_generic_right_angle() {
+                    break; 
+                }
+
                 self.consume(TokenType::Comma, "expected comma between generic parameters")?;
             }
         }
@@ -899,7 +906,7 @@ impl Parser {
                     loop {
                         parsed_generic_args.push(self.parse_type()?);
 
-                        if self.match_token(TokenType::RightAngle) {
+                        if self.match_generic_right_angle() {
                             break;
                         }
 
@@ -1278,6 +1285,84 @@ impl Parser {
         } else {
             false
         }
+    }
+
+    fn match_generic_right_angle(&mut self) -> bool {
+        //
+        // ordinary:
+        //
+        //     Foo<T>
+        //
+        if self.match_token(TokenType::RightAngle) {
+            return true;
+        }
+
+        //
+        // nested generics:
+        //
+        //     Foo<Bar<T>>
+        //              ^^
+        //
+        // The lexer correctly tokenizes `>>` as a shift token.
+        // while parsing a generic list, however, the first `>` closes
+        // the current generic and the second must remain available to
+        // the enclosing generic parser
+        //
+        if self.check(TokenType::DoubleRightAngle) {
+            let token = &mut self.tokens[self.current];
+
+            token.token_type = TokenType::RightAngle;
+            token.lexeme = ">".to_string();
+
+            token.span.column += 1;
+            token.span.length = 1;
+
+            return true;
+        }
+
+        //
+        // also handle:
+        //
+        //     Foo<T>=value
+        //
+        // which the lexer sees as `>=`
+        //
+        if self.check(TokenType::GreaterEqual) {
+            let token = &mut self.tokens[self.current];
+
+            token.token_type = TokenType::Equal;
+            token.lexeme = "=".to_string();
+
+            token.span.column += 1;
+            token.span.length = 1;
+
+            return true;
+        }
+
+        //
+        // and:
+        //
+        //     Foo<Bar<T>>=value
+        //
+        // which the lexer sees as `>>=`.
+        //
+        // consume one `>` now and leave `>=` for the enclosing
+        // generic parser. The enclosing parser will consume its `>`
+        // and leave `=`
+        //
+        if self.check(TokenType::DoubleRightEqual) {
+            let token = &mut self.tokens[self.current];
+
+            token.token_type = TokenType::GreaterEqual;
+            token.lexeme = ">=".to_string();
+
+            token.span.column += 1;
+            token.span.length = 2;
+
+            return true;
+        }
+
+        false
     }
 
     fn consume(&mut self, token: TokenType, expected: &str) -> Result<&Token, HydraError> {

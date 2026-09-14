@@ -111,6 +111,41 @@ impl<'a> MIRBuilder<'a> {
         }
     }
 
+    fn lower_value_block_into(&mut self, block: &HIRBlock, destination: Place, merge_bb: BasicBlockID) {
+        let Some((last, prefix)) = block.stmts.split_last() else {
+            panic!("ICE: value-producing block has no value");
+        };
+
+        for stmt in prefix {
+            self.lower_stmt(stmt);
+        }
+
+        let HIRStmt::Expr(value_expr) = last else {
+            panic!("ICE: value-producing block does not end in an expression");
+        };
+
+        let value = self.lower_expr_to_operand(value_expr);
+
+        //
+        // the expression itself may have terminated control flow.
+        // only assign/goto when the current block still falls through.
+        //
+        if matches!(self.basic_blocks[self.current_block.0].terminator, Terminator::Unreachable) {
+            self.push_statement(Statement {
+                kind: StatementKind::Assign(
+                    destination,
+                    Rvalue::Use(value)
+                ),
+                span: value_expr.span,
+            });
+
+            self.terminate_block(Terminator::Goto {
+                target:
+                merge_bb,
+            });
+        }
+    }
+
     fn lower_stmt(&mut self, stmt: &HIRStmt) {
         match stmt {
             HIRStmt::VarDecl { def_id, ty, init, span: decl_span, .. } => {
@@ -120,12 +155,12 @@ impl<'a> MIRBuilder<'a> {
                 );
 
                 if is_const {
-                    let is_scalar = match init.as_ref().map(|e| &e.ty) {
+                    let is_scalar = matches!(
+                        init.as_ref().map(|e| &e.ty),
                         Some(Type::I8)  | Some(Type::I16) | Some(Type::I32) | Some(Type::I64) |
                         Some(Type::U8)  | Some(Type::U16) | Some(Type::U32) | Some(Type::U64) |
-                        Some(Type::F32) | Some(Type::F64) | Some(Type::BOOL) | Some(Type::CHAR) => true,
-                        _ => false,
-                    };
+                        Some(Type::F32) | Some(Type::F64) | Some(Type::BOOL) | Some(Type::CHAR)
+                    );
 
                     if is_scalar {
                         if let Some(expr) = init {
@@ -411,26 +446,76 @@ impl<'a> MIRBuilder<'a> {
                     false_target: if else_block.is_some() { else_bb } else { merge_bb },
                 });
 
-                // Build THEN block
-                self.current_block = then_bb;
-                self.lower_block(then_block);
-                if matches!(self.basic_blocks[self.current_block.0].terminator, Terminator::Unreachable) {
-                    self.terminate_block(Terminator::Goto { target: merge_bb });
-                }
+                //
+                // statement-style if.
+                //
+                if expr.ty == Type::VOID {
+                    self.current_block = then_bb;
+                    self.lower_block(then_block);
 
-                // Build ELSE block (if it exists)
-                if let Some(els) = else_block {
-                    self.current_block = else_bb;
-                    self.lower_block(els);
                     if matches!(self.basic_blocks[self.current_block.0].terminator, Terminator::Unreachable) {
-                        self.terminate_block(Terminator::Goto { target: merge_bb });
+                        self.terminate_block(Terminator::Goto {
+                            target:
+                            merge_bb,
+                        });
+                    }
+
+                    if let Some(else_block) = else_block {
+                        self.current_block = else_bb;
+                        self.lower_block(else_block);
+
+                        if matches!(self.basic_blocks[self.current_block.0].terminator, Terminator::Unreachable) {
+                            self.terminate_block(Terminator::Goto {
+                                target:
+                                merge_bb,
+                            });
+                        }
+                    }
+
+                    self.current_block = merge_bb;
+
+                    let unit_local = self.new_local(Type::VOID, false, None);
+
+                    Operand::Copy(Place {
+                        local: unit_local,
+                        projection: vec![],
+                    })
+                } else {
+                    //
+                    // value-producing if:
+                    //
+                    //     let result;
+                    //
+                    //     if cond {
+                    //         result = then_value;
+                    //     } else {
+                    //         result = else_value;
+                    //     }
+                    //
+                    //     result
+                    //
+                    let result_local = self.new_local(expr.ty.clone(), false, None);
+
+                    let result_place = Place {
+                        local: result_local,
+                        projection: vec![],
+                    };
+
+                    self.current_block = then_bb;
+                    self.lower_value_block_into(then_block, result_place.clone(), merge_bb);
+
+                    let else_block = else_block.as_ref().expect("ICE: value-producing if has no else block");
+
+                    self.current_block = else_bb;
+                    self.lower_value_block_into(else_block, result_place.clone(), merge_bb);
+                    self.current_block = merge_bb;
+
+                    if self.is_copy_type(&expr.ty) {
+                        Operand::Copy(result_place)
+                    } else {
+                        Operand::Move(result_place)
                     }
                 }
-
-                self.current_block = merge_bb;
-
-                let unit_local = self.new_local(Type::VOID, false, None);
-                Operand::Copy(Place { local: unit_local, projection: vec![] })
             }
 
             HIRExprKind::Loop(block) => {

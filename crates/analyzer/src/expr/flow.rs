@@ -6,23 +6,93 @@ use ir::context::{DefKind, SymbolInfo};
 use ir::hir::{HIRBinOp, HIRBlock, HIRExpr, HIRExprKind, HIRStmt, HIRUnaryOp};
 use ir::types::Type as IRType;
 
-use parser::ast::Expr as ASTExpr;
+use parser::ast::{Expr as ASTExpr, Stmt as ASTStmt};
 
 impl<'ctx> Analyzer<'ctx> {
 
-    pub(crate) fn lower_control_flow_expr(&mut self, node: &ASTExpr, _expected: Option<&IRType>, span: Span)
+    pub(crate) fn lower_control_flow_expr(&mut self, node: &ASTExpr, expected: Option<&IRType>, span: Span)
         -> Result<HIRExpr, HydraError> 
     {
         match node {
 
             ASTExpr::If { condition, then_branch, else_branch, .. } => {
-                let cond = self.lower_expr(condition)?;
-                let then_block = self.lower_block(then_branch)?;
-                let else_block = if let Some(eb) = else_branch { Some(Box::new(self.lower_block(eb)?)) } else { None };
+                let cond = self.lower_expr_with_type(condition, Some(&IRType::BOOL))?;
+
+                if !self.check_type_compatibility(&IRType::BOOL, &cond.ty) {
+                    return Err(self.error("S001", format!("if condition expected bool, found {}", cond.ty), cond.span));
+                }
+
+                //
+                // without an expected type, we can still infer an
+                // if-expression whenever both branches visibly end in
+                // expression statements
+                //
+                let branches_produce_values = if let Some(else_branch) = else_branch {
+                    matches!(then_branch.statements.last(), Some(ASTStmt::Expr(_))) &&
+                    matches!(else_branch.statements.last(), Some(ASTStmt::Expr(_)))
+                } else {
+                    false
+                };
+
+                let is_value_if = expected.is_some() || branches_produce_values;
+
+                //
+                // ordinary statement-style if
+                //
+                if !is_value_if {
+                    let then_block = self.lower_block(then_branch)?;
+                    let else_block = if let Some(else_branch) = else_branch {
+                        Some(Box::new(self.lower_block(else_branch)?))
+                    } else {
+                        None
+                    };
+
+                    return Ok(HIRExpr {
+                        kind: HIRExprKind::If {
+                            cond: Box::new(cond),
+                            then_block: Box::new(then_block),
+                            else_block,
+                        },
+                        ty: IRType::VOID,
+                        span
+                    });
+                }
+
+                //
+                // a value-producing if must have an else branch because
+                // every control-flow path must produce the result
+                //
+                let else_branch = else_branch.as_ref()
+                    .ok_or_else(|| self.error("S001", "if expression requires an else branch", span))?;
+
+                //
+                // if an outer context supplies the expected type, use it
+                // for both branches
+                //
+                // otherwise infer from the first branch and use that to
+                // constrain/coerce the second branch
+                //
+                let (then_block, then_ty) = self.lower_value_block(then_branch, expected)?;
+                let result_ty = expected.cloned().unwrap_or_else(|| then_ty.clone());
+
+                let (else_block, else_ty) = self.lower_value_block(else_branch, Some(&result_ty))?;
+
+                if !self.check_type_compatibility(&result_ty, &else_ty) {
+                    return Err(self.error(
+                        "S001",
+                        format!("if branches have incompatible types: {} and {}", result_ty, else_ty),
+                        span,
+                    ));
+                }
+        
 
                 Ok(HIRExpr {
-                    kind: HIRExprKind::If { cond: Box::new(cond), then_block: Box::new(then_block), else_block },
-                    ty: IRType::VOID,
+                    kind: HIRExprKind::If { 
+                        cond: Box::new(cond), 
+                        then_block: Box::new(then_block), 
+                        else_block: Some(Box::new(else_block)),
+                    },
+                    ty: result_ty,
                     span
                 })
             },
@@ -624,5 +694,50 @@ impl<'ctx> Analyzer<'ctx> {
             
             _ => unreachable!()
         }
+    }
+
+    fn lower_value_block( &mut self, block: &parser::ast::Block, expected: Option<&IRType>) -> Result<(HIRBlock, IRType), HydraError> 
+    {
+        let Some((last, prefix)) = block.statements.split_last() else {
+            return Err(
+                self.error("S001", "if expression branch must produce a value", Span::default())
+            );
+        };
+
+        let mut stmts = Vec::with_capacity(block.statements.len());
+
+        for stmt in prefix {
+            stmts.push(self.lower_stmt(stmt)?);
+        }
+
+        let ASTStmt::Expr(value_expr) = last else {
+            return Err(
+                self.error("S001","if expression branch must end with an expression", crate::utils::get_stmt_span(last))
+            );
+        };
+
+        let mut value = self.lower_expr_with_type(value_expr, expected)?;
+
+        if let Some(expected_ty) = expected {
+            value = self.coerce_primitive(value, expected_ty);
+
+            if !self.check_type_compatibility(expected_ty, &value.ty) {
+                return Err(self.error(
+                    "S001", 
+                    format!("type mismatch: expected {}, found {}", expected_ty, value.ty), 
+                    value.span
+                ));
+            }
+        }
+
+        let value_ty = value.ty.clone();
+
+        stmts.push(HIRStmt::Expr(value));
+
+        let span = block.statements.first().map(crate::utils::get_stmt_span).unwrap_or_default();
+
+        Ok(
+            (HIRBlock { stmts, span }, value_ty)
+        )
     }
 }
