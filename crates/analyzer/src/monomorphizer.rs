@@ -65,6 +65,8 @@ impl<'a> Monomorphizer<'a> {
     }
 
     pub fn run(mut self) -> HIRProgram {
+        self.resolve_concrete_struct_fields();
+
         while let Some((instance, specialized_def_id)) = self.worklist.pop() {
             self.process_function(instance, specialized_def_id);
         }
@@ -619,6 +621,44 @@ impl<'a> Monomorphizer<'a> {
             }
 
             _ => {}
+        }
+    }
+
+    fn resolve_concrete_struct_fields(&mut self) {
+        let structs: Vec<_> = self.context.definitions
+            .iter()
+            .filter_map(|(def_id, info)| {
+                let DefKind::Struct { generic_params, .. } = &info.kind else {
+                    return None;
+                };
+
+                if !generic_params.is_empty() {
+                    return None;
+                }
+
+                Some((*def_id, info.clone()))
+            })
+            .collect();
+
+        let substitutions = HashMap::new();
+
+        for (def_id, mut info) in structs {
+            let DefKind::Struct { fields, generic_params } = info.kind.clone() else {
+                continue;
+            };
+
+            let fields = fields.into_iter()
+                .map(|(name, ty, is_pub)| {
+                    (name, self.resolve_type(&ty, &substitutions), is_pub,)
+                })
+                .collect();
+
+            info.kind = DefKind::Struct {
+                fields,
+                generic_params,
+            };
+
+            self.context.update_def(def_id, info);
         }
     }
 }
