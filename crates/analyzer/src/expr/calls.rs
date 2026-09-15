@@ -142,21 +142,29 @@ impl<'ctx> Analyzer<'ctx> {
 
                 let actual_info = self.context.get_def(actual_def_id).unwrap();
 
-                let (param_types, return_type, function_gp, intrinsic, owner_generic_count) = match &actual_info.kind 
-                {
-                    DefKind::Function { params, return_type, intrinsic, generic_params, owner_generic_count, .. } => 
+                let (param_types, return_type, function_gp, intrinsic, owner_generic_count) = match &actual_info.kind {
+                    DefKind::Function { params, return_type, intrinsic, generic_params, owner_generic_count, .. } =>
                     {
                         (params.clone(), return_type.clone(), generic_params.clone(), *intrinsic, *owner_generic_count)
                     }
 
                     _ => {
-                        return Err(self.error(
-                            "S003",
-                            "target is not a function",
-                            span,
-                        ));
+                        return Err(self.error("S003", "target is not a function", span));
                     }
                 };
+
+                let callable_name = if call_name_debug.is_empty() {
+                    actual_info.name.clone()
+                } else {
+                    call_name_debug.clone()
+                };
+
+                self.check_call_arity(
+                    &format!("function `{}`", callable_name),
+                    param_types.len(),
+                    arguments.len(),
+                    span,
+                )?;
 
                 if owner_generic_count > function_gp.len() {
                     return Err(self.error(
@@ -211,14 +219,6 @@ impl<'ctx> Analyzer<'ctx> {
                         ),
                         span,
                     ));
-                }
-
-                let mut args = Vec::new();
-                for (i, node) in arguments.iter().enumerate() {
-                    let expected = param_types.get(i).filter(|&t| !matches!(t, IRType::GENERIC(_)));
-                    let mut arg = self.lower_expr_with_type(node, expected)?;
-                    if let Some(target) = expected { arg = self.coerce_primitive(arg, target); }
-                    args.push(arg);
                 }
 
                 //
@@ -366,7 +366,7 @@ impl<'ctx> Analyzer<'ctx> {
         }
     }
 
-    pub(crate) fn infer_generic_bindings(pattern: &IRType, actual: &IRType, bindings: &mut HashMap<String, IRType>) 
+    pub(crate) fn infer_generic_bindings(pattern: &IRType, actual: &IRType, bindings: &mut HashMap<String, IRType>)
     {
         match (pattern, actual) {
             //
@@ -413,5 +413,24 @@ impl<'ctx> Analyzer<'ctx> {
 
             _ => {}
         }
+    }
+
+    pub(crate) fn check_call_arity(&self, callable: &str, expected: usize, found: usize, span: Span) -> Result<(), HydraError> 
+    {
+        if expected == found {
+            return Ok(());
+        }
+
+        Err(self.error(
+            "S018",
+            format!(
+                "{} expected {} argument{}, found {}",
+                callable,
+                expected,
+                if expected == 1 { "" } else { "s" },
+                found,
+            ),
+            span,
+        ))
     }
 }

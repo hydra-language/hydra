@@ -62,31 +62,66 @@ impl<'ctx> Analyzer<'ctx> {
 
                 match actual_type {
                     IRType::STRUCT(type_ref) | IRType::GENERIC_INSTANCE(type_ref, _) => {
-                        if let Some(info) = self.context .get_def(type_ref.def_id) { 
-                            if let DefKind::Struct { fields, .. } = &info.kind {
-                                if let Some(idx) = fields.iter().position(|(field_name, _, _)| {field_name == &property.lexeme }) {
-                                    let  (_, field_type, _) = &fields[idx];
+                        let Some(info) = self.context.get_def(type_ref.def_id) else {
+                            return Err(self.error(
+                                "S005",
+                                format!(
+                                    "struct '{}' has no field '{}'",
+                                    type_ref,
+                                    property.lexeme,
+                                ),
+                                property.span,
+                            ));
+                        };
 
-                                    return Ok( HIRExpr {
-                                        kind:
-                                        HIRExprKind::FieldAccess {
-                                            object:
-                                            Box::new(lhs),
-                                            field_index: idx,
-                                        },
-                                        ty: field_type.clone(),
-                                        span,
-                                    });
-                                }
-                            }
+                        let DefKind::Struct { fields, .. } = &info.kind else {
+                            return Err(self.error(
+                                "S005",
+                                format!(
+                                    "struct '{}' has no field '{}'",
+                                    type_ref,
+                                    property.lexeme,
+                                ),
+                                property.span,
+                            ));
+                        };
+
+                        let Some(idx) = fields.iter().position(|(field_name, _, _)| field_name == &property.lexeme) else 
+                        {
+                            return Err(self.error(
+                                "S005",
+                                format!(
+                                    "struct '{}' has no field '{}'",
+                                    type_ref,
+                                    property.lexeme,
+                                ),
+                                property.span,
+                            ));
+                        };
+
+                        let (_, field_type, is_pub) = &fields[idx];
+
+                        if !self.can_access_struct_field(info, *is_pub) {
+                            return Err(self.error(
+                                "S019",
+                                format!(
+                                    "field `{}` of struct `{}` is private",
+                                    property.lexeme,
+                                    type_ref,
+                                ),
+                                property.span,
+                            ));
                         }
 
-                        Err(self.error(
-                            "S005",
-                            format!("struct '{}' has no field '{}'", type_ref, property.lexeme),
-                            property.span,
-                        ))
-                    },
+                        Ok(HIRExpr {
+                            kind: HIRExprKind::FieldAccess {
+                                object: Box::new(lhs),
+                                field_index: idx,
+                            },
+                            ty: field_type.clone(),
+                            span,
+                        })
+                    }
 
                     IRType::ARRAY(_, size) if property.lexeme == "len" => {
                         Ok( HIRExpr {

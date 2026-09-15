@@ -53,13 +53,13 @@ impl<'ctx> Analyzer<'ctx> {
                 let mut fields = Vec::new();
                 let mut failed = false;
 
-                for (field_name, field_type) in &decl.fields {
+                for (field_name, field_type, is_pub) in &decl.fields {
                     match self.lower_type(field_type) {
                         Ok(ty) => {
                             fields.push((
                                 field_name.lexeme.clone(),
                                 ty,
-                                false,
+                                *is_pub,
                             ));
                         }
 

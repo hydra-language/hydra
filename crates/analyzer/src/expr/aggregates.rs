@@ -213,7 +213,7 @@ impl<'ctx> Analyzer<'ctx> {
                 let def_id = self.name_resolver.get_resolution(name_id)
                     .ok_or_else(|| self.error("S002", "undefined struct", span))?;
 
-                let info = self.context.get_def(def_id).unwrap();
+                let info = self.context.get_def(def_id).unwrap().clone();
                 let absolute_struct_name = info.absolute_path.join("::");
 
                 let def_fields = match &info.kind {
@@ -223,19 +223,47 @@ impl<'ctx> Analyzer<'ctx> {
 
                 let mut lowered_values = Vec::new();
 
-                for (def_name, def_type, is_const) in &def_fields { 
-                    if *is_const { continue; }
+                for (def_name, def_type, is_pub) in &def_fields {
+                    if !self.can_access_struct_field(&info, *is_pub) {
+                        return Err(self.error(
+                            "S019",
+                            format!(
+                                "field `{}` of struct `{}` is private",
+                                def_name,
+                                absolute_struct_name,
+                            ),
+                            span,
+                        ));
+                    }
 
-                    if let Some((_, value_node)) = fields.iter().find(|(f_token, _)| f_token.lexeme == *def_name) {
+                    if let Some((_, value_node)) = fields.iter().find(|(field_token, _)| field_token.lexeme == *def_name) {
                         let mut val = self.lower_expr_with_type(value_node, Some(def_type))?;
+
                         val = self.coerce_primitive(val, def_type);
 
                         if !self.check_type_compatibility(def_type, &val.ty) {
-                            return Err(self.error("S001", format!("field '{}' expected {}, found {}", def_name, def_type, val.ty), span));
+                            return Err(self.error(
+                                "S001",
+                                format!(
+                                    "field '{}' expected {}, found {}",
+                                    def_name,
+                                    def_type,
+                                    val.ty,
+                                ),
+                                span,
+                            ));
                         }
+
                         lowered_values.push(val);
                     } else {
-                        return Err(self.error("S005", format!("missing field '{}'", def_name), span));
+                        return Err(self.error(
+                            "S005",
+                            format!(
+                                "missing field '{}'",
+                                def_name,
+                            ),
+                            span,
+                        ));
                     }
                 }
 

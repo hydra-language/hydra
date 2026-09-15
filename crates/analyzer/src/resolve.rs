@@ -363,7 +363,7 @@ impl<'ctx> Resolver<'ctx> {
                     self.resolve_where_clause(wc);
                 }
 
-                for (_, ty) in &decl.fields {
+                for (_, ty, _) in &decl.fields {
                     self.resolve_type(ty);
                 }
 

@@ -106,16 +106,20 @@ impl<'ctx> Analyzer<'ctx> {
             }
         };
 
-        let expected_self_ty = param_types
-            .first()
-            .ok_or_else(|| {
-                self.error(
-                    "S004",
-                    format!("method '{}' does not accept self", method_name),
-                    span,
-                )
-            })?;
+        let expected_self_ty = param_types.first().ok_or_else(|| {
+            self.error(
+                "S004",
+                format!("method '{}' does not accept self", method_name),
+                span,
+            )
+        })?;
 
+        self.check_call_arity(
+            &format!("method `{}`", method_name),
+            param_types.len() - 1,
+            arguments.len(),
+            span,
+        )?;
 
         let self_arg = match (expected_self_ty, &lhs_expr.ty) {
             //

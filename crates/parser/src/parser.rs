@@ -202,7 +202,7 @@ impl Parser {
         let mut fields = Vec::new();
 
         while !self.check(TokenType::RightBrace) && !self.is_at_end() {
-            let _is_member_pub = self.match_token(TokenType::PUB); // ignoring for now, could add to field tuple later
+            let is_member_pub = self.match_token(TokenType::PUB); // ignoring for now, could add to field tuple later
 
             if self.match_token(TokenType::CONST) {
                 let constant_node = self.parse_variable_decl(true)?;
@@ -215,7 +215,7 @@ impl Parser {
                 self.consume(TokenType::Colon, "expected ':'")?;
                 let field_type = self.parse_type()?;
                 self.consume(TokenType::Semicolon, "expected ';'")?;
-                fields.push((field_name, field_type));
+                fields.push((field_name, field_type, is_member_pub));
             }
         }
 

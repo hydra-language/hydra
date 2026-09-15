@@ -195,7 +195,7 @@ pub struct StructDecl {
     pub where_clause: Option<WhereClause>,
     // We treat struct constants and fields separately based on your original design
     pub constants: Vec<Stmt>, // Only VariableDecl (consts) should go here
-    pub fields: Vec<(Token, Type)>,
+    pub fields: Vec<(Token, Type, bool)>,
     pub is_pub: bool,
 }
 

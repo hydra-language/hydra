@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use parser::ast::*;
 use parser::module::{ModuleTree, SourceMap};
 use ir::types::Type as IRType;
-use ir::context::{HIRContext, DefID, DefKind};
+use ir::context::{HIRContext, DefID, DefKind, SymbolInfo};
 use ir::hir::HIRProgram;
 use errors::error::{HydraError, Span};
 
@@ -169,5 +169,17 @@ impl<'ctx> Analyzer<'ctx> {
         } else {
             Err(self.errors)
         }
+    }
+
+    pub(crate) fn can_access_struct_field(&self, struct_info: &SymbolInfo, is_pub: bool) -> bool {
+        if is_pub {
+            return true;
+        }
+
+        let Some((_, defining_module)) = struct_info.absolute_path.split_last() else {
+            return self.current_module.is_empty();
+        };
+
+        defining_module == self.current_module.as_slice()
     }
 }
