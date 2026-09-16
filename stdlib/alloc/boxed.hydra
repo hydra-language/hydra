@@ -13,11 +13,11 @@ pub struct Box<T> {
 }
 
 extension<T> Drop on Box<T> {
-    pub fn drop(&mut self) -> void {
+    fn drop(&mut self) -> void {
         const layout = Layout::new::<T>();
         const pointer = self.ptr::as_const_ptr();
         const value = ptr::read::<T>(pointer);
-        
+
         mem::drop(value);
 
         Allocator::dealloc(pointer as *mut u8, layout);
