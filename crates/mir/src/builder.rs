@@ -90,8 +90,11 @@ impl<'a> MIRBuilder<'a> {
             self.terminate_block(Terminator::Return);
         }
 
+        let display_name = self.context.get_display_name(hir_fn.def_id).map(str::to_string);
+
         MIRFunction {
             name: hir_fn.name,
+            display_name,
             def_id: hir_fn.def_id,
             return_type: hir_fn.return_type,
             arg_count: hir_fn.params.len(),
@@ -365,7 +368,8 @@ impl<'a> MIRBuilder<'a> {
                 self.terminate_block(Terminator::Call {
                     callee: FunctionRef {
                         def_id: *callee,
-                        symbol
+                        symbol,
+                        display_symbol: self.context.get_display_name(*callee).map(str::to_string),
                     },
                     args: lowered_args,
                     destination: destination.clone(),
@@ -401,6 +405,7 @@ impl<'a> MIRBuilder<'a> {
                             callee: FunctionRef {
                                 def_id: *callee,
                                 symbol,
+                                display_symbol: self.context.get_display_name(*callee).map(str::to_string),
                             },
                             kind: *kind,
                             type_args: type_args.clone(),

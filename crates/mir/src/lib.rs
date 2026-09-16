@@ -26,6 +26,7 @@ pub struct MIRProgram {
 pub struct MIRFunction {
     pub name: String,
     pub def_id: DefID,
+    pub display_name: Option<String>,
     pub return_type: Type,
     pub arg_count: usize,
     pub locals: Vec<LocalDecl>,
@@ -37,6 +38,7 @@ pub struct MIRFunction {
 pub struct FunctionRef {
     pub def_id: DefID,
     pub symbol: String,
+    pub display_symbol: Option<String>,
 }
 
 #[derive(Debug, Clone)]

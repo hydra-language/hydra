@@ -84,6 +84,7 @@ pub struct HIRContext {
     pub types: HashMap<TypeID, Type>,
     next_def_id: usize,
     pub trait_impls: Vec<TraitImpl>,
+    pub display_names: HashMap<DefID, String>,
 }
 
 impl HIRContext {
@@ -146,6 +147,14 @@ impl HIRContext {
 
     pub fn register_trait_impl(&mut self, trait_impl: TraitImpl) {
         self.trait_impls.push(trait_impl);
+    }
+
+    pub fn set_display_name(&mut self, def_id: DefID, name: String) {
+        self.display_names.insert(def_id, name);
+    }
+
+    pub fn get_display_name(&self, def_id: DefID) -> Option<&str> {
+        self.display_names.get(&def_id).map(String::as_str)
     }
 
     pub fn get_exact_trait_impl(&self, trait_def_id: DefID, target_type: &Type) -> Option<&TraitImpl> {

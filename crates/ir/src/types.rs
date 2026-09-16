@@ -1,11 +1,12 @@
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, hash::Hash};
 
 use crate::context::DefID;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct TypeRef {
     pub def_id: DefID,
     pub symbol: String,
+    pub display_symbol: Option<String>,
 }
 
 impl TypeRef {
@@ -13,14 +14,35 @@ impl TypeRef {
     pub fn new(def_id: DefID, symbol: String) -> Self {
         Self {
             def_id,
-            symbol
+            symbol,
+            display_symbol: None,
         }
+    }
+
+    pub fn with_display_symbol(mut self, display_symbol: String) -> Self {
+        self.display_symbol = Some(display_symbol);
+        self
+    }
+}
+
+impl PartialEq for TypeRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.def_id == other.def_id && self.symbol == other.symbol
+    }
+}
+
+impl Eq for TypeRef {}
+
+impl Hash for TypeRef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.def_id.hash(state);
+        self.symbol.hash(state);
     }
 }
 
 impl fmt::Display for TypeRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.symbol)
+        write!(f, "{}", self.display_symbol.as_deref().unwrap_or(&self.symbol))
     }
 }
     

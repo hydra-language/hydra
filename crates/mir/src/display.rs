@@ -4,28 +4,35 @@ use crate::{FunctionRef, MIRFunction, Operand, Place, ProjectionElem, Rvalue, St
 
 impl fmt::Display for MIRFunction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "fn {}() -> {} {{", self.name, self.return_type)?;
+        let name = self.display_name.as_deref().unwrap_or(&self.name);
 
-        // Print locals (Variables & Temporaries)
+        writeln!(f, "fn {}() -> {} {{", name, self.return_type)?;
+
         for (i, local) in self.locals.iter().enumerate() {
-            let mut_str = if local.is_mutable { "mut " } else { "" };
+            let mut_str = if local.is_mutable {
+                "mut "
+            } else {
+                ""
+            };
+
             let debug_str = if let Some(def) = local.debug_def_id {
                 format!(" // {}", def)
             } else {
                 String::new()
             };
+
             writeln!(f, "    let {}_{}: {};{}", mut_str, i, local.ty, debug_str)?;
         }
+
         writeln!(f)?;
 
-        // Print Basic Blocks
         for (i, block) in self.basic_blocks.iter().enumerate() {
             writeln!(f, "    bb{}: {{", i)?;
-            
+
             for stmt in &block.statements {
                 writeln!(f, "        {};", stmt)?;
             }
-            
+
             writeln!(f, "        {}", block.terminator)?;
             writeln!(f, "    }}\n")?;
         }
@@ -35,8 +42,8 @@ impl fmt::Display for MIRFunction {
 }
 
 impl fmt::Display for FunctionRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.symbol)
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.display_symbol.as_deref().unwrap_or(&self.symbol))
     }
 }
 
@@ -152,11 +159,16 @@ impl fmt::Display for Terminator {
             }
 
             Terminator::Call { callee, args, destination, target } => {
-                write!(f, "{} = call {}(", destination, callee.symbol)?;
+                write!(f, "{} = call {}(", destination, callee)?;
+
                 for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+
                     write!(f, "{}", arg)?;
                 }
+
                 write!(f, ") -> [return: bb{}]", target.0)
             }
 

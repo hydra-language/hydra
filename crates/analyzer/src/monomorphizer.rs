@@ -339,9 +339,9 @@ impl<'a> Monomorphizer<'a> {
             _ => HashMap::new(),
         };
 
-        if let DefKind::Function { params, return_type, annotations, .. } = generic_info.kind {
+        if let DefKind::Function { ref params, ref return_type, ref annotations, .. } = generic_info.kind {
             specialized_info.kind = DefKind::Function {
-                params: params.into_iter().map(|ty| {
+                params: params.iter().map(|ty| {
                     self.resolve_type(
                         &ty.substitute(&subs),
                         &subs,
@@ -352,11 +352,14 @@ impl<'a> Monomorphizer<'a> {
                 generic_params: vec![],
                 owner_generic_count: 0,
                 intrinsic: None,
-                annotations,
+                annotations: annotations.to_vec(),
             };
         }
 
         let specialized_def_id = self.context.insert_def(specialized_info);
+        let display_name = Self::specialized_function_display_name(&generic_info, &instance.type_args);
+
+        self.context.set_display_name(specialized_def_id, display_name);
 
         self.instantiation_cache.insert(
             instance.clone(),
@@ -430,21 +433,37 @@ impl<'a> Monomorphizer<'a> {
         };
         
         let concrete_def_id = self.context.insert_def(concrete_info);
-        let concrete_ref = TypeRef::new(concrete_def_id, specialized_path.join("::"));
 
-        self.instantiated_structs.insert(cache_key, concrete_ref.clone());
-
-        let generic_type_name = if generic_info.absolute_path.is_empty() {
+        let generic_path = if generic_info.absolute_path.is_empty() {
             generic_info.name.clone()
         } else {
             generic_info.absolute_path.join("::")
         };
+
+        let display_name = format!(
+            "{}<{}>",
+            generic_path,
+            Self::format_type_args(&type_args),
+        );
+
+        let concrete_ref = TypeRef::new(concrete_def_id, specialized_path.join("::"))
+            .with_display_symbol(display_name.clone());
+
+        self.context.set_display_name(concrete_def_id, display_name);
+        self.instantiated_structs.insert(cache_key, concrete_ref.clone());
+
+        /* let generic_type_name = if generic_info.absolute_path.is_empty() {
+            generic_info.name.clone()
+        } else {
+            generic_info.absolute_path.join("::")
+        }; */
 
         self.specialize_trait_impls_for_struct(
             generic_def_id,
             &type_args,
             &concrete_ref,
         );
+
         concrete_ref
     }
 
@@ -760,5 +779,59 @@ impl<'a> Monomorphizer<'a> {
         let substitutions = HashMap::new();
 
         type_args.into_iter().map(|ty| self.resolve_type(&ty, &substitutions)).collect()
+    }
+
+    fn format_type_args(type_args: &[Type]) -> String {
+        type_args.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+    }
+
+    fn specialized_function_display_name(generic_info: &SymbolInfo, type_args: &[Type]) -> String {
+        let DefKind::Function { generic_params, owner_generic_count, .. } = &generic_info.kind else {
+            return generic_info.absolute_path.join("::");
+        };
+
+        let owner_generic_count = (*owner_generic_count).min(type_args.len());
+        let owner_args = &type_args[..owner_generic_count];
+        let function_args = &type_args[owner_generic_count..];
+
+        let function_name = generic_info.absolute_path.last().cloned().unwrap_or_else(|| generic_info.name.clone());
+
+        let mut parent = if generic_info.absolute_path.len() > 1 {
+            generic_info.absolute_path[..generic_info.absolute_path.len() - 1].join("::")
+        } else {
+            String::new()
+        };
+
+        if !owner_args.is_empty() {
+            let args = Self::format_type_args(owner_args);
+
+            if let Some(index) = parent.find("::<") {
+                parent.insert_str(index, &format!("<{args}>"));
+            } else {
+                parent.push_str(&format!("<{args}>"));
+            }
+        }
+
+        let mut result = if parent.is_empty() {
+            function_name
+        } else {
+            format!("{parent}::{function_name}")
+        };
+
+        if !function_args.is_empty() {
+            result.push_str("::<");
+            result.push_str(&Self::format_type_args(function_args));
+            result.push('>');
+        }
+
+        //
+        // a generic function with no owner generics has all of its
+        // parameters at function level
+        //
+        if owner_generic_count == 0 && !generic_params.is_empty() && !type_args.is_empty() {
+            // already handled above through function_args
+        }
+
+        result
     }
 }
