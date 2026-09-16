@@ -133,18 +133,22 @@ impl<'ctx> Resolver<'ctx> {
 
                     Item::Trait(decl) => {
                         let mut full_path = self.current_module.clone();
-                        full_path.push(decl.name.lexeme.to_string());
+                        full_path.push(decl.name.lexeme.clone());
 
                         let info = SymbolInfo {
-                            name: decl.name.lexeme.to_string(),
+                            name: decl.name.lexeme.clone(),
                             span: decl.name.span,
                             absolute_path: full_path.clone(),
-                            kind: DefKind::Struct { fields: vec![], generic_params: vec![] }, 
-                            is_pub: decl.is_pub,
+                            kind: DefKind::Trait {
+                                methods: vec![],
+                            },
+                            is_pub: decl.is_pub
                         };
-                        
+
                         let def_id = self.context.insert_def(info);
+
                         self.global_symbols.insert(full_path, def_id);
+                        self.name_resolver.record_resolution(decl.id, def_id);
                     }
 
                     Item::Function(decl) => {
@@ -379,6 +383,7 @@ impl<'ctx> Resolver<'ctx> {
                 
                 let mut full_path = self.current_module.clone();
                 full_path.push(decl.name.lexeme.to_string());
+
                 if let Some(&trait_def_id) = self.global_symbols.get(&full_path) {
                     self.current_scope.define(Namespace::Type, "Self".to_string(), trait_def_id).ok();
                 }

@@ -24,72 +24,18 @@ impl<'ctx> Analyzer<'ctx> {
         self.lower_instance_method_call(lhs_expr?, &method.lexeme, arguments, generic_args, expected, span)
     }
 
-    pub(crate) fn lower_instance_method_call(
-        &mut self, lhs_expr: HIRExpr, method_name: &str, 
-        arguments: &[ASTExpr], generic_args: &[Type], 
-        expected: Option<&IRType>, span: Span
-    ) -> Result<HIRExpr, HydraError> 
+    pub(crate) fn lower_instance_method_call(&mut self, lhs_expr: HIRExpr, method_name: &str, arguments: &[ASTExpr], generic_args: &[Type], expected: Option<&IRType>, span: Span) 
+        -> Result<HIRExpr, HydraError> 
     {
-        let actual_type = match &lhs_expr.ty {
-            IRType::REF(inner) | IRType::CONST_REF(inner) | 
-            IRType::POINTER(inner) | IRType::CONST_POINTER(inner) => inner.as_ref().clone(),
+        let method_def_id = self.resolve_instance_method(&lhs_expr.ty, method_name, span)?;
 
-            _ => lhs_expr.ty.clone(),
-        };
-
-        let registry_key = self.get_impl_registry_key(&lhs_expr.ty);
-
-        if registry_key.is_empty() {
-            return Err(self.error(
-                "S005",
-                format!(
-                    "type '{}' has no methods",
-                    lhs_expr.ty
-                ),
+        let info = self.context.get_def(method_def_id).ok_or_else(|| {
+            self.error(
+                "S003",
+                format!("method '{}' has no definition", method_name),
                 span,
-            ));
-        }
-
-        let method_def_id = {
-            let type_methods = self
-                .impl_registry
-                .get(&registry_key)
-                .ok_or_else(|| {
-                    self.error(
-                        "S005",
-                        format!(
-                            "type '{}' has no methods",
-                            lhs_expr.ty
-                        ),
-                        span,
-                    )
-                })?;
-
-            *type_methods
-                .get(method_name)
-                .ok_or_else(|| {
-                    self.error(
-                        "S005",
-                        format!(
-                            "method '{}' not found for type '{}'",
-                            method_name,
-                            lhs_expr.ty
-                        ),
-                        span,
-                    )
-                })?
-        };
-
-        let info = self
-            .context
-            .get_def(method_def_id)
-            .ok_or_else(|| {
-                self.error(
-                    "S003",
-                    format!("method '{}' has no definition", method_name),
-                    span,
-                )
-            })?;
+            )
+        })?;
 
         let (param_types, return_type, function_gp, owner_generic_count) = match &info.kind {
             DefKind::Function { params, return_type, generic_params, owner_generic_count, .. } => 
@@ -144,9 +90,7 @@ impl<'ctx> Analyzer<'ctx> {
                         is_mut: false,
                         target: Box::new(deref),
                     },
-                    ty: IRType::CONST_REF(
-                        Box::new(pointee_ty),
-                    ),
+                    ty: IRType::CONST_REF(Box::new(pointee_ty)),
                     span,
                 }
             }
@@ -167,9 +111,7 @@ impl<'ctx> Analyzer<'ctx> {
                         is_mut: true,
                         target: Box::new(lhs_expr),
                     },
-                    ty: IRType::REF(
-                        Box::new(actual),
-                    ),
+                    ty: IRType::REF(Box::new(actual)),
                     span,
                 }
             }
@@ -178,17 +120,14 @@ impl<'ctx> Analyzer<'ctx> {
             // T -> &T
             //
             (IRType::CONST_REF(_), _) => {
-                let actual =
-                lhs_expr.ty.clone();
+                let actual = lhs_expr.ty.clone();
 
                 HIRExpr {
                     kind: HIRExprKind::Borrow {
                         is_mut: false,
                         target: Box::new(lhs_expr),
                     },
-                    ty: IRType::CONST_REF(
-                        Box::new(actual),
-                    ),
+                    ty: IRType::CONST_REF(Box::new(actual)),
                     span,
                 }
             }
@@ -233,13 +172,7 @@ impl<'ctx> Analyzer<'ctx> {
             let declared_param = param_types.get(args.len());
             let substituted_param = declared_param.map(|ty| ty.substitute(&substitutions));
 
-            let argument_expected = substituted_param.as_ref().and_then(|ty| { 
-                if ty.contains_generic() {
-                    None
-                } else {
-                    Some(ty)
-                }
-            });
+            let argument_expected = substituted_param.as_ref().filter(|&ty| !ty.contains_generic());
 
             let mut lowered_arg = self.lower_expr_with_type(arg_node, argument_expected)?;
 
@@ -281,6 +214,106 @@ impl<'ctx> Analyzer<'ctx> {
         })
     }
 
+    fn resolve_instance_method(&self, receiver_ty: &IRType, method_name: &str, span: Span) -> Result<ir::context::DefID, HydraError> {
+        let registry_key = self.get_impl_registry_key(receiver_ty);
+
+        //
+        // inherent methods always win.
+        //
+        if !registry_key.is_empty() {
+            if let Some(method_def_id) = self.impl_registry.get(&registry_key).and_then(|methods| methods.get(method_name)).copied()
+            {
+                return Ok(method_def_id);
+            }
+        }
+
+        //
+        // references dispatch through their pointee, just like inherent
+        // extension lookup already does
+        //
+        // raw pointers remain pointer types
+        //
+        let dispatch_ty = Self::strip_receiver_references(receiver_ty);
+
+        let matching_impls: Vec<_> = self.context.trait_impls.iter().filter(|trait_impl| {
+            self.receiver_type_matches(&trait_impl.target_type, dispatch_ty)
+        }).collect();
+
+        let candidates: Vec<_> = matching_impls.iter().filter_map(|trait_impl| {
+            trait_impl.methods.get(method_name).copied().map(|method_def_id| {
+                (trait_impl.trait_def_id, method_def_id)
+            })
+        }).collect();
+
+        match candidates.as_slice() {
+            [] => {
+                let has_inherent_methods = !registry_key.is_empty() &&
+                self.impl_registry.contains_key(&registry_key);
+
+                if !has_inherent_methods && matching_impls.is_empty() {
+                    return Err(self.error(
+                        "S005",
+                        format!("type '{}' has no methods", receiver_ty),
+                        span,
+                    ));
+                }
+
+                Err(self.error(
+                    "S005",
+                    format!(
+                        "method '{}' not found for type '{}'",
+                        method_name,
+                        receiver_ty,
+                    ),
+                    span,
+                ))
+            }
+
+            [(_, method_def_id)] => Ok(*method_def_id),
+
+            _ => {
+                let mut error = self.error(
+                    "S024",
+                    format!(
+                        "method '{}' is ambiguous for type '{}'",
+                        method_name,
+                        receiver_ty,
+                    ),
+                    span,
+                );
+
+                for (trait_def_id, _) in candidates {
+                    let Some(trait_info) = self.context.get_def(trait_def_id) else {
+                        continue;
+                    };
+
+                    let trait_name = if trait_info.absolute_path.is_empty() {
+                        trait_info.name.clone()
+                    } else {
+                        trait_info.absolute_path.join("::")
+                    };
+
+                    error = error.with_note(
+                        format!("candidate provided by trait `{trait_name}`"),
+                        trait_info.span,
+                    );
+                }
+
+                Err(error)
+            }
+        }
+    }
+
+    fn strip_receiver_references(ty: &IRType) -> &IRType {
+        match ty {
+            IRType::REF(inner) | IRType::CONST_REF(inner) => {
+                Self::strip_receiver_references(inner)
+            }
+
+            _ => ty,
+        }
+    }
+
     fn receiver_type_matches(&self, expected: &IRType, actual: &IRType) -> bool {
         match (expected, actual) {
             //
@@ -288,8 +321,9 @@ impl<'ctx> Analyzer<'ctx> {
             //
             (IRType::GENERIC(_), _) => true,
 
-            (IRType::REF(expected), IRType::REF(actual)) | (IRType::CONST_REF(expected), IRType::CONST_REF(actual)) | 
-            (IRType::CONST_POINTER(expected), IRType::CONST_POINTER(actual)) | (IRType::SLICE(expected), IRType::SLICE(actual)) => 
+            (IRType::REF(expected), IRType::REF(actual)) | (IRType::CONST_REF(expected), IRType::CONST_REF(actual)) |
+            (IRType::POINTER(expected), IRType::POINTER(actual)) | (IRType::CONST_POINTER(expected), IRType::CONST_POINTER(actual)) |
+            (IRType::SLICE(expected), IRType::SLICE(actual)) => 
             {
                 self.receiver_type_matches(expected, actual)
             }

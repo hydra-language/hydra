@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ir::context::{DefID, DefKind, HIRContext, SymbolInfo};
+use ir::context::{DefID, DefKind, HIRContext, SymbolInfo, TraitImpl};
 use ir::hir::{HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRProgram, HIRStmt};
 use ir::types::{Type, TypeRef};
 use ir::instance::Instance;
@@ -307,6 +307,7 @@ impl<'a> Monomorphizer<'a> {
     }
 
     fn get_or_create_specialization(&mut self, generic_def_id: DefID, type_args: Vec<Type>) -> DefID {
+        let type_args = self.normalize_type_args(type_args);
         let instance = Instance::new(generic_def_id, type_args);
 
         if let Some(&specialized_def_id) = self.instantiation_cache.get(&instance) {
@@ -385,6 +386,7 @@ impl<'a> Monomorphizer<'a> {
     }
 
     fn get_or_create_struct_specialization(&mut self, generic_def_id: DefID, type_args: Vec<Type>) -> TypeRef {
+        let type_args = self.normalize_type_args(type_args);
         let cache_key = (generic_def_id, type_args.clone());
 
         if let Some(entry) = self.instantiated_structs.get(&cache_key) {
@@ -430,10 +432,7 @@ impl<'a> Monomorphizer<'a> {
         let concrete_def_id = self.context.insert_def(concrete_info);
         let concrete_ref = TypeRef::new(concrete_def_id, specialized_path.join("::"));
 
-        self.instantiated_structs.insert(
-            cache_key,
-            concrete_ref.clone()
-        );
+        self.instantiated_structs.insert(cache_key, concrete_ref.clone());
 
         let generic_type_name = if generic_info.absolute_path.is_empty() {
             generic_info.name.clone()
@@ -441,20 +440,116 @@ impl<'a> Monomorphizer<'a> {
             generic_info.absolute_path.join("::")
         };
 
-        if let Some(generic_drop_def_id) = self.context.get_drop_impl(&generic_type_name) 
-        {
-            let specialized_drop_def_id = self.get_or_create_specialization(
-                generic_drop_def_id,
-                type_args.clone(),
-            );
-
-            self.context.register_drop_impl(
-                concrete_ref.symbol.clone(),
-                specialized_drop_def_id,
-            );
-        }
-
+        self.specialize_trait_impls_for_struct(
+            generic_def_id,
+            &type_args,
+            &concrete_ref,
+        );
         concrete_ref
+    }
+
+    fn trait_impl_target_matches(pattern: &Type, actual: &Type, substitutions: &mut HashMap<String, Type>) -> bool {
+        match (pattern, actual) {
+            (Type::GENERIC(name), actual) => {
+                if let Some(existing) = substitutions.get(name) {
+                    existing == actual
+                } else {
+                    substitutions.insert(name.clone(), actual.clone());
+                    true
+                }
+            }
+
+            (Type::GENERIC_INSTANCE(pattern_base, pattern_args), Type::GENERIC_INSTANCE(actual_base, actual_args)) => {
+                pattern_base.def_id == actual_base.def_id &&
+                pattern_args.len() == actual_args.len() &&
+                pattern_args
+                    .iter()
+                    .zip(actual_args)
+                    .all(|(pattern, actual)| {
+                        Self::trait_impl_target_matches(
+                            pattern,
+                            actual,
+                            substitutions,
+                        )
+                    })
+            }
+
+            (Type::ARRAY(pattern, pattern_len), Type::ARRAY(actual, actual_len)) => {
+                pattern_len == actual_len &&
+                Self::trait_impl_target_matches(
+                    pattern,
+                    actual,
+                    substitutions,
+                )
+            }
+
+            (Type::SLICE(pattern), Type::SLICE(actual)) |
+            (Type::REF(pattern), Type::REF(actual)) |
+            (Type::CONST_REF(pattern), Type::CONST_REF(actual)) |
+            (Type::POINTER(pattern), Type::POINTER(actual)) |
+            (Type::CONST_POINTER(pattern), Type::CONST_POINTER(actual)) => {
+                Self::trait_impl_target_matches(
+                    pattern,
+                    actual,
+                    substitutions,
+                )
+            }
+
+            _ => pattern == actual,
+        }
+    }
+
+    fn specialize_trait_impls_for_struct(&mut self, generic_def_id: DefID, type_args: &[Type], concrete_ref: &TypeRef) {
+        let generic_info = self.context.get_def(generic_def_id).unwrap().clone();
+        let generic_ref = TypeRef::new(generic_def_id, generic_info.absolute_path.join("::"));
+        let generic_instance = Type::GENERIC_INSTANCE(generic_ref, type_args.to_vec());
+
+        let trait_impls = self.context.trait_impls.clone();
+
+        for trait_impl in trait_impls {
+            let mut substitutions = HashMap::new();
+
+            if !Self::trait_impl_target_matches(&trait_impl.target_type, &generic_instance, &mut substitutions) {
+                continue;
+            }
+
+            let concrete_target = Type::STRUCT(concrete_ref.clone());
+
+            if self.context.get_exact_trait_impl(trait_impl.trait_def_id, &concrete_target).is_some() {
+                continue;
+            }
+
+            let mut methods = HashMap::new();
+
+            for (name, method_def_id) in trait_impl.methods {
+                let method_info = self.context.get_def(method_def_id).unwrap().clone();
+
+                let DefKind::Function { generic_params, .. } = &method_info.kind else {
+                    continue;
+                };
+
+                let concrete_args = generic_params.iter().map(|param| substitutions.get(param).cloned()).collect::<Option<Vec<_>>>();
+
+                let specialized_def_id = match concrete_args {
+                    Some(args) if !args.is_empty() => {
+                        self.get_or_create_specialization(
+                            method_def_id,
+                            args,
+                        )
+                    }
+
+                    _ => method_def_id,
+                };
+
+                methods.insert(name, specialized_def_id);
+            }
+
+            self.context.register_trait_impl(TraitImpl {
+                trait_def_id: trait_impl.trait_def_id,
+                target_type: concrete_target,
+                methods,
+            });
+        }
     }
 
     fn resolve_type(&mut self, ty: &Type, subs: &HashMap<String, Type>) -> Type {
@@ -554,7 +649,6 @@ impl<'a> Monomorphizer<'a> {
             other => other.clone(),
         }
     }
-
 
     fn infer_type_args(&self, param_ty: &Type, arg_ty: &Type, inferred: &mut HashMap<String, Type>) 
     {
@@ -660,5 +754,11 @@ impl<'a> Monomorphizer<'a> {
 
             self.context.update_def(def_id, info);
         }
+    }
+
+    fn normalize_type_args(&mut self, type_args: Vec<Type>) -> Vec<Type> {
+        let substitutions = HashMap::new();
+
+        type_args.into_iter().map(|ty| self.resolve_type(&ty, &substitutions)).collect()
     }
 }

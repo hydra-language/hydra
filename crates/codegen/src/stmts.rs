@@ -20,21 +20,18 @@ impl<'c> CodeGen<'c> {
             }
 
             StatementKind::Drop(place) => {
-                let ty = &mir_fn.locals[place.local.0].ty;
+                let ty = self.get_place_type(place, mir_fn);
 
-                let Type::STRUCT(type_name) = ty else {
-                    return Ok(());
-                };
+                let drop_trait_def_id = self.hir_context.find_trait_by_path("core::ops::drop::Drop").ok_or_else(|| {
+                    "ICE: MIR contains Drop statement but `core::ops::Drop` is not defined".to_string()
+                })?;
 
-                let Some(drop_def_id) = self.hir_context.get_drop_impl(&type_name.symbol) else {
-                    return Ok(());
-                };
+                let drop_def_id = self.hir_context.get_exact_trait_method(drop_trait_def_id, &ty, "drop").ok_or_else(|| {
+                    format!("ICE: MIR contains Drop statement for `{ty}`, but it has no `core::ops::Drop` implementation")
+                })?;
 
                 let drop_info = self.hir_context.get_def(drop_def_id).ok_or_else(|| {
-                    format!(
-                        "ICE: missing drop implementation for `{}`",
-                        type_name
-                    )
+                    format!("ICE: missing Drop::drop definition for `{ty}`")
                 })?;
 
                 let drop_name = if drop_info.absolute_path.is_empty() {
@@ -44,18 +41,9 @@ impl<'c> CodeGen<'c> {
                 };
 
                 let drop_fn = self.module.get_function(&drop_name).ok_or_else(|| {
-                    format!(
-                        "ICE: LLVM drop function `{}` not found",
-                        drop_name
-                    )
+                    format!("ICE: LLVM drop function `{drop_name}` not found")
                 })?;
 
-                //
-                // drop(&mut self)
-                //
-                // compile_place() gives us the address of the Box local,
-                // which is exactly the representation expected by &mut self.
-                //
                 let self_ptr = self.compile_place(place, mir_fn)?;
 
                 self.builder.build_call(

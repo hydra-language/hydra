@@ -256,7 +256,7 @@ impl<'c> CodeGen<'c> {
         Ok(())
     }
 
-    fn get_place_type(&self, place: &mir::Place, mir_fn: &MIRFunction) -> Type {
+    pub(crate) fn get_place_type(&self, place: &mir::Place, mir_fn: &MIRFunction) -> Type {
         let mut ty = mir_fn.locals[place.local.0].ty.clone();
 
         for projection in &place.projection {

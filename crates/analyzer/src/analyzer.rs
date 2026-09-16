@@ -122,15 +122,21 @@ impl<'ctx> Analyzer<'ctx> {
                     }
 
                     Item::Extension(decl) => {
-                        let target_ty =
-                        self.lower_type(&decl.target_type)
-                            .unwrap_or(IRType::VOID);
+                        let target_ty = self.lower_type(&decl.target_type).unwrap_or(IRType::VOID);
+                        let previous_self_type = self.current_self_type.replace(target_ty.clone());
 
-                        let previous_self_type =
-                        self.current_self_type.replace(target_ty.clone());
+                        let parent_path = match self.extension_parent_path(&target_ty, decl.target_trait.as_ref()) 
+                        {
+                            Ok(path) => path,
 
-                        let registry_key =
-                        self.get_impl_registry_key(&target_ty);
+                            Err(error) => {
+                                self.errors.push(error);
+                                self.current_self_type = previous_self_type;
+                                continue;
+                            }
+                        };
+
+                        let registry_key = self.get_impl_registry_key(&target_ty);
 
                         let extension_generic_params: Vec<String> = decl
                             .generic_params
@@ -139,7 +145,7 @@ impl<'ctx> Analyzer<'ctx> {
                             .collect();
 
                         for method in &decl.methods {
-                            if let Some(hir_fn) = self.lower_function(method, Some(registry_key.clone()), &extension_generic_params) 
+                            if let Some(hir_fn) = self.lower_function(method, Some(parent_path.clone()), &extension_generic_params) 
                             {
                                 functions.push(hir_fn);
                             }

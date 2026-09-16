@@ -46,6 +46,10 @@ pub enum DefKind {
         generic_params: Vec<String>,
     },
 
+    Trait {
+        methods: Vec<DefID>,
+    },
+
     Alias {
         target_path: Vec<String>,
     },
@@ -67,12 +71,19 @@ pub struct SymbolInfo {
     pub is_pub: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct TraitImpl {
+    pub trait_def_id: DefID,
+    pub target_type: Type,
+    pub methods: HashMap<String, DefID>,
+}
+
 #[derive(Default)]
 pub struct HIRContext {
     pub definitions: HashMap<DefID, SymbolInfo>,
     pub types: HashMap<TypeID, Type>,
     next_def_id: usize,
-    pub drop_impls: HashMap<String, DefID>,
+    pub trait_impls: Vec<TraitImpl>,
 }
 
 impl HIRContext {
@@ -133,11 +144,29 @@ impl HIRContext {
         })
     }
 
-    pub fn register_drop_impl(&mut self, type_name: String, def_id: DefID) {
-        self.drop_impls.insert(type_name, def_id);
+    pub fn register_trait_impl(&mut self, trait_impl: TraitImpl) {
+        self.trait_impls.push(trait_impl);
     }
 
-    pub fn get_drop_impl(&self, type_name: &str) -> Option<DefID> {
-        self.drop_impls.get(type_name).copied()
+    pub fn get_exact_trait_impl(&self, trait_def_id: DefID, target_type: &Type) -> Option<&TraitImpl> {
+        self.trait_impls
+            .iter()
+            .find(|impl_| impl_.trait_def_id == trait_def_id && &impl_.target_type == target_type)
+    }
+
+    pub fn find_trait_by_path(&self, path: &str) -> Option<DefID> {
+        self.definitions.iter().find_map(|(def_id, info)| {
+            if info.absolute_path.join("::") == path && matches!(info.kind, DefKind::Trait { .. }) {
+                Some(*def_id)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn get_exact_trait_method(&self, trait_def_id: DefID, target_type: &Type, method_name: &str) -> Option<DefID> {
+        self.get_exact_trait_impl(trait_def_id, target_type)
+            .and_then(|trait_impl| trait_impl.methods.get(method_name))
+            .copied()
     }
 }

@@ -861,17 +861,19 @@ impl<'a> MIRBuilder<'a> {
 
     fn is_copy_type(&self, ty: &Type) -> bool {
         match ty {
-            // Primitives are trivially copied
+            // primitives are trivially copied
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::ISIZE |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::USIZE |
             Type::F32 | Type::F64 | Type::CHAR | Type::BOOL => true,
             
-            // Pointers and References are just memory addresses. 
-            // Copying an address is safe (the underlying data is NOT copied).
+            // pointers and references are just memory addresses.
+            // copying an address is safe (the underlying data is NOT copied).
             Type::POINTER(_) | Type::CONST_POINTER(_) | Type::REF(_) | Type::CONST_REF(_) => true,
             
-            // Everything else (Structs, dynamically sized arrays, strings) defaults to Move.
-            // (Later, you can add logic so a Struct is Copy if all its fields are Copy!)
+            // everything else (Structs, dynamically sized arrays, strings) defaults to Move.
+            // 
+            // NOTE: add logic to make a struct copy if all fields are copy
+            // trait Copy {}
             Type::STRUCT(_) | Type::ARRAY(_, _) => false,
             
             Type::VOID => true,
@@ -879,13 +881,58 @@ impl<'a> MIRBuilder<'a> {
         }
     }
 
+    fn type_has_explicit_drop(&self, ty: &Type) -> bool {
+        let Some(drop_trait_def_id) = self.context.find_trait_by_path("core::ops::drop::Drop")else {
+            return false;
+        };
+
+        self.context.get_exact_trait_impl(drop_trait_def_id, ty).is_some()
+    }
+
     fn type_needs_drop(&self, ty: &Type) -> bool {
+        if self.type_has_explicit_drop(ty) {
+            return true;
+        }
+
         match ty {
-            Type::STRUCT(name) => {
-                self.context.get_drop_impl(&name.symbol).is_some()
-            }
+            Type::STRUCT(type_ref) => self.context
+                .get_struct_fields(type_ref.def_id)
+                .iter()
+                .any(|(_, field_ty, _)| self.type_needs_drop(field_ty)),
 
             _ => false,
+        }
+    }
+
+    fn emit_drop_glue(&mut self, place: Place, ty: &Type, span: Span) {
+        //
+        // user-defined Drop runs before compiler-generated field destruction
+        //
+        if self.type_has_explicit_drop(ty) {
+            self.push_statement(Statement {
+                kind: StatementKind::Drop(place.clone()),
+                span,
+            });;
+        }
+
+        //
+        // a struct does not need to implement Drop itself for its owned fields
+        // to be destroyed. Drop fields in declaration order
+        //
+        let Type::STRUCT(type_ref) = ty else {
+            return;
+        };
+
+        let fields = self.context.get_struct_fields(type_ref.def_id);
+        for (field_index, (_, field_ty, _)) in fields.into_iter().enumerate() {
+            if !self.type_needs_drop(&field_ty) {
+                continue;
+            }
+
+            let mut field_place = place.clone();
+            field_place.projection.push(ProjectionElem::Field(field_index));
+
+            self.emit_drop_glue(field_place, &field_ty, span);
         }
     }
 
@@ -898,21 +945,20 @@ impl<'a> MIRBuilder<'a> {
                 decl.debug_def_id.is_some() && self.type_needs_drop(&decl.ty)
             };
 
-            if !should_drop {
+            if !should_drop || self.local_is_moved(local) {
                 continue;
             }
 
-            if self.local_is_moved(local) {
-                continue;
-            }
+            let ty = self.locals[index].ty.clone();
 
-            self.push_statement(Statement {
-                kind: StatementKind::Drop(Place {
+            self.emit_drop_glue(
+                Place {
                     local,
                     projection: vec![],
-                }),
+                },
+                &ty,
                 span,
-            });
+            );
         }
     }
 

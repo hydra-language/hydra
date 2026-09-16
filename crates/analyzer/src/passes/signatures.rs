@@ -60,6 +60,66 @@ impl<'ctx> Analyzer<'ctx> {
                         );
                     }
 
+                    Item::Trait(decl) => {
+                        let Some(trait_def_id) = self.name_resolver.get_resolution(decl.id) else {
+                            self.errors.push(self.error(
+                                "S002",
+                                format!("missing definition for trait `{}`", decl.name.lexeme),
+                                decl.name.span
+                            ));
+
+                            continue;
+                        };
+
+                        let trait_info = self.context.get_def(trait_def_id).cloned().unwrap();
+                        let trait_path = trait_info.absolute_path.clone();
+
+                        //
+                        // inside a trait contract, `Self` is not the
+                        // trait itself as a concrete runtime type.
+                        //
+                        // it is the type that eventually implements
+                        // this contract.
+                        //
+                        let previous_self_type = self.current_self_type.replace(IRType::GENERIC("Self".to_string()));
+                        
+                        let mut method_ids = Vec::new();
+                        for method in &decl.methods {
+                            let Some(method_id) = self.name_resolver.get_resolution(method.id) else {
+                                self.errors.push(self.error(
+                                    "S002",
+                                    format!(
+                                        "missing definition of trait method `{}::{}`", 
+                                        decl.name.lexeme, 
+                                        method.name.lexeme
+                                    ),
+                                    method.name.span
+                                ));
+
+                                continue;
+                            };
+
+                            let mut method_path = trait_path.clone();
+                            method_path.push(method.name.lexeme.clone());
+
+                            self.populate_one_function_signature(method, method_id, method_path, &[]);
+
+                            method_ids.push(method_id);
+                        }
+
+                        self.current_self_type = previous_self_type;
+
+                        let Some(mut trait_info) = self.context.get_def(trait_def_id).cloned() else {
+                            continue;
+                        };
+
+                        trait_info.kind = DefKind::Trait {
+                            methods: method_ids
+                        };
+
+                        self.context.update_def(trait_def_id, trait_info);
+                    }
+
                     // extension methods / associated functions
                     Item::Extension(extension) => {
                         let target_ty = match self.lower_type(&extension.target_type) {
@@ -72,9 +132,20 @@ impl<'ctx> Analyzer<'ctx> {
                         };
 
                         let previous_self_type = self.current_self_type.replace(target_ty.clone());
-                        let parent_name = self.get_impl_registry_key(&target_ty);
+
+                        let parent_name = match self.extension_parent_path(&target_ty, extension.target_trait.as_ref()) 
+                        {
+                            Ok(path) => path,
+
+                            Err(error) => {
+                                self.errors.push(error);
+                                self.current_self_type = previous_self_type;
+                                continue;
+                            }
+                        };
 
                         if parent_name.is_empty() {
+                            self.current_self_type = previous_self_type;
                             continue;
                         }
 
