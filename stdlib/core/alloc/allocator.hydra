@@ -2,7 +2,7 @@ include core::intrinsics;
 
 include core::alloc::Layout;
 
-pub struct Allocator {}
+pub struct Allocator;
 
 extension Allocator {
     
