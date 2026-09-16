@@ -1,1 +1,2 @@
 include core::ops::drop::Drop;
+include core::ops::copy::Copy;
