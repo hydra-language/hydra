@@ -1,9 +1,27 @@
-include core::alloc::{Layout, Allocator};
+include core::alloc::Allocator;
+include core::alloc::Layout;
+
+include core::mem;
+
 include core::ptr;
 include core::ptr::NonNull;
 
+include core::ops::Drop;
+
 pub struct Box<T> {
     ptr: NonNull<T>;
+}
+
+extension<T> Drop on Box<T> {
+    pub fn drop(&mut self) -> void {
+        const layout = Layout::new::<T>();
+        const pointer = self.ptr::as_const_ptr();
+        const value = ptr::read::<T>(pointer);
+        
+        mem::drop(value);
+
+        Allocator::dealloc(pointer as *mut u8, layout);
+    }
 }
 
 extension<T> Box<T> {
@@ -33,12 +51,5 @@ extension<T> Box<T> {
         const value = ptr::read::<T>(p);
 
         return value;
-    }
-
-    pub fn drop(&mut self) -> void {
-        const layout = Layout::new::<T>();
-        const pointer = self.ptr::as_const_ptr();
-
-        Allocator::dealloc(pointer as *mut u8, layout);
     }
 }
