@@ -26,7 +26,7 @@ pub struct HydraError {
     pub code: &'static str,
     pub message: String,
     pub span: Span,
-    pub help: Option<String>,
+    pub help: Vec<String>,
     pub notes: Vec<HydraNote>,
     pub filepath: Option<String>,
     pub source_text: Option<String>
@@ -39,7 +39,7 @@ impl HydraError {
             code,
             message: message.into(),
             span, 
-            help: None,
+            help: Vec::new(),
             notes: Vec::new(),
             filepath: None,
             source_text: None
@@ -47,7 +47,7 @@ impl HydraError {
     }
 
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
-        self.help = Some(help.into());
+        self.help.push(help.into());
         self
     }
 
@@ -109,7 +109,7 @@ impl HydraError {
             eprintln!("    {}| {}{}{}{}{}", blue, reset, note_padding, cyan, "^".repeat(note_len), reset);
         }
 
-        if let Some(help) = &self.help {
+        for help in &self.help {
             eprintln!("    {}|{}", blue, reset);
             eprintln!("    {}={} {}help: {}{}", blue, reset, green, reset, help);
         }
