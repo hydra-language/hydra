@@ -3,6 +3,7 @@ pub mod expr;
 pub mod stmt;
 pub mod context;
 pub mod intrinsic;
+pub mod items;
 pub mod hir;
 pub mod instance;
 

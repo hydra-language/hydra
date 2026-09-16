@@ -269,7 +269,17 @@ impl<'ctx> Analyzer<'ctx> {
                 ))
             }
 
-            [(_, method_def_id)] => Ok(*method_def_id),
+            [(trait_def_id, method_def_id)] => {
+                if self.is_drop_trait(*trait_def_id) && method_name == "drop" {
+                    return Err(self.error(
+                        "S027",
+                        "destructors cannot be called explicitly",
+                        span,
+                    ).with_help("values are destroyed automatically when they leave scope"));
+                }
+
+                Ok(*method_def_id)
+            }
 
             _ => {
                 let mut error = self.error(

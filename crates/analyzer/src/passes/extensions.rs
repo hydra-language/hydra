@@ -2,8 +2,7 @@ use std::collections::HashMap;
 
 use errors::error::HydraError;
 use ir::{
-    context::{DefID, DefKind, TraitImpl},
-    types::Type as IRType,
+    context::{DefID, DefKind, TraitImpl}, items::DROP_TRAIT_PATH, types::Type as IRType,
 };
 use parser::{ast::Type as ASTType, ExtensionDecl, Item};
 
@@ -34,6 +33,19 @@ impl<'ctx> Analyzer<'ctx> {
                         continue;
                     }
                 };
+
+                if decl.target_trait.is_none() {
+                    for method in &decl.methods {
+                        if method.name.lexeme == "drop" {
+                            self.errors.push(self.error(
+                                "S026",
+                                "`drop` is reserved for the `Drop` trait",
+                                method.name.span,
+                            ).with_help("implement `Drop` for this type instead")
+                            .with_help("see `core::ops::drop` for trait signature"));
+                        }
+                    }
+                }
 
                 // trait extensions must NOT enter the inherent-method registry
                 if let Some(target_trait) = &decl.target_trait {
@@ -234,6 +246,10 @@ impl<'ctx> Analyzer<'ctx> {
                 format!("expected `{expected_signature}`, found `{found_signature}`"
             )),
         );
+    }
+
+    pub fn is_drop_trait(&self, trait_def_id: DefID) -> bool {
+        self.context.get_def(trait_def_id).is_some_and(|info| info.absolute_path.join("::") == DROP_TRAIT_PATH )
     }
 
     fn substitute_trait_contract_type(ty: &IRType, self_ty: &IRType, method_generics: &HashMap<String, String>) -> IRType {

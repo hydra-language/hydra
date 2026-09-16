@@ -99,6 +99,22 @@ impl<'ctx> Analyzer<'ctx> {
                                 continue;
                             };
 
+                            if method.name.lexeme == "drop" {
+                                let trait_def_id = self
+                                    .name_resolver
+                                    .get_resolution(decl.id)
+                                    .unwrap();
+
+                                if !self.is_drop_trait(trait_def_id) {
+                                    self.errors.push(self.error(
+                                        "S026",
+                                        "`drop` is reserved for the `Drop` trait",
+                                        method.name.span,
+                                    ).with_help("destructor behavior must be declared through `extension Drop on Type { ... }`")
+                                    .with_help("see `core::ops::drop` for trait signature"));
+                                }
+                            }
+
                             let mut method_path = trait_path.clone();
                             method_path.push(method.name.lexeme.clone());
 

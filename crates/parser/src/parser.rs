@@ -196,7 +196,19 @@ impl Parser {
         let generic_params = self.parse_generic_params()?;
         let where_clause = self.parse_where_clause()?;
 
-        self.consume(TokenType::LeftBrace, "expected '{' before struct body")?;
+        if self.match_token(TokenType::Semicolon) {
+            return Ok(Item::Struct(StructDecl {
+                id,
+                name,
+                generic_params,
+                fields: Vec::new(),
+                is_pub,
+                where_clause,
+                constants: Vec::new(),
+            }));
+        }
+
+        self.consume(TokenType::LeftBrace, "expected '{' or ';' after struct declaration")?;
 
         let mut constants = Vec::new();
         let mut fields = Vec::new();
@@ -230,7 +242,17 @@ impl Parser {
         let id = self.next_node_id();
         let name = self.consume_identifier("expected trait name")?.clone();
 
-        self.consume(TokenType::LeftBrace, "expected '{' before trait body")?;
+        if self.match_token(TokenType::Semicolon) {
+            return Ok(Item::Trait(TraitDecl {
+                id,
+                name,
+                methods: Vec::new(),
+                is_pub,
+            }));
+        }
+
+        self.consume(TokenType::LeftBrace, "expected '{' or ';' after trait declaration")?;
+
         let mut methods = Vec::new();
 
         while !self.check(TokenType::RightBrace) && !self.is_at_end() {
