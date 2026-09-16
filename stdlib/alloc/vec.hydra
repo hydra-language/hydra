@@ -4,6 +4,8 @@ include core::alloc::Layout;
 include core::ptr;
 include core::ptr::NonNull;
 
+include core::ops::Drop;
+
 include core::mem;
 
 // growable, heap allocated, array type
@@ -11,6 +13,47 @@ pub struct Vec<T> {
     ptr: NonNull<T>;
     len: usize;
     cap: usize;
+}
+
+extension<T> Drop on Vec<T> {
+    fn drop(&mut self) -> void {
+        let i: usize = 0;
+
+        // drop every initialized element
+        //
+        // ptr::read() moves the element out of the allocation
+        // and mem::drop<T>() then runs whatever drop glue T
+        // requires
+        while i < self.len {
+            const element_ptr = ptr::offset::<T>(
+                self.ptr::as_ptr(), 
+                i as isize
+            );
+
+            const value = ptr::read::<T>(element_ptr as *const T);
+
+            mem::drop::<T>(value);
+
+            i += 1;
+        }
+
+        // ZST Vecs never allocated backing storage
+        if mem::size_of::<T>() == 0 {
+            return;
+        }
+
+        // cap == 0 means this is still using NonNull::dangling()
+        if self.cap == 0 {
+            return;
+        }
+
+        const layout = Layout::from_size_align(
+            mem::size_of::<T>() * self.cap,
+            mem::align_of::<T>()
+        );
+
+        Allocator::dealloc(self.ptr::as_ptr() as *mut u8, layout);
+    }
 }
 
 extension<T> Vec<T> {
@@ -177,44 +220,5 @@ extension<T> Vec<T> {
     #[inline]
     pub fn ptr(&self) -> *mut T {
         return self.ptr::as_ptr();
-    }
-
-    pub fn drop(&mut self) -> void {
-        let i: usize = 0;
-
-        // drop every initialized element
-        //
-        // ptr::read() moves the element out of the allocation
-        // and mem::drop<T>() then runs whatever drop glue T
-        // requires
-        while i < self.len {
-            const element_ptr = ptr::offset::<T>(
-                self.ptr::as_ptr(), 
-                i as isize
-            );
-
-            const value = ptr::read::<T>(element_ptr as *const T);
-
-            mem::drop::<T>(value);
-
-            i += 1;
-        }
-
-        // ZST Vecs never allocated backing storage
-        if mem::size_of::<T>() == 0 {
-            return;
-        }
-
-        // cap == 0 means this is still using NonNull::dangling()
-        if self.cap == 0 {
-            return;
-        }
-
-        const layout = Layout::from_size_align(
-            mem::size_of::<T>() * self.cap,
-            mem::align_of::<T>()
-        );
-
-        Allocator::dealloc(self.ptr::as_ptr() as *mut u8, layout);
     }
 }
