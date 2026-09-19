@@ -7,6 +7,7 @@ pub struct Layout {
 
 extension Layout {
 
+    #[inline]
     pub fn new<T>() -> Layout {
         return Layout {
             .size = mem::size_of::<T>(),
@@ -14,6 +15,7 @@ extension Layout {
         };
     }
     
+    #[inline]
     pub fn from_size_align(size: usize, align: usize) -> Layout {
         return Layout {
             .size = size,

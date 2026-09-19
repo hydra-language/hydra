@@ -13,6 +13,18 @@ pub struct Vec<T> {
     ptr: NonNull<T>;
     len: usize;
     cap: usize;
+
+    // there might be some UB going on here
+    // because it prints out some random number every
+    // time if the drop destructor is ran with a print 
+    // statement that prints it out
+    const MINIMUM_CAP: usize = if mem::size_of::<T>() == 1 {
+        8;
+    } else if mem::size_of::<T>() <= 1024 {
+        4;
+    } else {
+        1;
+    };
 }
 
 extension<T> Drop on Vec<T> {
@@ -58,7 +70,7 @@ extension<T> Drop on Vec<T> {
 
 extension<T> Vec<T> {
 
-    // FIXME: this shouldnt really work and result in LLVM
+    // FIXME: this shouldnt really work and results in LLVM
     // saying that i cant assign to it. small fix but i didnt
     // know i supported if statements as expressions lol
     /* const MINIMUM_CAP: usize = if mem::size_of::<T>() == 1 {

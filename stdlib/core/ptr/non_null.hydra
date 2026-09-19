@@ -2,9 +2,13 @@ include core::intrinsics;
 
 include core::mem;
 
+include core::marker::Copy;
+
 pub struct NonNull<T> {
     ptr: *mut T;
 }
+
+extension<T> Copy on NonNull<T>;
 
 extension<T> NonNull<T> {
 
