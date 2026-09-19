@@ -286,10 +286,30 @@ impl Parser {
 
         let where_clause = self.parse_where_clause()?;
 
-        self.consume(TokenType::LeftBrace, "expected '{' before extension body")?;
-
         let mut constants = Vec::new();
         let mut methods = Vec::new();
+
+        // marker/empty extension:
+        //
+        //     extension<T> Copy on NonNull<T>;
+        //
+        // equivalent to:
+        //
+        //     extension<T> Copy on NonNull<T> {}
+        //
+        if self.match_token(TokenType::Semicolon) {
+            return Ok(Item::Extension(ExtensionDecl {
+                id,
+                target_trait,
+                target_type,
+                generic_params,
+                where_clause,
+                constants,
+                methods,
+            }));
+        }
+
+        self.consume(TokenType::LeftBrace, "expected '{' or ';' after extension declaration")?;
 
         while !self.check(TokenType::RightBrace) && !self.is_at_end() {
             let method_annotations = self.parse_annotations()?;
@@ -376,7 +396,7 @@ impl Parser {
 
         let where_clause = self.parse_where_clause()?;
 
-        let is_bodyless = is_extern_or_trait || annotations.iter().any(|a| matches!(a.name.as_str(), "intrinsic" | "builtin"));
+        let is_bodyless = is_extern_or_trait || annotations.iter().any(|a| matches!(a.name.as_str(), "intrinsic"));
 
         let body = if is_bodyless {
             self.consume(TokenType::Semicolon, "expected ';' after bodyless function declaration")?;

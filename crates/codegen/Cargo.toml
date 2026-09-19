@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 errors = { path = "../errors" }
 inkwell = { version = "0.2.0", features = ["llvm14-0"] }
+analyzer = { path = "../analyzer" }
 lexer = { path = "../lexer" }
 parser = { path = "../parser" }
 mir = { path = "../mir/" }

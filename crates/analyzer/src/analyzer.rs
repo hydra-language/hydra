@@ -81,6 +81,12 @@ impl<'ctx> Analyzer<'ctx> {
             return Err(self.errors);
         }
 
+        self.validate_builtin_trait_impls();
+
+        if !self.errors.is_empty() {
+            return Err(self.errors);
+        }
+
         for (filepath, (module_path, items)) in &self.program.parsed_files {
             self.current_module = module_path.clone();
             self.current_filepath = filepath.display().to_string();

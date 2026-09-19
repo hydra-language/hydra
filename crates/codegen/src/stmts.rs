@@ -2,6 +2,7 @@ use crate::CodeGen;
 use ir::{context::DefKind, types::Type};
 use mir::{Statement, StatementKind, Terminator, Place, MIRFunction, LocalID};
 use inkwell::{IntPredicate, values::{IntValue, PointerValue}};
+use analyzer::traits;
 
 impl<'c> CodeGen<'c> {
 
@@ -22,7 +23,7 @@ impl<'c> CodeGen<'c> {
             StatementKind::Drop(place) => {
                 let ty = self.get_place_type(place, mir_fn);
 
-                let drop_trait_def_id = self.hir_context.find_trait_by_path("core::ops::drop::Drop").ok_or_else(|| {
+                let drop_trait_def_id = self.hir_context.find_trait_by_path(traits::DROP_TRAIT_PATH).ok_or_else(|| {
                     "ICE: MIR contains Drop statement but `core::ops::Drop` is not defined".to_string()
                 })?;
 

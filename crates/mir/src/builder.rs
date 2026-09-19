@@ -11,7 +11,7 @@ use ir::types::Type;
 use ir::context::{DefKind, DefID, HIRContext};
 use ir::Constant;
 
-use analyzer::fold;
+use analyzer::{fold, traits};
 
 pub struct MIRBuilder<'a> {
     locals: Vec<LocalDecl>,
@@ -869,25 +869,28 @@ impl<'a> MIRBuilder<'a> {
             // primitives are trivially copied
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::ISIZE |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::USIZE |
-            Type::F32 | Type::F64 | Type::CHAR | Type::BOOL => true,
+            Type::F32 | Type::F64 | Type::CHAR | Type::BOOL | Type::VOID => true,
+
+            Type::ARRAY(inner, _) => self.is_copy_type(inner),
             
             // pointers and references are just memory addresses.
             // copying an address is safe (the underlying data is NOT copied).
             Type::POINTER(_) | Type::CONST_POINTER(_) | Type::REF(_) | Type::CONST_REF(_) => true,
             
-            // everything else (Structs, dynamically sized arrays, strings) defaults to Move.
-            // 
-            // NOTE: add logic to make a struct copy if all fields are copy
-            // trait Copy {}
-            Type::STRUCT(_) | Type::ARRAY(_, _) => false,
-            
-            Type::VOID => true,
-            _ => false,
+            Type::STRUCT(_) | Type::GENERIC_INSTANCE(_, _) => {
+                let Some(copy_trait_def_id) = self.context.find_trait_by_path(traits::COPY_TRAIT_PATH) else {
+                    return false;
+                };
+
+                self.context.get_exact_trait_impl(copy_trait_def_id, ty).is_some()
+            }
+
+            Type::INFERRED_ARRAY(_) | Type::SLICE(_) | Type::GENERIC(_) => false,
         }
     }
 
     fn type_has_explicit_drop(&self, ty: &Type) -> bool {
-        let Some(drop_trait_def_id) = self.context.find_trait_by_path("core::ops::drop::Drop")else {
+        let Some(drop_trait_def_id) = self.context.find_trait_by_path(traits::DROP_TRAIT_PATH)else {
             return false;
         };
 

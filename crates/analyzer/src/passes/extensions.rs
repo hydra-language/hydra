@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use errors::error::HydraError;
 use ir::{
-    context::{DefID, DefKind, TraitImpl}, items::DROP_TRAIT_PATH, types::Type as IRType,
+    context::{DefID, DefKind, TraitImpl}, types::Type as IRType,
 };
+use crate::traits;
 use parser::{ast::Type as ASTType, ExtensionDecl, Item};
 
 use crate::Analyzer;
@@ -237,8 +238,7 @@ impl<'ctx> Analyzer<'ctx> {
         self.errors.push(
             self.error(
                 "S022",
-                format!("method `{}::{}` has an incompatible signature",
-                    trait_name,
+                format!("method `{}::{}` has an incompatible signature", trait_name,
                     trait_method.name,
                 ),
                 impl_method.span,
@@ -248,8 +248,198 @@ impl<'ctx> Analyzer<'ctx> {
         );
     }
 
+    pub(crate) fn validate_builtin_trait_impls(&mut self) {
+        let Some(copy_trait_def_id) = self.context.find_trait_by_path(traits::COPY_TRAIT_PATH) else {
+            return;
+        };
+
+        let drop_trait_def_id = self.context.find_trait_by_path(traits::DROP_TRAIT_PATH);
+
+        let files: Vec<_> = self.program.parsed_files.iter().map(|(filepath, (module_path, items))| {
+                (filepath.clone(), module_path.clone(), items.clone()) 
+        }).collect();
+
+        for (filepath, module_path, items) in files {
+            self.current_module = module_path;
+            self.current_filepath = filepath.display().to_string();
+            self.current_source = self.source_map.get_source(&filepath).unwrap_or("").to_string();
+
+            for item in &items {
+                let Item::Extension(decl) = item else {
+                    continue;
+                };
+
+                let Some(target_trait) = &decl.target_trait else {
+                    continue;
+                };
+
+                let Ok(trait_def_id) = self.resolve_trait_def_id(target_trait) else {
+                    continue;
+                };
+
+                if trait_def_id != copy_trait_def_id {
+                    continue;
+                }
+
+                let Ok(target_ty) = self.lower_type(&decl.target_type) else {
+                    continue;
+                };
+
+                let span = crate::utils::get_type_span(&decl.target_type);
+
+                if let Some(drop_trait_def_id) = drop_trait_def_id {
+                    let implements_drop = self.context.trait_impls.iter().any(|trait_impl| {
+                        trait_impl.trait_def_id == drop_trait_def_id && 
+                        Self::trait_impl_targets_overlap(&target_ty, &trait_impl.target_type)
+                    });
+
+                    if implements_drop {
+                        self.errors.push(self.error(
+                            "S025",
+                            format!(
+                                "type `{}` cannot implement both `Copy` and `Drop`",
+                                target_ty,
+                            ),
+                            span,
+                        ));
+
+                        continue;
+                    }
+                }
+
+                let Some(fields) = self.copy_target_fields(&target_ty) else {
+                    continue;
+                };
+
+                for (field_name, field_ty) in fields {
+                    if self.type_is_copy_compatible(&field_ty, copy_trait_def_id) {
+                        continue;
+                    }
+
+                    self.errors.push(self.error(
+                        "S025",
+                        format!(
+                            "type `{}` cannot implement `Copy` because field `{}` has type `{}`, which is not `Copy`",
+                            target_ty,
+                            field_name,
+                            field_ty,
+                        ),
+                        span,
+                    ));
+                }
+            }
+        }
+    }
+
+    fn copy_target_fields(&self, target_ty: &IRType) -> Option<Vec<(String, IRType)>> {
+        match target_ty {
+            IRType::STRUCT(type_ref) => {
+                let info = self.context.get_def(type_ref.def_id)?;
+
+                let DefKind::Struct { fields, .. } = &info.kind else {
+                    return None;
+                };
+
+                Some(fields.iter().map(|(name, ty, _)| (name.clone(), ty.clone())).collect())
+            }
+
+            IRType::GENERIC_INSTANCE(base, args) => {
+                let info = self.context.get_def(base.def_id)?;
+
+                let DefKind::Struct { fields, generic_params, } = &info.kind else {
+                    return None;
+                };
+
+                if generic_params.len() != args.len() {
+                    return None;
+                }
+
+                let substitutions: HashMap<String, IRType> = generic_params
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .collect();
+
+                Some(fields.iter().map(|(name, ty, _)| (name.clone(), ty.substitute(&substitutions))).collect(),
+                )
+            }
+
+            _ => None,
+        }
+    }
+
+    fn type_is_copy_compatible(&self, ty: &IRType, copy_trait_def_id: DefID) -> bool {
+        match ty {
+            IRType::I8 | IRType::I16 | IRType::I32 | IRType::I64 | IRType::ISIZE | 
+            IRType::U8 | IRType::U16 | IRType::U32 | IRType::U64 | IRType::USIZE | 
+            IRType::F32 | IRType::F64 | IRType::CHAR | IRType::BOOL | IRType::POINTER(_) | 
+            IRType::CONST_POINTER(_) | IRType::REF(_) | IRType::CONST_REF(_) | IRType::VOID => true,
+
+            IRType::ARRAY(inner, _) => {
+                self.type_is_copy_compatible(inner, copy_trait_def_id)
+            }
+
+            IRType::STRUCT(_) | IRType::GENERIC_INSTANCE(_, _) => {
+                self.context.trait_impls.iter().any(|trait_impl| {
+                    trait_impl.trait_def_id == copy_trait_def_id &&
+                    Self::trait_impl_target_matches(&trait_impl.target_type, ty)
+                })
+            }
+
+            IRType::GENERIC(_) | IRType::INFERRED_ARRAY(_) | IRType::SLICE(_) => false,
+        }
+    }
+
+    fn trait_impl_target_matches(pattern: &IRType, actual: &IRType) -> bool {
+        let mut substitutions = HashMap::new();
+
+        Self::trait_impl_target_matches_with_substitutions(pattern, actual, &mut substitutions)
+    }
+
+    fn trait_impl_target_matches_with_substitutions(pattern: &IRType, actual: &IRType, substitutions: &mut HashMap<String, IRType>) -> bool
+    {
+        match (pattern, actual) {
+            (IRType::GENERIC(name), actual) => {
+                if let Some(existing) = substitutions.get(name) {
+                    existing == actual
+                } else {
+                    substitutions.insert(name.clone(), actual.clone());
+
+                    true
+                }
+            }
+
+            (IRType::GENERIC_INSTANCE(pattern_base, pattern_args), IRType::GENERIC_INSTANCE(actual_base, actual_args)) => 
+            {
+                pattern_base.def_id == actual_base.def_id &&
+                pattern_args.len() == actual_args.len() &&
+                pattern_args.iter().zip(actual_args).all(|(pattern, actual)| {
+                    Self::trait_impl_target_matches_with_substitutions(pattern, actual, substitutions)
+                })
+            }
+
+            (IRType::ARRAY(pattern, pattern_len), IRType::ARRAY(actual, actual_len)) => {
+                pattern_len == actual_len &&
+                Self::trait_impl_target_matches_with_substitutions(pattern, actual, substitutions)
+            }
+
+            (IRType::INFERRED_ARRAY(pattern), IRType::INFERRED_ARRAY(actual)) | 
+            (IRType::SLICE(pattern), IRType::SLICE(actual)) | (IRType::REF(pattern), IRType::REF(actual)) | 
+            (IRType::CONST_REF(pattern), IRType::CONST_REF(actual)) | (IRType::POINTER(pattern), IRType::POINTER(actual)) | 
+            (IRType::CONST_POINTER(pattern), IRType::CONST_POINTER(actual)) => {
+                Self::trait_impl_target_matches_with_substitutions(pattern, actual, substitutions)
+            }
+
+            _ => pattern == actual,
+        }
+    }
+
+    fn trait_impl_targets_overlap(left: &IRType, right: &IRType) -> bool {
+        Self::trait_impl_target_matches(left, right) || Self::trait_impl_target_matches(right, left)
+    }
+
     pub fn is_drop_trait(&self, trait_def_id: DefID) -> bool {
-        self.context.get_def(trait_def_id).is_some_and(|info| info.absolute_path.join("::") == DROP_TRAIT_PATH )
+        self.context.get_def(trait_def_id).is_some_and(|info| info.absolute_path.join("::") == traits::DROP_TRAIT_PATH )
     }
 
     fn substitute_trait_contract_type(ty: &IRType, self_ty: &IRType, method_generics: &HashMap<String, String>) -> IRType {

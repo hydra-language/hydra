@@ -7,6 +7,7 @@ pub mod analyzer;
 pub mod fold;
 pub mod monomorphizer;
 pub mod resolve;
+pub mod traits;
 
 mod intrinsics;
 mod passes;
