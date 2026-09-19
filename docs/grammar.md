@@ -5,8 +5,6 @@ This document describes the syntax and grammar of the Hydra programming language
 > **NOTE:** Hydra is under active development and this document is subject to change.
 >
 > Features in the **Planned Features** section are not part of the current core language design and may change before implementation.
->
-> Traits are documented as part of the core language grammar because they are fundamental to Hydra's type and extension model, although compiler support for them is still under development.
 
 ---
 
@@ -570,15 +568,9 @@ fn add(a: i32, b: i32) -> i32 {
 }
 ```
 
-A function with no explicit return type returns `void`.
+Every function must declare a return type.
 
-```rust
-fn greet() {
-    println("Hello!");
-}
-```
-
-The explicit form is also allowed:
+A function with no return value uses `-> void`.
 
 ```rust
 fn greet() -> void {
@@ -1809,7 +1801,7 @@ function
        "fn" IDENTIFIER
        generic-params?
        "(" parameters? ")"
-       ("->" type)?
+       "->" type
        where-clause?
        block
 
@@ -1819,7 +1811,7 @@ extern-function
        "extern" "fn" IDENTIFIER
        generic-params?
        "(" parameters? ")"
-       ("->" type)?
+       "->" type
        where-clause?
        ";"
 
@@ -1864,7 +1856,7 @@ trait-function
     := "fn" IDENTIFIER
        generic-params?
        "(" parameters? ")"
-       ("->" type)?
+       "->" type
        where-clause?
        ";"
 
