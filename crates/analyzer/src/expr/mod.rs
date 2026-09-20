@@ -74,7 +74,8 @@ impl<'ctx> Analyzer<'ctx> {
                 self.lower_place_expr(node, lowering_expected, span)
             }
 
-            ASTExpr::If { .. } | ASTExpr::While { .. } | ASTExpr::For { .. } | ASTExpr::ForEach { .. } => {
+            ASTExpr::If { .. } | ASTExpr::While { .. } | 
+            ASTExpr::For { .. } | ASTExpr::ForEach { .. } | ASTExpr::OrElse { .. } => {
                 self.lower_control_flow_expr(node, lowering_expected, span)
             }
 

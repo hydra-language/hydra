@@ -112,6 +112,11 @@ pub enum HIRExprKind {
         target: Box<HIRExpr> 
     },
 
+    OrElse {
+        optional: Box<HIRExpr>,
+        fallback: Box<HIRExpr>,
+    },
+
     Assign {
         target: Box<HIRExpr>, 
         value: Box<HIRExpr>,
@@ -238,6 +243,10 @@ impl fmt::Display for HIRExprKind {
             HIRExprKind::NONE => write!(f, "None"),
             HIRExprKind::OptionalPresent(value) => {
                 write!(f, "present({})", value)
+            }
+            
+            HIRExprKind::OrElse { optional, fallback } => {
+                write!(f, "({} orelse {})", optional, fallback)
             }
             
             HIRExprKind::StructInit { def_id, values } => {

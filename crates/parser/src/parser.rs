@@ -790,7 +790,7 @@ impl Parser {
     }
 
     fn parse_assignment(&mut self) -> Result<Expr, HydraError> {
-        let target = self.parse_logical_or()?; 
+        let target = self.parse_orelse()?; 
 
         if self.match_token(TokenType::Equal) ||
             self.match_token(TokenType::PlusEqual) ||
@@ -812,6 +812,25 @@ impl Parser {
         }
 
         Ok(target)
+    }
+
+    fn parse_orelse(&mut self) -> Result<Expr, HydraError> {
+        let optional = self.parse_logical_or()?;
+
+        if !self.match_token(TokenType::ORELSE) {
+            return Ok(optional);
+        }
+
+        let id = self.next_node_id();
+        let token = self.previous().clone();
+        let fallback = self.parse_orelse()?;
+
+        Ok(Expr::OrElse { 
+            id, 
+            optional: Box::new(optional),
+            fallback: Box::new(fallback),
+            token 
+        })
     }
 
     fn parse_logical_or(&mut self) -> Result<Expr, HydraError> {

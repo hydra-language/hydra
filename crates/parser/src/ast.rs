@@ -119,6 +119,14 @@ pub enum Expr {
     
     /// e.g., `*a`
     Dereference { id: NodeID, right: Box<Expr> },
+
+    /// e.g., `x orelse 0`
+    OrElse {
+        id: NodeID,
+        optional: Box<Expr>,
+        fallback: Box<Expr>,
+        token: Token,
+    },
     
     /// e.g., `object.property`
     Member { id: NodeID, object: Box<Expr>, property: Token },

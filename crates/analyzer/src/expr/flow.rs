@@ -691,7 +691,54 @@ impl<'ctx> Analyzer<'ctx> {
                     span: item.span
                 })
             },
-            
+
+            ASTExpr::OrElse { optional, fallback, .. } => {
+                //
+                // do not give the left side an optional expected type. it must
+                // genuinely produce T? rather than being promoted from T
+                //
+                let optional = self.lower_expr(optional)?;
+
+                let IRType::OPTIONAL(inner) = &optional.ty else {
+                    return Err(self.error(
+                        "S001",
+                        format!("`orelse` requires an optional left operand, found `{}`",
+                            optional.ty
+                        ),
+                        optional.span
+                    ));
+                };
+
+                let result_ty = inner.as_ref().clone();
+
+                //
+                // the fallback is evaluated as the underlying T, not T?
+                //
+                let mut fallback = self.lower_expr_with_type(fallback, Some(&result_ty))?;
+                fallback = self.coerce_primitive(fallback, &result_ty);
+
+                if !self.check_type_compatibility(&result_ty, &fallback.ty) {
+                    return Err(self.error(
+                        "S001",
+                        format!(
+                            "`orelse` fallback expected {}, found {}",
+                            result_ty,
+                            fallback.ty,
+                        ),
+                        fallback.span,
+                    ));
+                }
+
+                Ok(HIRExpr {
+                    kind: HIRExprKind::OrElse {
+                        optional: Box::new(optional),
+                        fallback: Box::new(fallback),
+                    },
+                    ty: result_ty,
+                    span,
+                })
+            }
+
             _ => unreachable!()
         }
     }

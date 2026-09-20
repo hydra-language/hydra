@@ -361,6 +361,7 @@ impl Lexer {
             "while" => TokenType::WHILE,
             "break" => TokenType::BREAK,
             "match" => TokenType::MATCH,
+            "orelse" => TokenType::ORELSE,
             "continue" => TokenType::CONTINUE,
             "include" => TokenType::INCLUDE,
             "mod" => TokenType::MODULE,

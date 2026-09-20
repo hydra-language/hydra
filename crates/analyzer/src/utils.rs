@@ -26,6 +26,34 @@ pub fn get_expr_span(expr: &ASTExpr) -> Span {
         ASTExpr::FunctionCall { callee, .. } => get_expr_span(callee),
         ASTExpr::Borrow { right, .. } => get_expr_span(right),
         ASTExpr::Dereference { right, .. } => get_expr_span(right),
+        ASTExpr::OrElse { token, .. } => token.span,
+    }
+}
+
+pub fn get_expr_id(expr: &ASTExpr) -> NodeID {
+    match expr {
+        ASTExpr::Literal { id, .. } => *id,
+        ASTExpr::Variable { id, .. } => *id,
+        ASTExpr::Path { id, .. } => *id,
+        ASTExpr::FunctionCall { id, .. } => *id,
+        ASTExpr::MethodCall { id, .. } => *id,
+        ASTExpr::Binary { id, .. } => *id,
+        ASTExpr::Unary { id, .. } => *id,
+        ASTExpr::PostfixUnary { id, .. } => *id,
+        ASTExpr::Assignment { id, .. } => *id,
+        ASTExpr::Borrow { id, .. } => *id,
+        ASTExpr::Dereference { id, .. } => *id,
+        ASTExpr::OrElse { id, .. } => *id,
+        ASTExpr::Member { id, .. } => *id,
+        ASTExpr::ArrayInitializer { id, .. } => *id,
+        ASTExpr::SliceInitializer { id, .. } => *id,
+        ASTExpr::ArrayAccess { id, .. } => *id,
+        ASTExpr::StructInitializer { id, .. } => *id,
+        ASTExpr::Cast { id, .. } => *id,
+        ASTExpr::If { id, .. } => *id,
+        ASTExpr::While { id, .. } => *id,
+        ASTExpr::For { id, .. } => *id,
+        ASTExpr::ForEach { id, .. } => *id,
     }
 }
 
@@ -51,17 +79,6 @@ pub fn get_type_span(ty: &ASTType) -> Span {
     }
 }
 
-pub fn get_binary_op_from_token(token: &TokenType) -> Option<HIRBinOp> {
-    match token {
-        TokenType::PlusEqual => Some(HIRBinOp::Add),
-        TokenType::MinusEqual => Some(HIRBinOp::Sub),
-        TokenType::StarEqual => Some(HIRBinOp::Mul),
-        TokenType::ForwardSlashEqual => Some(HIRBinOp::Div),
-        TokenType::ModuloEqual => Some(HIRBinOp::Mod),
-        _ => None
-    }
-}
-
 pub fn get_type_id(ty: &ASTType) -> NodeID {
     match ty {
         ASTType::Path { id, .. } => *id,
@@ -74,28 +91,13 @@ pub fn get_type_id(ty: &ASTType) -> NodeID {
     }
 }
 
-pub fn get_expr_id(expr: &ASTExpr) -> NodeID {
-    match expr {
-        ASTExpr::Literal { id, .. } => *id,
-        ASTExpr::Variable { id, .. } => *id,
-        ASTExpr::Path { id, .. } => *id,
-        ASTExpr::FunctionCall { id, .. } => *id,
-        ASTExpr::MethodCall { id, .. } => *id,
-        ASTExpr::Binary { id, .. } => *id,
-        ASTExpr::Unary { id, .. } => *id,
-        ASTExpr::PostfixUnary { id, .. } => *id,
-        ASTExpr::Assignment { id, .. } => *id,
-        ASTExpr::Borrow { id, .. } => *id,
-        ASTExpr::Dereference { id, .. } => *id,
-        ASTExpr::Member { id, .. } => *id,
-        ASTExpr::ArrayInitializer { id, .. } => *id,
-        ASTExpr::SliceInitializer { id, .. } => *id,
-        ASTExpr::ArrayAccess { id, .. } => *id,
-        ASTExpr::StructInitializer { id, .. } => *id,
-        ASTExpr::Cast { id, .. } => *id,
-        ASTExpr::If { id, .. } => *id,
-        ASTExpr::While { id, .. } => *id,
-        ASTExpr::For { id, .. } => *id,
-        ASTExpr::ForEach { id, .. } => *id,
+pub fn get_binary_op_from_token(token: &TokenType) -> Option<HIRBinOp> {
+    match token {
+        TokenType::PlusEqual => Some(HIRBinOp::Add),
+        TokenType::MinusEqual => Some(HIRBinOp::Sub),
+        TokenType::StarEqual => Some(HIRBinOp::Mul),
+        TokenType::ForwardSlashEqual => Some(HIRBinOp::Div),
+        TokenType::ModuloEqual => Some(HIRBinOp::Mod),
+        _ => None
     }
 }

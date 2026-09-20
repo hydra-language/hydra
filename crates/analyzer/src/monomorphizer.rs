@@ -177,6 +177,12 @@ impl<'a> Monomorphizer<'a> {
             HIRExprKind::OptionalPresent(operand) => {
                 self.substitute_expr(operand, subs, local_types);
             }
+
+            HIRExprKind::OrElse { optional, fallback } => {
+                self.substitute_expr(optional, subs, local_types);
+                self.substitute_expr(fallback, subs, local_types);
+            }
+
             HIRExprKind::Assign { target, value } => {
                 self.substitute_expr(target, subs, local_types);
                 self.substitute_expr(value, subs, local_types);

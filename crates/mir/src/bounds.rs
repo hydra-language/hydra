@@ -299,23 +299,34 @@ impl<'a> BoundsChecker<'a> {
                 }
 
                 ProjectionElem::Field(index) => {
-                    let Type::STRUCT(type_ref) = ty else {
-                        return;
+                    ty = match ty {
+                        Type::OPTIONAL(inner) => {
+                            match *index {
+                                0 => Type::BOOL,
+                                1 => *inner,
+                                _ => return,
+                            }
+                        }
+
+                        Type::STRUCT(type_ref) => {
+                            let Some(info) = self.context.get_def(type_ref.def_id) else {
+                                return;
+                            };
+
+                            let DefKind::Struct { fields, .. } = &info.kind else {
+                                return;
+                            };
+
+                            let Some((_, field_ty, _)) = fields.get(*index) else {
+                                return;
+                            };
+
+                            field_ty.clone()
+                        }
+
+                        _ => return,
                     };
 
-                    let Some(info) = self.context.get_def(type_ref.def_id) else {
-                        return;
-                    };
-
-                    let DefKind::Struct { fields, .. } = &info.kind else {
-                        return;
-                    };
-
-                    let Some((_, field_ty, _)) = fields.get(*index) else {
-                        return;
-                    };
-
-                    ty = field_ty.clone();
                     slice_len = None;
                 }
 

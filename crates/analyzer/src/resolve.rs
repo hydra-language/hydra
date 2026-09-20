@@ -737,6 +737,11 @@ impl<'ctx> Resolver<'ctx> {
 
             Expr::Borrow { right, .. } | Expr::Dereference { right, .. } => self.resolve_expr(right),
 
+            Expr::OrElse { optional, fallback, .. } => {
+                self.resolve_expr(optional);
+                self.resolve_expr(fallback);
+            }
+
             Expr::Cast { value, target, .. } => {
                 self.resolve_expr(value);
                 self.resolve_type(target);

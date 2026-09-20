@@ -1,6 +1,6 @@
 use inkwell::AddressSpace;
 use inkwell::values::BasicValueEnum;
-use mir::{Operand, MIRFunction};
+use mir::{MIRFunction, Operand, ProjectionElem};
 use ir::types::Type;
 use ir::Constant;
 use crate::CodeGen;
@@ -261,35 +261,43 @@ impl<'c> CodeGen<'c> {
 
         for projection in &place.projection {
             ty = match projection {
-                mir::ProjectionElem::Deref => {
+                ProjectionElem::Deref => {
                     match ty {
                         Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) | Type::CONST_POINTER(inner) => *inner,
                         other => other,
                     }
                 }
 
-                mir::ProjectionElem::Field(index) => {
+                ProjectionElem::Index(_) => {
+                    match ty {
+                        Type::ARRAY(inner, _) | Type::INFERRED_ARRAY(inner) | Type::SLICE(inner) => *inner,
+                        other => other,
+                    }
+                }
+
+                ProjectionElem::Field(index) => {
                     let mut base_ty = ty;
 
-                    while let Type::REF(inner) | Type::CONST_REF(inner) | 
-                        Type::POINTER(inner) | Type::CONST_POINTER(inner) = base_ty
+                    while let Type::REF(inner) | Type::CONST_REF(inner) |
+                    Type::POINTER(inner) | Type::CONST_POINTER(inner) = base_ty
                     {
                         base_ty = *inner;
                     }
 
                     match base_ty {
+                        Type::OPTIONAL(inner) => {
+                            match *index {
+                                0 => Type::BOOL,
+                                1 => *inner,
+                                _ => Type::VOID,
+                            }
+                        }
+
                         Type::STRUCT(type_ref) => {
                             let fields = self.hir_context.get_struct_fields(type_ref.def_id);
                             fields[*index].1.clone()
                         }
 
-                        other => other,
-                    }
-                }
-
-                mir::ProjectionElem::Index(_) => {
-                    match ty {
-                        Type::ARRAY(inner, _) | Type::INFERRED_ARRAY(inner) | Type::SLICE(inner) => *inner,
                         other => other,
                     }
                 }

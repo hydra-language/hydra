@@ -1,6 +1,6 @@
 use crate::CodeGen;
 use ir::{context::DefKind, types::Type};
-use mir::{Statement, StatementKind, Terminator, Place, MIRFunction, LocalID};
+use mir::{LocalID, MIRFunction, Place, ProjectionElem, Statement, StatementKind, Terminator};
 use inkwell::{IntPredicate, values::{IntValue, PointerValue}};
 use analyzer::traits;
 
@@ -128,7 +128,7 @@ impl<'c> CodeGen<'c> {
 
         for proj in &place.projection {
             match proj {
-                mir::ProjectionElem::Deref => {
+                ProjectionElem::Deref => {
                     match &current_ty {
                         Type::REF(inner) | Type::CONST_REF(inner) if matches!(inner.as_ref(), Type::SLICE(_)) => {
                             //
@@ -161,39 +161,7 @@ impl<'c> CodeGen<'c> {
                     }
                 }
 
-                mir::ProjectionElem::Field(idx) => {
-                    while let Type::REF(inner) | Type::CONST_REF(inner) | 
-                        Type::POINTER(inner) | Type::CONST_POINTER(inner) = &current_ty
-                    {
-                        ptr = self.builder.build_load(ptr, "auto_deref").into_pointer_value();
-                        current_ty = *inner.clone();
-                    }
-
-                    let struct_name = match &current_ty {
-                        Type::STRUCT(name) => name.clone(),
-                        _ => return Err(format!(
-                            "ICE: field access on non-struct type {:?}", current_ty
-                        )),
-                    };
-
-                    let _struct_ty = self.module.get_struct_type(&struct_name.symbol)
-                        .ok_or_else(|| format!("ICE: struct type '{}' not found in module", struct_name))?;
-
-                    ptr = self.builder.build_struct_gep(ptr, *idx as u32, "field_ptr")
-                        .map_err(|_| format!("GEP failed: invalid field index {} on '{}'", idx, struct_name))?;
-
-                    current_ty = self.hir_context
-                        .find_struct_by_name(&struct_name.symbol)
-                        .map(|def_id| {
-                            let fields = self.hir_context.get_struct_fields(def_id);
-                            fields[*idx].1.clone()
-                        })
-                        .unwrap_or(Type::VOID);
-
-                    slice_len = None;
-                }
-
-                mir::ProjectionElem::Index(local_idx) => {
+                ProjectionElem::Index(local_idx) => {
                     let idx_ptr = self.locals.get(local_idx)
                         .ok_or_else(|| format!("ICE: missing index local _{}", local_idx.0))?;
 
@@ -256,6 +224,64 @@ impl<'c> CodeGen<'c> {
                     }
 
                     current_ty = element_ty;
+                    slice_len = None;
+                }
+
+                ProjectionElem::Field(idx) => {
+                    while let Type::REF(inner) | Type::CONST_REF(inner) |
+                    Type::POINTER(inner) | Type::CONST_POINTER(inner) = &current_ty
+                    {
+                        ptr = self.builder.build_load(ptr, "auto_deref").into_pointer_value();
+                        current_ty = *inner.clone();
+                    }
+
+                    match &current_ty {
+                        Type::OPTIONAL(inner) => {
+                            if *idx > 1 {
+                                return Err(format!("ICE: optional field index {} is invalid", idx));
+                            }
+
+                            ptr = self.builder.build_struct_gep(ptr, *idx as u32, "optional_field_ptr").map_err(|_| {
+                                format!(
+                                    "ICE: optional GEP failed for field {}",
+                                    idx,
+                                )
+                            })?;
+
+                            current_ty = if *idx == 0 {
+                                Type::BOOL
+                            } else {
+                                *inner.clone()
+                            };
+                        }
+
+                        Type::STRUCT(type_ref) => {
+                            let struct_ty = self.module.get_struct_type(&type_ref.symbol).ok_or_else(|| {
+                                format!(
+                                    "ICE: struct type '{}' not found in module",
+                                    type_ref,
+                                )
+                            })?;
+
+                            let _ = struct_ty;
+
+                            ptr = self.builder.build_struct_gep(ptr, *idx as u32, "field_ptr").map_err(|_| {
+                                format!(
+                                    "GEP failed: invalid field index {} on '{}'",
+                                    idx,
+                                    type_ref,
+                                )
+                            })?;
+
+                            current_ty = self.hir_context.get_struct_fields(type_ref.def_id)[*idx].1 .clone();
+                        }
+
+                        _ => return Err(format!(
+                            "ICE: field access on non-aggregate type {:?}",
+                            current_ty,
+                        ))
+                    }
+
                     slice_len = None;
                 }
             }

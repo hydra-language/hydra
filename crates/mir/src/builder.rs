@@ -886,6 +886,98 @@ impl<'a> MIRBuilder<'a> {
                 }
             }
 
+            HIRExprKind::OrElse { optional, fallback } => {
+                let optional_operand = self.lower_expr_to_operand(optional);
+
+                let optional_place = match optional_operand {
+                    Operand::Copy(place) |
+                    Operand::Move(place) => place,
+                    Operand::Const(_) => panic!("ICE: optional expression lowered directly to a constant")
+                };
+
+                let mut discriminant_place = optional_place.clone();
+                discriminant_place.projection.push(ProjectionElem::Field(0));
+
+                let mut payload_place = optional_place;
+                payload_place.projection.push(ProjectionElem::Field(1));
+
+                let present_bb = self.new_block();
+                let fallback_bb = self.new_block();
+                let merge_bb = self.new_block();
+
+                let result_local = self.new_local(expr.ty.clone(), false, None);
+
+                let result_place = Place {
+                    local: result_local,
+                    projection: vec![],
+                };
+
+                self.terminate_block(Terminator::SwitchInt {
+                    discriminant: Operand::Copy(
+                        discriminant_place,
+                    ),
+                    true_target: present_bb,
+                    false_target: fallback_bb,
+                });
+
+                //
+                // present path:
+                //
+                //     result = optional.1
+                //
+                self.current_block = present_bb;
+
+                let payload = if self.is_copy_type(&expr.ty) {
+                    Operand::Copy(payload_place)
+                } else {
+                    Operand::Move(payload_place)
+                };
+
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(
+                        result_place.clone(),
+                        Rvalue::Use(payload),
+                    ),
+                    span: expr.span,
+                });
+
+                self.terminate_block(Terminator::Goto {
+                    target: merge_bb,
+                });
+
+                //
+                // None path:
+                //
+                // evaluate the fallback only here
+                //
+                self.current_block = fallback_bb;
+
+                let fallback_operand = self.lower_expr_to_operand(fallback);
+
+                if matches!(self.basic_blocks[self.current_block.0].terminator, Terminator::Unreachable) 
+                {
+                    self.push_statement(Statement {
+                        kind: StatementKind::Assign(
+                            result_place.clone(),
+                            Rvalue::Use(fallback_operand),
+                        ),
+                        span: fallback.span,
+                    });
+
+                    self.terminate_block(Terminator::Goto {
+                        target: merge_bb,
+                    });
+                }
+
+                self.current_block = merge_bb;
+
+                if self.is_copy_type(&expr.ty) {
+                    Operand::Copy(result_place)
+                } else {
+                    Operand::Move(result_place)
+                }
+            }
+
             HIRExprKind::StructInit { def_id, values } => {
                 let mut field_operands = Vec::new();
 

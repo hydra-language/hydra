@@ -53,6 +53,7 @@ pub enum TokenType {
     FOREACH,
     WHILE,
     MATCH,
+    ORELSE,
     BREAK,
     CONTINUE,
     INCLUDE,                // for imports
