@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::Rvalue::Aggregate;
 use crate::{
     AggregateKind, BasicBlock, BasicBlockID, FunctionRef, LocalDecl, LocalID, MIRFunction, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator
 };
@@ -209,6 +210,74 @@ impl<'a> MIRBuilder<'a> {
             HIRExprKind::BoolLiteral(val) => Operand::Const(Constant::Bool(*val)),
             HIRExprKind::CharLiteral(val) => Operand::Const(Constant::Char(*val)),
             HIRExprKind::StringLiteral(val) => Operand::Const(Constant::String(val.clone())),
+            HIRExprKind::NONE => {
+                let Type::OPTIONAL(inner) = &expr.ty else {
+                    panic!("ICE: optional `None` has non optional type: `{}`", expr.ty);
+                };
+
+                let temp_local = self.new_local(expr.ty.clone(), false, None);
+                let target_place = Place {
+                    local: temp_local,
+                    projection: vec![],
+                };
+
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(
+                        target_place.clone(), 
+                        Rvalue::Aggregate(
+                            AggregateKind::Optional(inner.as_ref().clone()),
+                            vec![Operand::Const(Constant::Bool(false))],
+                        ),
+                    ),
+                    span: expr.span
+                });
+
+                if self.is_copy_type(&expr.ty) {
+                    Operand::Copy(target_place)
+                } else {
+                    Operand::Move(target_place)
+                }
+            }
+            HIRExprKind::OptionalPresent(value) => {
+                let Type::OPTIONAL(inner) = &expr.ty else {
+                    panic!("ICE: OptionalPresent has non optional HIR type: `{}`", expr.ty);
+                };
+
+                if value.ty != **inner {
+                    panic!(
+                        "ICE: optional payload type mismatch: expected `{}`, found `{}`",
+                        inner,
+                        value.ty
+                    );
+                }
+
+                let value_operand = self.lower_expr_to_operand(value);
+                let temp_local = self.new_local(expr.ty.clone(), false, None);
+                let target_place = Place {
+                    local: temp_local,
+                    projection: vec![],
+                };
+
+                self.push_statement(Statement {
+                    kind: StatementKind::Assign(
+                        target_place.clone(),
+                        Rvalue::Aggregate(
+                            AggregateKind::Optional(inner.as_ref().clone()),
+                            vec![
+                                Operand::Const(Constant::Bool(true)),
+                                value_operand,
+                            ],
+                        ),
+                    ),
+                    span: expr.span
+                });
+
+                if self.is_copy_type(&expr.ty) {
+                    Operand::Copy(target_place)
+                } else {
+                    Operand::Move(target_place)
+                }
+            }
             
             HIRExprKind::VarRef(def_id) => {
                 if let Some(&local) = self.var_map.get(def_id) {
@@ -871,7 +940,7 @@ impl<'a> MIRBuilder<'a> {
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::USIZE |
             Type::F32 | Type::F64 | Type::CHAR | Type::BOOL | Type::VOID => true,
 
-            Type::ARRAY(inner, _) => self.is_copy_type(inner),
+            Type::ARRAY(inner, _) | Type::OPTIONAL(inner) => self.is_copy_type(inner),
             
             // pointers and references are just memory addresses.
             // copying an address is safe (the underlying data is NOT copied).

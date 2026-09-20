@@ -173,7 +173,8 @@ impl<'a> Monomorphizer<'a> {
             HIRExprKind::Unary { operand, .. } |
             HIRExprKind::Cast { expr: operand, .. } |
             HIRExprKind::Borrow { target: operand, .. } |
-            HIRExprKind::Dereference { target: operand, .. } => {
+            HIRExprKind::Dereference { target: operand, .. } |
+            HIRExprKind::OptionalPresent(operand) => {
                 self.substitute_expr(operand, subs, local_types);
             }
             HIRExprKind::Assign { target, value } => {
@@ -506,7 +507,8 @@ impl<'a> Monomorphizer<'a> {
             (Type::REF(pattern), Type::REF(actual)) |
             (Type::CONST_REF(pattern), Type::CONST_REF(actual)) |
             (Type::POINTER(pattern), Type::POINTER(actual)) |
-            (Type::CONST_POINTER(pattern), Type::CONST_POINTER(actual)) => {
+            (Type::CONST_POINTER(pattern), Type::CONST_POINTER(actual)) |
+            (Type::OPTIONAL(pattern), Type::OPTIONAL(actual)) => {
                 Self::trait_impl_target_matches(
                     pattern,
                     actual,
@@ -665,6 +667,10 @@ impl<'a> Monomorphizer<'a> {
                 )
             }
 
+            Type::OPTIONAL(inner) => {
+                Type::OPTIONAL(Box::new(self.resolve_type(inner, subs)))
+            }
+
             other => other.clone(),
         }
     }
@@ -679,7 +685,8 @@ impl<'a> Monomorphizer<'a> {
             }
 
             (Type::REF(p), Type::REF(a)) | (Type::CONST_REF(p), Type::CONST_REF(a)) | 
-            (Type::POINTER(p), Type::POINTER(a)) | (Type::CONST_POINTER(p), Type::CONST_POINTER(a)) => {
+            (Type::POINTER(p), Type::POINTER(a)) | (Type::CONST_POINTER(p), Type::CONST_POINTER(a)) | 
+            (Type::OPTIONAL(a), Type::OPTIONAL(p)) => {
                 self.infer_type_args(p, a, inferred);
             }
 

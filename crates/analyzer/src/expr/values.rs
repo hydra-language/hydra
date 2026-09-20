@@ -37,6 +37,30 @@ impl<'ctx> Analyzer<'ctx> {
                         span,
                     }),
 
+                    TokenType::NONE => {
+                        let Some(expected) = expected else {
+                            return Err(self.error(
+                                "S007",
+                                "cannot infer the type of `None`",
+                                token.span,
+                            ).with_help("add an explicit type annotation, such as `i32?`"))
+                        };
+
+                        if !matches!(expected, IRType::OPTIONAL(_)) {
+                            return Err(self.error(
+                                "S001",
+                                format!("`None` requires an optional type, found `{}`", expected),
+                                token.span,
+                            ));
+                        }
+
+                        Ok(HIRExpr {
+                            kind: HIRExprKind::NONE,
+                            ty: expected.clone(),
+                            span,
+                        })
+                    }
+
                     TokenType::CharLiteral(c) => Ok(HIRExpr { kind: HIRExprKind::CharLiteral(*c), ty: IRType::CHAR, span }),
                     TokenType::BoolLiteral(b) => Ok(HIRExpr { kind: HIRExprKind::BoolLiteral(*b), ty: IRType::BOOL, span }),
                     _ => Err(self.error("S003", format!("unexpected literal: {:?}", token.token_type), token.span))

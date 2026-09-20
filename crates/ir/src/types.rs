@@ -71,6 +71,7 @@ pub enum Type {
 
     GENERIC(String),
     GENERIC_INSTANCE(TypeRef, Vec<Type>),
+    OPTIONAL(Box<Type>),
 }
 
 impl Type {
@@ -128,6 +129,9 @@ impl Type {
                     )
                 )
             }
+
+            Type::OPTIONAL(inner) => Type::OPTIONAL(Box::new(inner.substitute(substitutions))),
+
             // Base types (I64, BOOL, STRUCT, etc.) stay exactly the same
             _ => self.clone(),
         }
@@ -179,6 +183,8 @@ impl Type {
                 format!("{}__{}", base, args)
             }
 
+            Type::OPTIONAL(inner) => format!("opt_{}", inner.mangle()),
+
             _ => "unknown".to_string(),
         }
     }
@@ -200,6 +206,8 @@ impl Type {
             Type::ARRAY(inner, _) => {
                 inner.contains_generic()
             }
+            
+            Type::OPTIONAL(inner) => inner.contains_generic(),
 
             _ => false,
         }
@@ -244,6 +252,8 @@ impl fmt::Display for Type {
                 }
                 write!(f, ">")
             }
+
+            Type::OPTIONAL(inner) => write!(f, "{}?", inner),
         }
     }
 }

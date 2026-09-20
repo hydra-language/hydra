@@ -122,6 +122,11 @@ impl<'ctx> Analyzer<'ctx> {
                 let inner = self.lower_type(element_type)?;
                 Ok(IRType::SLICE(Box::new(inner)))
             }
+
+            ASTType::Optional { inner, .. } => {
+                let inner_type = self.lower_type(inner)?;
+                Ok(IRType::OPTIONAL(Box::new(inner_type)))
+            }
         }
     }
 

@@ -1,5 +1,6 @@
 use super::Analyzer;
 use errors::error::HydraError;
+use ir::expr;
 use parser::ast::Stmt as ASTStmt;
 use ir::types::Type as IRType;
 use ir::context::DefKind;
@@ -78,9 +79,11 @@ impl<'ctx> Analyzer<'ctx> {
 
             ASTStmt::Return { value, .. } => {
                 if let Some(v) = value {
-                    let mut val = self.lower_expr(v)?;
-                    if let Some(expected) = &self.current_return_type {
-                        val = self.coerce_primitive(val, expected);             
+                    let expected = self.current_return_type.clone();
+                    let mut val = self.lower_expr_with_type(v, expected.as_ref())?;
+
+                    if let Some(expected) = expected.as_ref() {
+                        val = self.coerce_primitive(val, expected);
                     }
 
                     Ok(HIRStmt::Expr(HIRExpr {

@@ -375,7 +375,7 @@ impl<'ctx> Analyzer<'ctx> {
             IRType::F32 | IRType::F64 | IRType::CHAR | IRType::BOOL | IRType::POINTER(_) | 
             IRType::CONST_POINTER(_) | IRType::REF(_) | IRType::CONST_REF(_) | IRType::VOID => true,
 
-            IRType::ARRAY(inner, _) => {
+            IRType::ARRAY(inner, _) | IRType::OPTIONAL(inner) => {
                 self.type_is_copy_compatible(inner, copy_trait_def_id)
             }
 

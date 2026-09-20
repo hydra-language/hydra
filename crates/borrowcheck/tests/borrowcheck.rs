@@ -102,6 +102,7 @@ impl MirFixture {
 
     fn finish(self, statements: Vec<Statement>) -> (HIRContext, MIRFunction) {
         let mir = MIRFunction {
+            display_name: None,
             name: "test".to_string(),
             def_id: self.function_def,
             return_type: Type::VOID,

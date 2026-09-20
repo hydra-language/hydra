@@ -30,9 +30,11 @@ pub fn compile_type<'c>(context: &'c Context, target_data: &TargetData, ty: &Typ
             inner_type.array_type(*size as u32).as_basic_type_enum()
         },
 
-        // TODO: optimzation, do not allocate the struct until its actually used
-        // let s: Struct = Struct::new(); wont actually allocate until some field is accessed
-        // or some method is called
+        Type::OPTIONAL(inner) => {
+            let llvm_inner = compile_type(context, target_data, inner);
+            context.struct_type(&[context.bool_type().into(), llvm_inner], false).as_basic_type_enum()
+        }
+
         Type::STRUCT(name) => {
             context.get_struct_type(&name.symbol)
                 .unwrap_or_else(|| panic!("LLVM struct type {} not found", name))

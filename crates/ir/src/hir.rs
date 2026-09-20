@@ -41,6 +41,8 @@ pub enum HIRExprKind {
     StringLiteral(String),
     CharLiteral(char),
     BoolLiteral(bool),
+    NONE,
+    OptionalPresent(Box<HIRExpr>),
 
     // 3. Memory & Aggregates
     StructInit {
@@ -233,6 +235,10 @@ impl fmt::Display for HIRExprKind {
             HIRExprKind::StringLiteral(val) => write!(f, "\"{}\"", val),
             HIRExprKind::CharLiteral(val) => write!(f, "'{}'", val),
             HIRExprKind::BoolLiteral(val) => write!(f, "{}", val),
+            HIRExprKind::NONE => write!(f, "None"),
+            HIRExprKind::OptionalPresent(value) => {
+                write!(f, "present({})", value)
+            }
             
             HIRExprKind::StructInit { def_id, values } => {
                 write!(f, "{} {{ ", def_id)?;

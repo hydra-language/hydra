@@ -539,29 +539,27 @@ impl Parser {
     // ========================================================================
     // 5. TYPES
     // ========================================================================
-
-    fn parse_type(&mut self) -> Result<Type, HydraError> {
+    
+    fn parse_type_base(&mut self) -> Result<Type, HydraError> {
         if self.match_token(TokenType::LeftBracket) {
             let id = self.next_node_id();
             let start_token = self.previous().clone();
             let element_type = self.parse_type()?;
 
-            // check if it's a slice e.g., `[i32]`
             if self.match_token(TokenType::RightBracket) {
                 return Ok(Type::Slice {
                     id,
                     element_type: Box::new(element_type),
-                    token: start_token,
+                    token: start_token
                 });
             }
 
-            // otherwise it's an array e.g., `[i32, 4]`
-            self.consume(TokenType::Comma, "expected ',' to separate type and array size")?;
+            self.consume(TokenType::Comma, "expected ',' to separate type and array slice")?;
             let size_expr = self.parse_expression()?;
             self.consume(TokenType::RightBracket, "expected ']' to close the array")?;
 
-            return Ok(Type::Array {
-                id,
+           return Ok(Type::Array {
+                id, 
                 element_type: Box::new(element_type),
                 size: Box::new(size_expr),
                 token: start_token,
@@ -573,24 +571,39 @@ impl Parser {
             let is_mut = self.match_token(TokenType::MUT);
             let inner = self.parse_type()?;
 
-            return Ok(Type::Borrow { id, is_mut, inner: Box::new(inner) });
+            return Ok(Type::Borrow {
+                id,
+                is_mut,
+                inner: Box::new(inner),
+            });
         }
 
         if self.match_token(TokenType::Star) {
             let id = self.next_node_id();
+
             let is_mut = if self.match_token(TokenType::MUT) {
                 true
             } else if self.match_token(TokenType::CONST) {
                 false
             } else {
-                return Err(self.error(self.previous(), "P012", "raw pointers must explicitly be '*mut T' or '*const T'"));
+                return Err(self.error(
+                    self.previous(),
+                    "P012",
+                    "raw pointers must explicitly be '*mut T' or '*const T'",
+                ));
             };
 
             let inner = self.parse_type()?;
-            return Ok(Type::RawPointer { id, is_mut, inner: Box::new(inner) });
+
+            return Ok(Type::RawPointer {
+                id,
+                is_mut,
+                inner: Box::new(inner),
+            });
         }
 
         let current_token = self.peek();
+
         use TokenType::*;
         match &current_token.token_type {
             CONST => {
@@ -599,7 +612,7 @@ impl Parser {
             }
 
             IDENTIFIER(_) |
-            ISIZE | I8 | I16 | I32 | I64 | 
+            ISIZE | I8 | I16 | I32 | I64 |
             USIZE | U8 | U16 | U32 | U64 |
             F32 | F64 | CHAR | BOOL => {
                 let first_token = self.advance().clone();
@@ -608,43 +621,79 @@ impl Parser {
                 if self.match_token(TokenType::DoubleColon) {
                     loop {
                         let next_token = self.advance().clone();
+
                         if let TokenType::IDENTIFIER(_) = next_token.token_type {
                             segments.push(next_token);
                         } else {
-                            return Err(self.error(&next_token, "P000", "expected identifier after '::'"));
+                            return Err(self.error(
+                                &next_token,
+                                "P000",
+                                "expected identifier after '::'",
+                            ));
                         }
 
-                        if !self.match_token(TokenType::DoubleColon) { break; }
+                        if !self.match_token(TokenType::DoubleColon) {
+                            break;
+                        }
                     }
                 }
 
-                let mut type_node = Type::Path { id: self.next_node_id(), segments };
+                let mut type_node = Type::Path {
+                    id: self.next_node_id(),
+                    segments,
+                };
 
                 if self.match_token(TokenType::LeftAngle) {
                     let mut args = Vec::new();
+
                     loop {
                         args.push(self.parse_type()?);
 
-                        if self.match_generic_right_angle() { 
-                            break; 
+                        if self.match_generic_right_angle() {
+                            break;
                         }
 
                         self.consume(TokenType::Comma, "expected ',' between generic types")?;
                     }
 
-                    type_node = Type::Generic { 
-                        id: self.next_node_id(), 
-                        base: Box::new(type_node), 
-                        args 
+                    type_node = Type::Generic {
+                        id: self.next_node_id(),
+                        base: Box::new(type_node),
+                        args,
                     };
                 }
 
                 Ok(type_node)
             }
 
-            _ => Err(self.error(current_token, "P000", "expected a type name or array type")
-                .with_help("consider adding a type annotation"))
+            _ => {
+                Err(self.error(current_token,
+                    "P000",
+                    "expected a type name or array type",
+                ).with_help("consider adding a type annotation"))
+            }
         }
+    }
+
+    fn parse_type(&mut self) -> Result<Type, HydraError> {
+        let mut ty = self.parse_type_base()?;
+
+        if self.match_token(TokenType::QuestionMark) {
+            ty = Type::Optional {
+                id: self.next_node_id(),
+                inner: Box::new(ty),
+            };
+
+            if self.check(TokenType::QuestionMark) {
+                return Err(self.error(
+                    self.peek(),
+                    "P015",
+                    "nested optional types are not currently supported",
+                ).with_help("use a single optional type"));
+            }
+        }
+
+        Ok(ty)
     }
 
     // ========================================================================
@@ -1138,7 +1187,9 @@ impl Parser {
 
         use TokenType::*;
         match &current_token.token_type {
-            IntLiteral(_) | FloatLiteral(_) | StringLiteral(_) | CharLiteral(_)| BoolLiteral(_) | ANYSIZE => {
+            IntLiteral(_) | FloatLiteral(_) | 
+            StringLiteral(_) | CharLiteral(_)| 
+            BoolLiteral(_) | ANYSIZE | NONE => {
                 self.advance();
                 Ok(Expr::Literal { id, token: self.previous().clone() })
             }

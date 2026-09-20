@@ -400,7 +400,8 @@ impl<'ctx> Analyzer<'ctx> {
             (IRType::CONST_POINTER(pattern), IRType::CONST_POINTER(actual)) | 
             (IRType::REF(pattern), IRType::REF(actual)) | 
             (IRType::CONST_REF(pattern), IRType::CONST_REF(actual)) | 
-            (IRType::SLICE(pattern), IRType::SLICE(actual)) => 
+            (IRType::SLICE(pattern), IRType::SLICE(actual)) | 
+            (IRType::OPTIONAL(pattern), IRType::OPTIONAL(actual)) => 
             {
                 Self::infer_generic_bindings(pattern, actual, bindings);
             }

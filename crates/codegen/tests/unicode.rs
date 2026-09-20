@@ -56,6 +56,7 @@ fn unicode_string_literal_uses_utf8_byte_storage() {
 
     let function =
         MIRFunction {
+            display_name: None,
             name:
                 "main"
                     .to_string(),

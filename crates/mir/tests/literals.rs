@@ -68,6 +68,7 @@ fn string_index(
         );
 
     MIRFunction {
+        display_name: None,
         name:
             "main"
                 .to_string(),

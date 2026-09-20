@@ -256,14 +256,29 @@ impl<'c> CodeGen<'c> {
                     }
 
                     AggregateKind::Array(inner) => {
-                        crate::types::compile_type(self.context, &self.target_data, inner)
-                            .array_type(operands.len() as u32).into()
+                        crate::types::compile_type(
+                            self.context, 
+                            &self.target_data, 
+                            inner
+                        ).array_type(operands.len() as u32).into()
+                    }
+
+                    AggregateKind::Optional(inner) => {
+                        crate::types::compile_type(
+                            self.context,
+                            &self.target_data,
+                            &Type::OPTIONAL(Box::new(inner.clone()))
+                        )
                     }
                 };
 
                 let mut agg_val = match llvm_ty {
                     BasicTypeEnum::ArrayType(t) => t.get_undef().as_basic_value_enum(),
+                    BasicTypeEnum::StructType(t) if matches!(kind, AggregateKind::Optional(_)) => {
+                        t.const_zero().as_basic_value_enum()
+                    }
                     BasicTypeEnum::StructType(t) => t.get_undef().as_basic_value_enum(),
+
                     _ => return Err("ICE: only arrays and structs are supported as aggregates".to_string()),
                 };
 

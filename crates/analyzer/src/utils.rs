@@ -47,6 +47,7 @@ pub fn get_type_span(ty: &ASTType) -> Span {
         ASTType::RawPointer { inner, .. } => get_type_span(inner),
         ASTType::Array { token, .. } => token.span,
         ASTType::Slice { token, .. } => token.span,
+        ASTType::Optional { inner, .. } => get_type_span(inner),
     }
 }
 
@@ -69,6 +70,7 @@ pub fn get_type_id(ty: &ASTType) -> NodeID {
         ASTType::RawPointer { id, .. } => *id,
         ASTType::Array { id, .. } => *id,
         ASTType::Slice { id, .. } => *id,
+        ASTType::Optional { id, .. } => *id,
     }
 }
 

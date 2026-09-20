@@ -71,6 +71,11 @@ pub enum Type {
         element_type: Box<Type>,
         token: Token,
     },
+
+    Optional {
+        id: NodeID,
+        inner: Box<Type>,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

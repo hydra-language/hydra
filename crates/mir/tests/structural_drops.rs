@@ -1,44 +1,35 @@
 use std::collections::HashMap;
 
+use analyzer::traits;
 use errors::error::Span;
 use ir::{
-    context::{
-        DefID,
-        DefKind,
-        HIRContext,
-        SymbolInfo,
-        TraitImpl,
-    },
-    hir::{
-        HIRBlock,
-        HIRExpr,
-        HIRExprKind,
-        HIRFunction,
-        HIRStmt,
-    },
-    types::{
-        Type,
-        TypeRef,
-    },
+    context::{DefID, DefKind, HIRContext, SymbolInfo, TraitImpl},
+    hir::{HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRStmt},
+    types::{Type, TypeRef},
 };
 use mir::{
+    builder::MIRBuilder,
     LocalID,
     Place,
     ProjectionElem,
     StatementKind,
-    builder::MIRBuilder,
 };
 
+fn drop_trait_path() -> Vec<String> {
+    traits::DROP_TRAIT_PATH
+        .split("::")
+        .map(str::to_string)
+        .collect()
+}
+
 fn insert_drop_trait(context: &mut HIRContext) -> DefID {
+    let mut drop_method_path = drop_trait_path();
+    drop_method_path.push("drop".to_string());
+
     let drop_method_def_id = context.insert_def(SymbolInfo {
         name: "drop".to_string(),
         span: Span::default(),
-        absolute_path: vec![
-            "core".to_string(),
-            "ops".to_string(),
-            "Drop".to_string(),
-            "drop".to_string(),
-        ],
+        absolute_path: drop_method_path,
         kind: DefKind::Function {
             params: vec![Type::REF(Box::new(Type::GENERIC("Self".to_string())))],
             annotations: vec![],
@@ -53,11 +44,7 @@ fn insert_drop_trait(context: &mut HIRContext) -> DefID {
     context.insert_def(SymbolInfo {
         name: "Drop".to_string(),
         span: Span::default(),
-        absolute_path: vec![
-            "core".to_string(),
-            "ops".to_string(),
-            "Drop".to_string(),
-        ],
+        absolute_path: drop_trait_path(),
         kind: DefKind::Trait {
             methods: vec![drop_method_def_id],
         },
@@ -65,11 +52,7 @@ fn insert_drop_trait(context: &mut HIRContext) -> DefID {
     })
 }
 
-fn insert_struct(
-    context: &mut HIRContext,
-    name: &str,
-    fields: Vec<(String, Type, bool)>,
-) -> (DefID, Type) {
+fn insert_struct(context: &mut HIRContext, name: &str, fields: Vec<(String, Type, bool)>) -> (DefID, Type) {
     let def_id = context.insert_def(SymbolInfo {
         name: name.to_string(),
         span: Span::default(),
@@ -83,10 +66,7 @@ fn insert_struct(
 
     (
         def_id,
-        Type::STRUCT(TypeRef::new(
-            def_id,
-            name.to_string(),
-        )),
+        Type::STRUCT(TypeRef::new(def_id, name.to_string())),
     )
 }
 
@@ -95,7 +75,7 @@ fn register_drop_impl(context: &mut HIRContext, drop_trait_def_id: DefID, target
         name: "drop".to_string(),
         span: Span::default(),
         absolute_path: vec![
-            format!("{name}::<core::ops::Drop>"),
+            format!("{name}::<{}>", traits::DROP_TRAIT_PATH),
             "drop".to_string(),
         ],
         kind: DefKind::Function {
@@ -112,12 +92,7 @@ fn register_drop_impl(context: &mut HIRContext, drop_trait_def_id: DefID, target
     context.register_trait_impl(TraitImpl {
         trait_def_id: drop_trait_def_id,
         target_type: target_ty.clone(),
-        methods: HashMap::from([
-            (
-                "drop".to_string(),
-                drop_method_def_id,
-            ),
-        ]),
+        methods: HashMap::from([("drop".to_string(), drop_method_def_id)]),
     });
 }
 
@@ -179,15 +154,13 @@ fn build_payload_function(
             params: vec![],
             return_type: Type::VOID,
             body: HIRBlock {
-                stmts: vec![
-                    HIRStmt::VarDecl {
-                        def_id: payload_var_def_id,
-                        ty: payload_ty,
-                        init: Some(payload_init),
-                        has_type_annotation: true,
-                        span: Span::default(),
-                    },
-                ],
+                stmts: vec![HIRStmt::VarDecl {
+                    def_id: payload_var_def_id,
+                    ty: payload_ty,
+                    init: Some(payload_init),
+                    has_type_annotation: true,
+                    span: Span::default(),
+                }],
                 span: Span::default(),
             },
             is_extern: false,
@@ -232,11 +205,7 @@ fn struct_without_drop_impl_drops_owned_fields() {
 
     let drop_trait_def_id = insert_drop_trait(&mut context);
 
-    let (owned_def_id, owned_ty) = insert_struct(
-        &mut context,
-        "Owned",
-        vec![],
-    );
+    let (owned_def_id, owned_ty) = insert_struct(&mut context, "Owned", vec![]);
 
     register_drop_impl(
         &mut context,
@@ -248,13 +217,7 @@ fn struct_without_drop_impl_drops_owned_fields() {
     let (payload_def_id, payload_ty) = insert_struct(
         &mut context,
         "Payload",
-        vec![
-            (
-                "data".to_string(),
-                owned_ty.clone(),
-                false,
-            ),
-        ],
+        vec![("data".to_string(), owned_ty.clone(), false)],
     );
 
     let (function, payload_var_def_id) = build_payload_function(
@@ -270,12 +233,10 @@ fn struct_without_drop_impl_drops_owned_fields() {
 
     assert_eq!(
         collect_drops(&mir),
-        vec![
-            Place {
-                local: payload_local,
-                projection: vec![ProjectionElem::Field(0)],
-            },
-        ],
+        vec![Place {
+            local: payload_local,
+            projection: vec![ProjectionElem::Field(0)],
+        }],
         "Payload has no explicit Drop implementation, so MIR should directly drop its owned field",
     );
 }
@@ -286,11 +247,7 @@ fn explicit_drop_runs_before_struct_fields_are_dropped() {
 
     let drop_trait_def_id = insert_drop_trait(&mut context);
 
-    let (owned_def_id, owned_ty) = insert_struct(
-        &mut context,
-        "Owned",
-        vec![],
-    );
+    let (owned_def_id, owned_ty) = insert_struct(&mut context, "Owned", vec![]);
 
     register_drop_impl(
         &mut context,
@@ -302,13 +259,7 @@ fn explicit_drop_runs_before_struct_fields_are_dropped() {
     let (payload_def_id, payload_ty) = insert_struct(
         &mut context,
         "Payload",
-        vec![
-            (
-                "data".to_string(),
-                owned_ty.clone(),
-                false,
-            ),
-        ],
+        vec![("data".to_string(), owned_ty.clone(), false)],
     );
 
     register_drop_impl(

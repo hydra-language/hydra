@@ -102,6 +102,7 @@ fn indexed_slice_emits_runtime_bounds_check() {
                 terminator: Terminator::Return,
             },
         ],
+        display_name: None,
         is_inline: false,
     };
 

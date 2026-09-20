@@ -894,7 +894,8 @@ impl<'ctx> Resolver<'ctx> {
                 }
             }
 
-            Type::Borrow { inner, .. } | Type::Slice { element_type: inner, .. } | Type::RawPointer { inner, .. } => 
+            Type::Borrow { inner, .. } | Type::Slice { element_type: inner, .. } | 
+            Type::RawPointer { inner, .. } | Type::Optional { inner, .. } =>
             {
                 self.resolve_type(inner);
             }

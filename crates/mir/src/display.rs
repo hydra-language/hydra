@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{FunctionRef, MIRFunction, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator};
+use crate::{AggregateKind, FunctionRef, MIRFunction, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator};
 
 impl fmt::Display for MIRFunction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -106,7 +106,25 @@ impl fmt::Display for Rvalue {
             Rvalue::BinaryOp(op, lhs, rhs) => write!(f, "{} {} {}", lhs, op, rhs),
             Rvalue::UnaryOp(op, operand) => write!(f, "{}{}", op, operand),
             Rvalue::Cast(_kind, operand, ty) => write!(f, "{} as {}", operand, ty),
-            Rvalue::Aggregate(_, _) => write!(f, "aggregate(...)"),
+
+            Rvalue::Aggregate(kind, operands) => {
+                let AggregateKind::Optional(inner) = kind else {
+                    return write!(f, "aggregate(...)");
+                };
+
+                write!(f, "optional<{}>(", inner)?;
+
+                for (index, operand) in operands.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, ", ")?;
+                    }
+
+                    write!(f, "{}", operand)?;
+                }
+
+                write!(f, ")")
+            }
+
             Rvalue::Intrinsic { callee, type_args, args, .. } => {
                 write!(f, "{}", callee)?;
 

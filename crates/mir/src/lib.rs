@@ -118,6 +118,7 @@ pub enum Rvalue {
 pub enum AggregateKind {
     Array(Type),
     Struct(DefID),
+    Optional(Type),
 }
 
 #[derive(Debug, Clone)]

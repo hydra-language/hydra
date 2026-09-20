@@ -54,6 +54,7 @@ fn known_slice_access(index: i64) -> MIRFunction {
     ));
 
     MIRFunction {
+        display_name: None,
         name: "main".to_string(),
         def_id: DefID(0),
         return_type: Type::VOID,
@@ -239,6 +240,7 @@ fn leaves_unknown_slice_index_for_runtime_checking() {
     ));
 
     let function = MIRFunction {
+        display_name: None,
         name: "get".to_string(),
         def_id: DefID(0),
         return_type: Type::I32,

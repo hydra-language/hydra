@@ -60,6 +60,7 @@ fn printing_indexed_string_slice_uses_u8_type() {
 
     let function =
         MIRFunction {
+        display_name: None,
             name:
                 "main"
                     .to_string(),
@@ -280,6 +281,7 @@ fn printing_string_slice_uses_byte_string_output() {
 
     let function =
         MIRFunction {
+        display_name: None,
             name:
                 "main"
                     .to_string(),
