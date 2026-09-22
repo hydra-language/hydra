@@ -676,9 +676,28 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type, HydraError> {
-        let mut ty = self.parse_type_base()?;
+        let mut ty = if self.match_token(TokenType::LeftParen) {
+            let ty = self.parse_type()?;
+
+            self.consume(
+                TokenType::RightParen,
+                "expected ')' after parenthesized type",
+            )?;
+
+            ty
+        } else {
+            self.parse_type_base()?
+        };
 
         if self.match_token(TokenType::QuestionMark) {
+            if matches!(ty, Type::Optional { .. }) {
+                return Err(self.error(
+                    self.previous(),
+                    "P015",
+                    "nested optional types are not currently supported",
+                ).with_help("use a single optional type"));
+            }
+
             ty = Type::Optional {
                 id: self.next_node_id(),
                 inner: Box::new(ty),

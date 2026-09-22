@@ -16,9 +16,16 @@ impl<'ctx> Analyzer<'ctx> {
             ASTExpr::Literal { token, .. } => {
                 match &token.token_type {
                     TokenType::IntLiteral(val) => {
-                        let mut ty = IRType::I32;
-                        if let Some(exp) = expected { ty = exp.clone(); }
-                        Ok(HIRExpr { kind: HIRExprKind::IntLiteral(*val), ty, span })
+                        let ty = match expected {
+                            Some(expected) if self.is_int_type(expected) => expected.clone(),
+                            _ => IRType::I32,
+                        };
+
+                        Ok(HIRExpr {
+                            kind: HIRExprKind::IntLiteral(*val),
+                            ty,
+                            span,
+                        })
                     },
 
                     TokenType::FloatLiteral(val) => {
