@@ -1,6 +1,9 @@
 include core::intrinsics;
 
-// Blanket extension on slice types
+include core::fmt::Display;
+include core::fmt::Formatter;
+
+// blanket extension on slice types
 extension<T> [T] {
     
     #[inline]
@@ -9,27 +12,21 @@ extension<T> [T] {
     }
 
     #[inline]
-    pub fn first(&self) -> T {
-        // no safety checks until T?
-        // is implemented and can guarantee
-        // that the callee has at least one element
-        //
-        // in the event that the callee does
-        // not have at least one element
-        // we will return an error path
-        return self[0];
+    pub fn first(&self) -> (&T)? {
+        if self::is_empty() {
+            return None;
+        }
+
+        return &self[0];
     }
 
     #[inline]
-    pub fn last(&self) -> T {
-        // no safety checks until T?
-        // is implemented and can guarantee
-        // that the callee has at least one element
-        //
-        // in the event that the callee does
-        // not have at least one element
-        // we will return an error path
-        return self[self::len() - 1];
+    pub fn last(&self) -> (&T)? {
+        if self::is_empty() {
+            return None;
+        }
+
+        return &self[self::len() - 1];
     }
 
     #[inline]
@@ -38,3 +35,8 @@ extension<T> [T] {
     }
 }
 
+extension Display on &[u8] {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        formatter::write(*self);
+    }
+}

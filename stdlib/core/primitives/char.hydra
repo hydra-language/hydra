@@ -1,0 +1,20 @@
+include core::fmt::Display;
+include core::fmt::Formatter;
+
+include core::intrinsics;
+
+include core::mem::Uninit;
+
+extension Display on char {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        let buffer = Uninit::<[u8, 4]>::new();
+
+        const ptr = buffer::as_mut_ptr();
+        const len = intrinsics::__format_char(
+            *self,
+            ptr
+        );
+
+        formatter::write_raw(ptr as *const u8, len);
+    }
+}

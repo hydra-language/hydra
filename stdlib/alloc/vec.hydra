@@ -8,6 +8,9 @@ include core::ops::Drop;
 
 include core::mem;
 
+include core::fmt::Display;
+include core::fmt::Formatter;
+
 // growable, heap allocated, array type
 pub struct Vec<T> {
     ptr: NonNull<T>;
@@ -65,6 +68,28 @@ extension<T> Drop on Vec<T> {
         );
 
         Allocator::dealloc(self.ptr::as_ptr() as *mut u8, layout);
+    }
+}
+
+extension<T> Display on Vec<T> where T : Display {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        formatter::write("[");
+
+        for i in 0..self.len {
+            if i > 0 {
+                formatter::write(", ");
+            }
+
+            const element_ptr = ptr::offset::<T>(
+                self.ptr::as_ptr(),
+                i as isize
+            );
+
+            const value = &*element_ptr;
+            value::fmt(formatter);
+        }
+
+        formatter::write("]");
     }
 }
 
@@ -148,10 +173,35 @@ extension<T> Vec<T> {
             self::grow();
         }
 
-        const dst =  ptr::offset::<T>(self.ptr::as_ptr(), self.len as isize);
+        const dst = ptr::offset::<T>(self.ptr::as_ptr(), self.len as isize);
         ptr::write::<T>(dst, value);
 
         self.len += 1;
+    }
+
+    pub fn pop(&mut self) -> T? {
+        if self.len == 0 {
+            return None;
+        }
+
+        self.len -= 1;
+
+        if mem::size_of::<T>() == 0 {
+            const value = ptr::read::<T>(
+                self.ptr::as_ptr() as *const T
+            );
+
+            return value;
+        }
+
+        const element_ptr = ptr::offset::<T>(
+            self.ptr::as_ptr(),
+            self.len as isize
+        );
+
+        const value = ptr::read::<T>(element_ptr as *const T);
+
+        return value;
     }
 
     pub fn grow(&mut self) -> void {
@@ -212,6 +262,25 @@ extension<T> Vec<T> {
 
         self.ptr = NonNull::new_unchecked(new_ptr);
         self.cap = new_cap;
+    }
+
+    #[inline]
+    pub fn get(&self, index: usize) -> (&T)? {
+        if index >= self.len {
+            return None;
+        }
+
+        return self::get_unchecked(index);
+    }
+
+    #[inline]
+    pub fn get_unchecked(&self, index: usize) -> &T {
+        const element_ptr = ptr::offset::<T>(
+            self.ptr::as_ptr(),
+            index as isize
+        );
+
+        return &*element_ptr;
     }
 
     #[inline]

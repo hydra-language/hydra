@@ -1,0 +1,12 @@
+include core::fmt::Display;
+include core::fmt::Formatter;
+
+extension Display on bool {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        if *self {
+            formatter::write("true");
+        } else {
+            formatter::write("false");
+        }
+    }
+}
