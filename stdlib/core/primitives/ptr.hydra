@@ -1,0 +1,17 @@
+include core::intrinsics;
+
+extension<T> *mut T {
+    
+    #[inline]
+    pub fn is_null(self) -> bool {
+        return intrinsics::__ptr_is_null::<T>(self as *const T);
+    }
+}
+
+extension<T> *const T {
+    
+    #[inline]
+    pub fn is_null(self) -> bool {
+        return intrinsics::__ptr_is_null::<T>(self);
+    }
+}
