@@ -33,3 +33,12 @@ pub fn __ptr_is_null<T>(ptr: *const T) -> bool;
 
 #[intrinsic]
 pub fn __ptr_from_addr<T>(address: usize) -> *mut T;
+
+#[intrinsic]
+pub fn __slice_ptr<T>(slice: &[T]) -> *const T;
+
+#[intrinsic]
+pub fn __write_stdout(ptr: *const u8, len: usize) -> void;
+
+#[intrinsic]
+pub fn __uninit<T>() -> T;

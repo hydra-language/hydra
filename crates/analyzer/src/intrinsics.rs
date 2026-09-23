@@ -675,6 +675,38 @@ impl<'ctx> Analyzer<'ctx> {
                     ));
                 }
             }
+
+            IntrinsicKind::Uninit => {
+                if generic_params.len() != 1 {
+                    return Err(self.error(
+                        "S017",
+                        "uninit requires exactly one type parameter",
+                        span,
+                    ));
+                }
+
+                if !params.is_empty() {
+                    return Err(self.error(
+                        "S017",
+                        "uninit accepts no value parameters",
+                        span,
+                    ));
+                }
+
+                let expected = &generic_params[0];
+
+                match return_type {
+                    IRType::GENERIC(name) if name == expected => {}
+
+                    _ => {
+                        return Err(self.error(
+                            "S017",
+                            "uninit must return `T`",
+                            span,
+                        ));
+                    }
+                }
+            }
         }
 
         Ok(())

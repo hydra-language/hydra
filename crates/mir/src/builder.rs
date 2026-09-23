@@ -14,6 +14,8 @@ use ir::Constant;
 
 use analyzer::{fold, traits};
 
+const UNINIT_TYPE_PATH: &str = "core::mem::Uninit";
+
 pub struct MIRBuilder<'a> {
     locals: Vec<LocalDecl>,
     basic_blocks: Vec<BasicBlock>,
@@ -1063,6 +1065,10 @@ impl<'a> MIRBuilder<'a> {
             return true;
         }
 
+        if self.is_uninit_type(ty) {
+            return false;
+        }
+
         match ty {
             Type::STRUCT(type_ref) => self.context
                 .get_struct_fields(type_ref.def_id)
@@ -1081,7 +1087,16 @@ impl<'a> MIRBuilder<'a> {
             self.push_statement(Statement {
                 kind: StatementKind::Drop(place.clone()),
                 span,
-            });;
+            });
+        }
+
+        //
+        // Uninit<T> owns storage for T, not a live T.
+        //
+        // Never recursively destroy its backing field.
+        //
+        if self.is_uninit_type(ty) {
+            return;
         }
 
         //
@@ -1189,5 +1204,27 @@ impl<'a> MIRBuilder<'a> {
         }
 
         false
+    }
+
+    fn is_uninit_type(&self, ty: &Type) -> bool {
+        match ty {
+            Type::GENERIC_INSTANCE(type_ref, _) => {
+                type_ref.symbol == UNINIT_TYPE_PATH
+            }
+
+            Type::STRUCT(type_ref) => {
+                if type_ref.symbol == UNINIT_TYPE_PATH {
+                    return true;
+                }
+
+                self.context
+                    .get_display_name(type_ref.def_id)
+                    .is_some_and(|name| {
+                        name.starts_with("core::mem::Uninit<")
+                    })
+            }
+
+            _ => false,
+        }
     }
 }

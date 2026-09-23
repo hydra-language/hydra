@@ -416,6 +416,26 @@ impl<'c> CodeGen<'c> {
                 // void intrinsics are currently represented as Rvalues.
                 Ok(self.context.i8_type().const_zero().into())
             }
+
+            IntrinsicKind::Uninit => {
+                if !args.is_empty() {
+                    return Err("uninit accepts no value arguments".into());
+                }
+
+                let ty = type_args.first().ok_or("uninit requires one type argument")?;
+                let llvm_ty = crate::types::compile_type(self.context, &self.target_data, ty);
+
+                let value = match llvm_ty {
+                    BasicTypeEnum::ArrayType(ty) => ty.get_undef().into(),
+                    BasicTypeEnum::FloatType(ty) => ty.get_undef().into(),
+                    BasicTypeEnum::IntType(ty) => ty.get_undef().into(),
+                    BasicTypeEnum::PointerType(ty) => ty.get_undef().into(),
+                    BasicTypeEnum::StructType(ty) => ty.get_undef().into(),
+                    BasicTypeEnum::VectorType(ty) => ty.get_undef().into(),
+                };
+
+                Ok(value)
+            }
         }
     }
 

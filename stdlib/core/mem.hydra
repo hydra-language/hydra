@@ -1,5 +1,22 @@
 include core::intrinsics;
 
+pub struct Uninit<T> {
+    value: T;
+}
+
+extension<T> Uninit<T> {
+    
+    pub fn new() -> Uninit<T> {
+        return Uninit {
+            .value = intrinsics::__uninit::<T>()
+        };
+    }
+
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        return self as *mut Uninit<T> as *mut T;
+    }
+}
+
 #[inline]
 pub fn size_of<T>() -> usize {
     return intrinsics::__size_of::<T>();
@@ -12,3 +29,4 @@ pub fn align_of<T>() -> usize {
 
 #[inline]
 pub fn drop<T>(x: T) -> void {}
+

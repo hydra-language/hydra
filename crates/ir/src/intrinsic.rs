@@ -14,6 +14,7 @@ pub enum IntrinsicKind {
     SliceLen,
     SlicePtr,
     WriteStdout,
+    Uninit,
 }
 
 impl IntrinsicKind {
@@ -104,6 +105,12 @@ impl IntrinsicKind {
                 Some(Self::WriteStdout)
             }
 
+            [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__uninit" =>
+            {
+                Some(Self::Uninit)
+            }
+
             _ => None,
         }
     }
@@ -117,7 +124,8 @@ impl IntrinsicKind {
             IntrinsicKind::PtrRead | IntrinsicKind::PtrOffset |
             IntrinsicKind::PtrNull | IntrinsicKind::PtrNullMut |
             IntrinsicKind::PtrIsNull | IntrinsicKind::PtrFromAddr |
-            IntrinsicKind::SliceLen | IntrinsicKind::SlicePtr => false,
+            IntrinsicKind::SliceLen | IntrinsicKind::SlicePtr | 
+            IntrinsicKind::Uninit => false,
         }
     }
 }
