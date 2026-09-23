@@ -960,12 +960,10 @@ impl Parser {
     }
 
     fn parse_multiplicative(&mut self) -> Result<Expr, HydraError> {
-        let mut node = self.parse_unary()?;
+        let mut node = self.parse_cast()?;
 
         loop {
-            let operator = if self.match_token(TokenType::Star) || 
-                        self.match_token(TokenType::ForwardSlash) || 
-                        self.match_token(TokenType::Modulo) 
+            let operator = if self.match_token(TokenType::Star) || self.match_token(TokenType::ForwardSlash) || self.match_token(TokenType::Modulo) 
             {
                 Some(self.previous().clone())   
             } else {
@@ -974,9 +972,12 @@ impl Parser {
 
             if let Some(op) = operator {
                 let id = self.next_node_id();
-                let right = self.parse_unary()?;
+                let right = self.parse_cast()?;
                 node = Expr::Binary {
-                    id, left: Box::new(node), operator: op, right: Box::new(right),
+                    id, 
+                    left: Box::new(node), 
+                    operator: op, 
+                    right: Box::new(right),
                 };
             } else {
                 break;
@@ -984,6 +985,23 @@ impl Parser {
         }
 
         Ok(node)
+    }
+
+    fn parse_cast(&mut self) -> Result<Expr, HydraError> {
+        let mut expr = self.parse_unary()?;
+
+        while self.match_token(TokenType::AS) {
+            let id = self.next_node_id();
+            let target = self.parse_type()?;
+
+            expr = Expr::Cast {
+                id,
+                value: Box::new(expr),
+                target: Box::new(target),
+            };
+        }
+
+        Ok(expr)
     }
 
     fn parse_unary(&mut self) -> Result<Expr, HydraError> {
@@ -1044,11 +1062,6 @@ impl Parser {
                     owner_generic_args: std::mem::take(&mut owner_generic_args),
                     generic_args: Vec::new(),
                 };
-            } else if self.match_token(TokenType::AS) {
-                let id = self.next_node_id();
-                let target = self.parse_type()?;
-
-                expr = Expr::Cast { id, value: Box::new(expr), target: Box::new(target) };
             } else if self.match_token(TokenType::DoubleColon) {
                 //
                 // fishtail generic arguments:

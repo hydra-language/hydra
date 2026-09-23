@@ -79,7 +79,7 @@ impl Optimizer {
                     preds.entry(true_target.0).or_default().push(i);
                     preds.entry(false_target.0).or_default().push(i);
                 }
-                Terminator::Call { target, .. } | Terminator::BuiltinCall { target, .. } => {
+                Terminator::Call { target, .. } => {
                     preds.entry(target.0).or_default().push(i);
                 }
                 _ => {}
@@ -173,7 +173,7 @@ impl Optimizer {
                 Terminator::SwitchInt { discriminant, .. } => {
                     changed |= Self::replace_local(discriminant, &safe_copies);
                 }
-                Terminator::Call { args, .. } | Terminator::BuiltinCall { args, .. } => {
+                Terminator::Call { args, .. } => {
                     for arg in args {
                         changed |= Self::replace_local(arg, &safe_copies);
                     }
@@ -226,7 +226,7 @@ impl Optimizer {
                 Terminator::SwitchInt { discriminant, .. } => {
                     changed |= Self::replace_operand(discriminant, &safe_constants);
                 }
-                Terminator::Call { args, .. } | Terminator::BuiltinCall { args, .. } => {
+                Terminator::Call { args, .. } => {
                     for arg in args {
                         changed |= Self::replace_operand(arg, &safe_constants);
                     }
@@ -326,7 +326,7 @@ impl Optimizer {
             }
             match &mut block.terminator {
                 Terminator::SwitchInt { discriminant, .. } => { changed |= try_replace(discriminant, &safe_aggregates); }
-                Terminator::Call { args, .. } | Terminator::BuiltinCall { args, .. } => {
+                Terminator::Call { args, .. } => {
                     for arg in args { changed |= try_replace(arg, &safe_aggregates); }
                 }
                 _ => {}
@@ -428,7 +428,7 @@ impl Optimizer {
                     queue.push_back(true_target.0);
                     queue.push_back(false_target.0);
                 }
-                Terminator::Call { target, .. } | Terminator::BuiltinCall { target, .. } => {
+                Terminator::Call { target, .. } => {
                     queue.push_back(target.0);
                 }
                 Terminator::Return | Terminator::Unreachable => {}
@@ -456,7 +456,7 @@ impl Optimizer {
                     true_target.0 = old_to_new[&true_target.0];
                     false_target.0 = old_to_new[&false_target.0];
                 }
-                Terminator::Call { target, .. } | Terminator::BuiltinCall { target, .. } => {
+                Terminator::Call { target, .. } => {
                     target.0 = old_to_new[&target.0];
                 }
                 _ => {}
@@ -506,9 +506,6 @@ impl Optimizer {
                                 *read_counts.entry(*idx_local).or_insert(0) += 1;
                             }
                         }
-                    }
-                    Terminator::BuiltinCall { args, .. } => {
-                        for arg in args { Self::count_reads(arg, &mut read_counts); }
                     }
                     _ => {}
                 }
@@ -913,10 +910,6 @@ impl Optimizer {
                 Terminator::Call { args, destination, target, .. } => {
                     for arg in args { Self::shift_locals_in_operand(arg, &shift_local); }
                     shift_local(&mut destination.local);
-                    target.0 += block_offset;
-                }
-                Terminator::BuiltinCall { args, target, .. } => {
-                    for arg in args { Self::shift_locals_in_operand(arg, &shift_local); }
                     target.0 += block_offset;
                 }
                 _ => {}

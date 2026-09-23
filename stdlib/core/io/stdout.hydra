@@ -1,0 +1,11 @@
+include core::intrinsics;
+include core::io::writer::Writer;
+
+pub struct Stdout;
+
+extension Writer on Stdout {
+
+    fn write(&mut self, ptr: *const u8, len: usize) -> void {
+        intrinsics::__write_stdout(ptr, len);
+    }
+}

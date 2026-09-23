@@ -104,11 +104,6 @@ impl<'c> CodeGen<'c> {
                 self.builder.build_unconditional_branch(*target_bb);
             }
 
-            Terminator::BuiltinCall { name, args, target } => {
-                self.compile_builtin(name, args, mir_fn)?;
-                let target_bb = self.blocks.get(target).unwrap();
-                self.builder.build_unconditional_branch(*target_bb);
-            }
             Terminator::Unreachable => {
                 self.builder.build_unreachable();
             }

@@ -489,26 +489,6 @@ impl<'a> MIRBuilder<'a> {
                 Operand::Copy(target_place)
             }
 
-            HIRExprKind::BuiltinCall { name, args } => {
-                let mut lowered_args = Vec::new();
-                for arg in args {
-                    lowered_args.push(self.lower_expr_to_operand(arg));
-                }
-
-                let success_block = self.new_block();
-
-                self.terminate_block(Terminator::BuiltinCall {
-                    name: name.clone(),
-                    args: lowered_args,
-                    target: success_block,
-                });
-
-                self.current_block = success_block;
-
-                let unit_local = self.new_local(Type::VOID, false, None);
-                Operand::Copy(Place { local: unit_local, projection: vec![] })
-            }
-
             HIRExprKind::If { cond, then_block, else_block } => {
                 let cond_op = self.lower_expr_to_operand(cond);
 
@@ -1192,8 +1172,7 @@ impl<'a> MIRBuilder<'a> {
             }
 
             match &block.terminator {
-                Terminator::Call { args, .. }
-                | Terminator::BuiltinCall { args, .. } => {
+                Terminator::Call { args, .. } => {
                     if args.iter().any(|op| operand_moves(op, local)) {
                         return true;
                     }

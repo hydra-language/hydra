@@ -41,8 +41,8 @@ impl<'ctx> Analyzer<'ctx> {
         span: Span
     ) -> Result<HIRExpr, HydraError> 
     {
-        if method_name == "write" && self.is_formatter_type(&lhs_expr.ty) {
-            return self.lower_formatter_write(lhs_expr, arguments,span);
+        if matches!(method_name, "write" | "writeln") && self.is_formatter_type(&lhs_expr.ty) {
+            return self.lower_formatter_write(lhs_expr, arguments, method_name == "writeln", span);
         }
 
         let resolution = self.resolve_instance_method(&lhs_expr.ty, method_name, span)?;

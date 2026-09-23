@@ -190,14 +190,6 @@ impl fmt::Display for Terminator {
                 write!(f, ") -> [return: bb{}]", target.0)
             }
 
-            Terminator::BuiltinCall { name, args, target } => {
-                write!(f, "builtin {}(", name)?;
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
-                    write!(f, "{}", arg)?;
-                }
-                write!(f, ") -> [return: bb{}]", target.0)
-            }
             Terminator::Return => write!(f, "return"),
             Terminator::Unreachable => write!(f, "unreachable"),
         }

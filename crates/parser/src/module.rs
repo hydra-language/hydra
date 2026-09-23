@@ -122,6 +122,9 @@ impl ModuleTree {
         // initial compilation unit
         tree.load_module_file(&entry_file, vec![], source_map)?;
 
+        let fmt_file = tree.stdlib_root.join("core").join("fmt").join("mod.hydra");
+        tree.load_module_file(&fmt_file, vec!["core".to_string(), "fmt".to_string()], source_map)?;
+
         Ok(tree)
     }
 

@@ -261,10 +261,6 @@ impl<'a> Monomorphizer<'a> {
 
             }
 
-            HIRExprKind::BuiltinCall { args, .. } => {
-                for arg in args.iter_mut() { self.substitute_expr(arg, subs, local_types); }
-            }
-
             HIRExprKind::IntrinsicCall { args, type_args, .. } => {
                 for arg in args.iter_mut() {
                     self.substitute_expr(arg, subs, local_types);

@@ -1,0 +1,2 @@
+include core::io::writer::Writer;
+include core::io::stdout::Stdout;

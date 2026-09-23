@@ -15,6 +15,9 @@ pub enum IntrinsicKind {
     SlicePtr,
     WriteStdout,
     Uninit,
+    FormatI64,
+    FormatU64,
+    FormatChar,
 }
 
 impl IntrinsicKind {
@@ -111,6 +114,24 @@ impl IntrinsicKind {
                 Some(Self::Uninit)
             }
 
+            [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__format_i64" =>
+            {
+                Some(Self::FormatI64)
+            }
+
+            [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__format_u64" =>
+            {
+                Some(Self::FormatU64)
+            }
+
+            [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__format_char" =>
+            {
+                Some(Self::FormatChar)
+            }
+
             _ => None,
         }
     }
@@ -118,7 +139,9 @@ impl IntrinsicKind {
     pub fn has_side_effects(self) -> bool {
         match self {
             IntrinsicKind::PtrWrite | IntrinsicKind::Alloc | 
-            IntrinsicKind::Dealloc | IntrinsicKind::WriteStdout => true,
+            IntrinsicKind::Dealloc | IntrinsicKind::WriteStdout |
+            IntrinsicKind::FormatI64 | IntrinsicKind::FormatU64 |
+            IntrinsicKind::FormatChar => true,
 
             IntrinsicKind::SizeOf | IntrinsicKind::AlignOf | 
             IntrinsicKind::PtrRead | IntrinsicKind::PtrOffset |

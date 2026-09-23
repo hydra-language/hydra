@@ -148,13 +148,6 @@ pub enum Terminator {
         destination: Place,     // Where the return value gets stored
         target: BasicBlockID,   // Where to go after the call finishes
     },
-
-    // Builtin calls (print, println)
-    BuiltinCall {
-        name: String,
-        args: Vec<Operand>,
-        target: BasicBlockID,
-    },
     
     Return,
     Unreachable, // Used after infinite loops or panics

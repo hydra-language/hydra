@@ -131,7 +131,7 @@ impl<'a> BorrowChecker<'a> {
                 let successors = match &block.terminator {
                     Terminator::Goto { target } => vec![*target],
                     Terminator::SwitchInt { true_target, false_target, .. } => vec![*true_target, *false_target],
-                    Terminator::Call { target, .. } | Terminator::BuiltinCall { target, .. } => vec![*target],
+                    Terminator::Call { target, .. } => vec![*target],
                     Terminator::Return | Terminator::Unreachable => vec![],
                 };
 
@@ -381,12 +381,6 @@ impl<'a> BorrowChecker<'a> {
                 }
             }
 
-            Terminator::BuiltinCall { args, .. } => {
-                for arg in args {
-                    Self::record_operand_move(arg, moved);
-                }
-            }
-
             Terminator::Goto { .. } | Terminator::Return | Terminator::Unreachable => {}
         }
     }
@@ -406,13 +400,6 @@ impl<'a> BorrowChecker<'a> {
 
                 if destination.projection.is_empty() {
                     moved.remove(&destination.local);
-                }
-            }
-
-            Terminator::BuiltinCall { args, .. } => {
-                for arg in args {
-                    self.check_terminator_operand_move(arg, moved, errors);
-                    Self::record_operand_move(arg, moved);
                 }
             }
 
@@ -462,10 +449,7 @@ impl<'a> BorrowChecker<'a> {
                 vec![*true_target, *false_target]
             }
 
-            Terminator::Call { target, .. } | Terminator::BuiltinCall { target, .. } => 
-            {
-                vec![*target]
-            }
+            Terminator::Call { target, .. } => vec![*target],
 
             Terminator::Return | Terminator::Unreachable => {
                 vec![]
@@ -607,11 +591,6 @@ impl<'a> BorrowChecker<'a> {
                         }
                     }
                 }
-                Terminator::BuiltinCall { args, .. } => {
-                    for arg in args {
-                        self.extract_uses_operand(arg, &mut gen, &kill);
-                    }
-                }
                 Terminator::Return => {
                     // Returning implicitly reads the return value `_0`
                     if !kill.contains(&LocalID(0)) { gen.insert(LocalID(0)); }
@@ -743,11 +722,6 @@ impl<'a> BorrowChecker<'a> {
                     writes.insert(destination.local);
                 } else {
                     reads.insert(destination.local);
-                }
-            }
-            Terminator::BuiltinCall { args, .. } => {
-                for arg in args {
-                    if let Operand::Copy(p) | Operand::Move(p) = arg { reads.insert(p.local); }
                 }
             }
             Terminator::Return => { reads.insert(LocalID(0)); }

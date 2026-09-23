@@ -68,13 +68,7 @@ impl<'ctx> Analyzer<'ctx> {
                 };
 
                 if call_name_debug == "print" || call_name_debug == "println" {
-                    let mut args = Vec::new();
-                    for arg in arguments { args.push(self.lower_expr(arg)?); }
-                    return Ok(HIRExpr {
-                        kind: HIRExprKind::BuiltinCall { name: call_name_debug, args },
-                        ty: IRType::VOID,
-                        span
-                    });
+                    return self.lower_print_call(arguments, call_name_debug == "println", span);
                 }
 
                 // fetch the ID of the callee expression, not the outer FunctionCall

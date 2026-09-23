@@ -1,0 +1,5 @@
+include core::fmt::Formatter;
+
+pub trait Display {
+    fn fmt(&self, formatter: &mut Formatter) -> void;
+}

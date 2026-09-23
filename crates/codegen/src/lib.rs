@@ -1,8 +1,8 @@
-pub mod builtins;
 pub mod expressions;
 pub mod functions;
 pub mod stmts;
 pub mod types;
+pub mod operands;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -435,6 +435,52 @@ impl<'c> CodeGen<'c> {
                 };
 
                 Ok(value)
+            }
+
+            IntrinsicKind::FormatI64 | IntrinsicKind::FormatU64 | IntrinsicKind::FormatChar => {
+                if args.len() != 2 {
+                    return Err("integer formatting intrinsic requires two arguments".into());
+                }
+
+                let value = self.compile_operand(&args[0], mir_fn)?.into_int_value();
+                let buffer = self.compile_operand(&args[1], mir_fn)?.into_pointer_value();
+
+                let usize_ty = self.context.ptr_sized_int_type(
+                    &self.target_data,
+                    None,
+                );
+
+                let i64_ty = self.context.i64_type();
+
+                let byte_ptr_ty = self.context.i8_type().ptr_type(AddressSpace::default());
+
+                let function_name = match kind {
+                    IntrinsicKind::FormatI64 => "hydra_format_i64",
+                    IntrinsicKind::FormatU64 => "hydra_format_u64",
+                    IntrinsicKind::FormatChar => "hydra_format_char",
+                    _ => unreachable!(),
+                };
+
+                let function = self.module.get_function(function_name).unwrap_or_else(|| {
+                    let fn_type = usize_ty.fn_type(
+                        &[i64_ty.into(), byte_ptr_ty.into()],
+                        false,
+                    );
+
+                    self.module.add_function(
+                        function_name,
+                        fn_type,
+                        Some(inkwell::module::Linkage::External),
+                    )
+                });
+
+                let call = self.builder.build_call(
+                    function,
+                    &[value.into(), buffer.into()],
+                    "format_integer",
+                );
+
+                call.try_as_basic_value().left().ok_or_else(|| "integer formatting runtime returned no value".to_string())
             }
         }
     }

@@ -87,7 +87,7 @@ pub struct TraitImpl {
     pub methods: HashMap<String, DefID>,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct HIRContext {
     pub definitions: HashMap<DefID, SymbolInfo>,
     pub types: HashMap<TypeID, Type>,

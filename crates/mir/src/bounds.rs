@@ -173,8 +173,7 @@ impl<'a> BoundsChecker<'a> {
                 vec![*true_target, *false_target]
             }
 
-            Terminator::Call { target, .. } |
-            Terminator::BuiltinCall { target, .. } => {
+            Terminator::Call { target, .. } => {
                 vec![*target]
             }
 
@@ -258,12 +257,6 @@ impl<'a> BoundsChecker<'a> {
                 }
 
                 self.check_place( destination, facts, Span::default(), errors);
-            }
-
-            Terminator::BuiltinCall { args, .. } => {
-                for arg in args {
-                    self.check_operand( arg, facts, Span::default(), errors);
-                }
             }
 
             Terminator::Goto { .. } |

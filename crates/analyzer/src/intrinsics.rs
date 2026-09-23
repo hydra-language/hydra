@@ -707,6 +707,62 @@ impl<'ctx> Analyzer<'ctx> {
                     }
                 }
             }
+
+            IntrinsicKind::FormatI64 | IntrinsicKind::FormatU64 | IntrinsicKind::FormatChar => {
+                if !generic_params.is_empty() {
+                    return Err(self.error(
+                        "S017",
+                        "integer formatting intrinsic accepts no type parameters",
+                        span,
+                    ));
+                }
+
+                if params.len() != 2 {
+                    return Err(self.error(
+                        "S017",
+                        "integer formatting intrinsic requires exactly two arguments",
+                        span,
+                    ));
+                }
+
+                let expected_value_type = match kind {
+                    IntrinsicKind::FormatI64 => IRType::I64,
+                    IntrinsicKind::FormatU64 => IRType::U64,
+                    IntrinsicKind::FormatChar => IRType::CHAR,
+                    _ => unreachable!(),
+                };
+
+                if params[0] != expected_value_type {
+                    return Err(self.error(
+                        "S017",
+                        format!(
+                            "integer formatting intrinsic expects first argument to be `{}`",
+                            expected_value_type,
+                        ),
+                        span,
+                    ));
+                }
+
+                match &params[1] {
+                    IRType::POINTER(inner) if inner.as_ref() == &IRType::U8 => {}
+
+                    _ => {
+                        return Err(self.error(
+                            "S017",
+                            "integer formatting intrinsic expects second argument to be `*mut u8`",
+                            span,
+                        ));
+                    }
+                }
+
+                if *return_type != IRType::USIZE {
+                    return Err(self.error(
+                        "S017",
+                        "integer formatting intrinsic must return `usize`",
+                        span,
+                    ));
+                }
+            }
         }
 
         Ok(())

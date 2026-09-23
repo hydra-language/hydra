@@ -1,0 +1,119 @@
+include core::fmt::Display;
+include core::fmt::Formatter;
+
+include core::intrinsics;
+include core::mem::Uninit;
+
+fn write_i64(formatter: &mut Formatter, value: i64) -> void {
+    let buffer = Uninit::<[u8, 20]>::new();
+
+    const ptr = buffer::as_mut_ptr() as *mut u8;
+    const len = intrinsics::__format_i64(value, ptr);
+
+    formatter::write_raw(
+        ptr as *const u8,
+        len
+    );
+}
+
+fn write_u64(formatter: &mut Formatter, value: u64) -> void {
+    let buffer = Uninit::<[u8, 20]>::new();
+
+    const ptr = buffer::as_mut_ptr() as *mut u8;
+    const len = intrinsics::__format_u64(value, ptr);
+
+    formatter::write_raw(
+        ptr as *const u8,
+        len
+    );
+}
+
+extension Display on i8 {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        write_i64(
+            formatter,
+            *self as i64
+        );
+    }
+}
+
+extension Display on i16 {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        write_i64(
+            formatter,
+            *self as i64
+        );
+    }
+}
+
+extension Display on i32 {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        write_i64(
+            formatter,
+            *self as i64
+        );
+    }
+}
+
+extension Display on i64 {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        write_i64(
+            formatter,
+            *self
+        );
+    }
+}
+
+extension Display on isize {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        write_i64(
+            formatter,
+            *self as i64
+        );
+    }
+}
+
+extension Display on u8 {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        write_u64(
+            formatter,
+            *self as u64
+        );
+    }
+}
+
+extension Display on u16 {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        write_u64(
+            formatter,
+            *self as u64
+        );
+    }
+}
+
+extension Display on u32 {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        write_u64(
+            formatter,
+            *self as u64
+        );
+    }
+}
+
+extension Display on u64 {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        write_u64(
+            formatter,
+            *self
+        );
+    }
+}
+
+extension Display on usize {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        write_u64(
+            formatter,
+            *self as u64
+        );
+    }
+}

@@ -1,18 +1,18 @@
 use errors::error::{HydraError, Span};
 
 use ir::{
-    context::{DefID, DefKind, SymbolInfo}, hir::{HIRBlock, HIRExpr, HIRExprKind, HIRStmt}, types::Type as IRType,
+    context::{DefID, DefKind, SymbolInfo}, 
+    hir::{HIRBlock, HIRExpr, HIRExprKind, HIRStmt}, 
+    types::{Type as IRType, TypeRef},
 };
 
 use parser::ast::Expr as ASTExpr;
-
-use crate::{
-    traits,
-    Analyzer,
-};
+use crate::{traits, Analyzer};
 
 const FORMATTER_PATH: &str = "core::fmt::formatter::Formatter";
+const FORMATTER_NEW_PATH: &str = "core::fmt::formatter::Formatter::new";
 const FORMATTER_WRITE_PATH: &str = "core::fmt::formatter::Formatter::write";
+const FORMATTER_WRITELN_PATH: &str = "core::fmt::formatter::Formatter::writeln";
 
 impl<'ctx> Analyzer<'ctx> {
 
@@ -30,7 +30,7 @@ impl<'ctx> Analyzer<'ctx> {
         }
     }
 
-    pub(crate) fn lower_formatter_write(&mut self, formatter: HIRExpr, arguments: &[ASTExpr], span: Span) -> Result<HIRExpr, HydraError> 
+    pub(crate) fn lower_formatter_write(&mut self, formatter: HIRExpr, arguments: &[ASTExpr], append_newline: bool, span: Span) -> Result<HIRExpr, HydraError> 
     {
         let Some(format_node) = arguments.first() else {
             return Err(self.error(
@@ -62,9 +62,10 @@ impl<'ctx> Analyzer<'ctx> {
         let should_expand = arguments.len() > 1 || format_string.as_ref().is_some_and(|format| format.contains("{}"));
 
         if !should_expand {
-            return self.make_formatter_write_call(
+            return self.make_formatter_text_call(
                 formatter,
                 format_expr,
+                append_newline,
                 span,
             );
         }
@@ -178,22 +179,18 @@ impl<'ctx> Analyzer<'ctx> {
             ));
         }
 
-        for (index, part) in parts.iter().enumerate() {
+        for index in 0..placeholder_count {
+            let part = &parts[index];
+
             if !part.is_empty() {
                 stmts.push(HIRStmt::Expr(
-                    self.make_formatter_write_call(
+                    self.make_formatter_text_call(
                         formatter.clone(),
-                        Self::format_string_literal(
-                            part.clone(),
-                            span,
-                        ),
+                        Self::format_string_literal(part.clone(), span),
+                        false,
                         span,
                     )?,
                 ));
-            }
-
-            if index >= placeholder_count {
-                continue;
             }
 
             let (argument_ty, self_arg) = &formatting_args[index];
@@ -204,6 +201,35 @@ impl<'ctx> Analyzer<'ctx> {
                     argument_ty,
                     self_arg.clone(),
                     formatter.clone(),
+                    span,
+                )?,
+            ));
+        }
+
+        let tail = parts.last().expect("format parts should always contain at least one element");
+
+        if append_newline {
+            //
+            // always call writeln, including for:
+            //
+            //     writeln("{}", value)
+            //
+            // where the final literal is empty
+            //
+            stmts.push(HIRStmt::Expr(
+                self.make_formatter_text_call(
+                    formatter,
+                    Self::format_string_literal(tail.clone(), span),
+                    true,
+                    span,
+                )?,
+            ));
+        } else if !tail.is_empty() {
+            stmts.push(HIRStmt::Expr(
+                self.make_formatter_text_call(
+                    formatter,
+                    Self::format_string_literal(tail.clone(), span),
+                    false,
                     span,
                 )?,
             ));
@@ -221,16 +247,21 @@ impl<'ctx> Analyzer<'ctx> {
         })
     }
 
-    fn make_formatter_write_call(&self, formatter: HIRExpr, text: HIRExpr, span: Span) -> Result<HIRExpr, HydraError> 
+    fn make_formatter_text_call(&self, formatter: HIRExpr, text: HIRExpr, append_newline: bool, span: Span) -> Result<HIRExpr, HydraError> 
     {
-        let write_def_id = self.context.find_function_by_name(FORMATTER_WRITE_PATH)
-            .ok_or_else(|| {
-                self.error(
-                    "S002",
-                    "missing `Formatter::write`",
-                    span,
-                )
-            })?;
+        let path = if append_newline {
+            FORMATTER_WRITELN_PATH
+        } else {
+            FORMATTER_WRITE_PATH
+        };
+
+        let write_def_id = self.context.find_function_by_name(path).ok_or_else(|| {
+            self.error(
+                "S002",
+                "missing `Formatter::write`",
+                span,
+            )
+        })?;
 
         let formatter_arg = self.formatter_mut_arg(formatter, span)?;
 
@@ -356,5 +387,92 @@ impl<'ctx> Analyzer<'ctx> {
 
             span,
         }
+    }
+
+    pub(crate) fn lower_print_call(&mut self, arguments: &[ASTExpr], append_newline: bool, span: Span) -> Result<HIRExpr, HydraError> {
+        let formatter_def_id = self.context.find_struct_by_name(FORMATTER_PATH)
+            .ok_or_else(|| {
+                self.error(
+                    "S002",
+                    "compiler formatting support requires `core::fmt::Formatter`",
+                    span,
+                )
+            })?;
+
+        let new_def_id = self.context.find_function_by_name(FORMATTER_NEW_PATH)
+            .ok_or_else(|| {
+                self.error(
+                    "S002",
+                    "compiler formatting support requires `Formatter::new`",
+                    span,
+                )
+            })?;
+
+        let formatter_ty = IRType::STRUCT(TypeRef::new(formatter_def_id, FORMATTER_PATH.to_string()));
+        let temp_name = format!(
+            "_{}_formatter{}_{}", 
+            if append_newline { "println" } else { "print" },
+            span.line, 
+            span.column
+        );
+
+        let formatter_temp = self.context.insert_def(
+            SymbolInfo {
+                name: temp_name,
+                span,
+                absolute_path: vec![],
+                kind: DefKind::Variable {
+                    ty: formatter_ty.clone(),
+                    is_mutable: true,
+                },
+                is_pub: false,
+            },
+        );
+
+        let initializer = HIRExpr {
+            kind: HIRExprKind::Call {
+                callee: new_def_id,
+                args: vec![],
+                generic_args: vec![],
+                trait_dispatch: None,
+            },
+            ty: formatter_ty.clone(),
+            span,
+        };
+
+        let formatter = HIRExpr {
+            kind: HIRExprKind::VarRef(
+                formatter_temp,
+            ),
+            ty: formatter_ty.clone(),
+            span,
+        };
+
+        let output = self.lower_formatter_write(
+            formatter,
+            arguments,
+            append_newline,
+            span,
+        )?;
+
+        Ok(HIRExpr {
+            kind: HIRExprKind::Block(HIRBlock {
+                stmts: vec![
+                    HIRStmt::VarDecl {
+                        def_id: formatter_temp,
+                        ty: formatter_ty,
+                        init: Some(initializer),
+                        has_type_annotation: false,
+                        span,
+                    },
+
+                    HIRStmt::Expr(output),
+                ],
+                span,
+            }),
+
+            ty: IRType::VOID,
+            span,
+        })
     }
 }

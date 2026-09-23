@@ -1,0 +1,38 @@
+include core::intrinsics;
+
+include core::io;
+
+pub struct Formatter {
+    writer: io::Stdout;
+}
+
+extension Formatter {
+
+    #[inline]
+    pub fn new() -> Formatter {
+        return Formatter {
+            .writer = io::Stdout {}
+        };
+    }
+
+    #[inline]
+    pub fn write(&mut self, text: &[u8]) -> void {
+        self.writer::write(
+            intrinsics::__slice_ptr::<u8>(text),
+            intrinsics::__slice_len::<u8>(text)
+        );
+    }
+
+    #[inline]
+    pub fn writeln(&mut self, text: &[u8]) -> void {
+        self::write(text);
+        self::write("\n");
+    }
+
+    pub fn write_raw(&mut self, ptr: *const u8, len: usize) -> void {
+        self.writer::write(
+            ptr, 
+            len
+        );
+    }
+}

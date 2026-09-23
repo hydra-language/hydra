@@ -42,3 +42,12 @@ pub fn __write_stdout(ptr: *const u8, len: usize) -> void;
 
 #[intrinsic]
 pub fn __uninit<T>() -> T;
+
+#[intrinsic]
+pub fn __format_i64(value: i64, buffer: *mut u8) -> usize;
+
+#[intrinsic]
+pub fn __format_u64(value: u64, buffer: *mut u8) -> usize;
+
+#[intrinsic]
+pub fn __format_char(value: char, buffer: *mut u8) -> usize;
