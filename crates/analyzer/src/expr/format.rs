@@ -410,7 +410,7 @@ impl<'ctx> Analyzer<'ctx> {
 
         let formatter_ty = IRType::STRUCT(TypeRef::new(formatter_def_id, FORMATTER_PATH.to_string()));
         let temp_name = format!(
-            "_{}_formatter{}_{}", 
+            "_{}_formatter_{}_{}", 
             if append_newline { "println" } else { "print" },
             span.line, 
             span.column

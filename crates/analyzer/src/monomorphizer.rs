@@ -71,11 +71,15 @@ impl<'a> Monomorphizer<'a> {
             self.process_function(instance, specialized_def_id);
         }
 
-        HIRProgram {
-            functions: self.specialized_functions,
-            structs: vec![], 
+        let mut program = HIRProgram {
+            functions: std::mem::take(&mut self.specialized_functions),
+            structs: vec![],
             globals: vec![],
-        }
+        };
+
+        crate::reachability::retain_reachable_functions(&mut program, self.context);
+
+        program
     }
 
     fn process_function(&mut self, instance: Instance, specialized_def_id: DefID) {

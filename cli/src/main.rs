@@ -163,10 +163,7 @@ fn main() {
 
     if emit_list.contains(&EmitStage::HIR) {
         let fname = input_path.with_extension("hir");
-        fs::write(
-            &fname,
-            hir.functions.iter().map(|f| format!("{}", f)).collect::<Vec<_>>().join("\n\n"),
-        ).unwrap();
+        fs::write(&fname, format!("{}", hir.display(&context))).unwrap();
         println!("{}[INFO]{} HIR written to: {}", GREEN, RESET, fname.display());
     }
 

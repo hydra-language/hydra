@@ -8,6 +8,7 @@ pub mod fold;
 pub mod monomorphizer;
 pub mod resolve;
 pub mod traits;
+pub mod reachability;
 
 mod intrinsics;
 mod passes;
