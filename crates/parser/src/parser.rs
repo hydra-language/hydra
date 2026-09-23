@@ -742,25 +742,42 @@ impl Parser {
         }
 
         let mut predicates = Vec::new();
+        let mut target_type = self.parse_type()?;
+
+        self.consume(TokenType::Colon, "expected ':' after type in where clause")?;
+
+        let mut bound_traits = vec![self.parse_type()?];
+
         loop {
-            let target_type = self.parse_type()?;
-            self.consume(TokenType::Colon, "expected ':' after type in where clause")?;
-            
-            let mut bound_traits = Vec::new();
-            loop {
-                bound_traits.push(self.parse_type()?);
-                if !self.match_token(TokenType::Plus) { break; }
+            if !self.match_token(TokenType::Comma) {
+                break;
             }
 
-            predicates.push(WherePredicate { 
-                id: self.next_node_id(), 
-                target_type, 
-                bound_traits 
-            });
+            if self.check(TokenType::LeftBrace) || self.check(TokenType::Semicolon) {
+                break;
+            }
 
-            if !self.match_token(TokenType::Comma) { break; }
-            if self.check(TokenType::LeftBrace) || self.check(TokenType::Semicolon) { break; }
+            let next_type = self.parse_type()?;
+
+            if self.match_token(TokenType::Colon) {
+                predicates.push(WherePredicate {
+                    id: self.next_node_id(),
+                    target_type,
+                    bound_traits,
+                });
+
+                target_type = next_type;
+                bound_traits = vec![self.parse_type()?];
+            } else {
+                bound_traits.push(next_type);
+            }
         }
+
+        predicates.push(WherePredicate {
+            id: self.next_node_id(),
+            target_type,
+            bound_traits,
+        });
 
         Ok(Some(WhereClause { predicates }))
     }

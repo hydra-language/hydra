@@ -4,12 +4,19 @@ use super::super::Analyzer;
 
 use errors::error::{HydraError, Span};
 
-use ir::context::DefKind;
+use ir::context::{DefID, DefKind};
 use ir::hir::{HIRExpr, HIRExprKind};
 use ir::types::Type as IRType;
 
 use parser::Type;
 use parser::ast::Expr as ASTExpr;
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedMethod {
+    method_def_id: DefID,
+    trait_def_id: Option<DefID>,
+    deferred_trait_dispatch: bool,
+}
 
 impl<'ctx> Analyzer<'ctx> {
 
@@ -27,7 +34,9 @@ impl<'ctx> Analyzer<'ctx> {
     pub(crate) fn lower_instance_method_call(&mut self, lhs_expr: HIRExpr, method_name: &str, arguments: &[ASTExpr], generic_args: &[Type], expected: Option<&IRType>, span: Span) 
         -> Result<HIRExpr, HydraError> 
     {
-        let method_def_id = self.resolve_instance_method(&lhs_expr.ty, method_name, span)?;
+        let resolution = self.resolve_instance_method(&lhs_expr.ty, method_name, span)?;
+
+        let method_def_id = resolution.method_def_id;
 
         let info = self.context.get_def(method_def_id).ok_or_else(|| {
             self.error(
@@ -37,10 +46,10 @@ impl<'ctx> Analyzer<'ctx> {
             )
         })?;
 
-        let (param_types, return_type, function_gp, owner_generic_count) = match &info.kind {
-            DefKind::Function { params, return_type, generic_params, owner_generic_count, .. } => 
+        let (param_types, return_type, function_gp, trait_bounds, owner_generic_count) = match &info.kind {
+            DefKind::Function { params, return_type, generic_params,trait_bounds, owner_generic_count, .. } => 
             {
-                (params.clone(), return_type.clone(), generic_params.clone(), *owner_generic_count)
+                (params.clone(), return_type.clone(), generic_params.clone(), trait_bounds, *owner_generic_count)
             }
 
             _ => {
@@ -161,6 +170,9 @@ impl<'ctx> Analyzer<'ctx> {
         let mut substitutions = HashMap::<String, IRType>::new();
 
         Self::infer_generic_bindings(expected_self_ty, &self_arg.ty, &mut substitutions);
+
+        self.validate_trait_bounds(&trait_bounds, &substitutions, span)?;
+
         for (name, node) in callable_gp.iter().zip(generic_args.iter()) {
             substitutions.insert(name.clone(), self.lower_type(node)?);
         }
@@ -207,6 +219,11 @@ impl<'ctx> Analyzer<'ctx> {
                 args,
                 generic_args:
                 resolved_generic_args,
+                trait_dispatch: if resolution.deferred_trait_dispatch {
+                    resolution.trait_def_id
+                } else {
+                    None
+                },
             },
 
             ty: resolved_return_type,
@@ -214,7 +231,7 @@ impl<'ctx> Analyzer<'ctx> {
         })
     }
 
-    fn resolve_instance_method(&self, receiver_ty: &IRType, method_name: &str, span: Span) -> Result<ir::context::DefID, HydraError> {
+    fn resolve_instance_method(&self, receiver_ty: &IRType, method_name: &str, span: Span) -> Result<ResolvedMethod, HydraError> {
         let registry_key = self.get_impl_registry_key(receiver_ty);
 
         //
@@ -223,7 +240,11 @@ impl<'ctx> Analyzer<'ctx> {
         if !registry_key.is_empty() {
             if let Some(method_def_id) = self.impl_registry.get(&registry_key).and_then(|methods| methods.get(method_name)).copied()
             {
-                return Ok(method_def_id);
+                return Ok(ResolvedMethod {
+                    method_def_id,
+                    trait_def_id: None,
+                    deferred_trait_dispatch: false,
+                })
             }
         }
 
@@ -233,17 +254,68 @@ impl<'ctx> Analyzer<'ctx> {
         //
         // raw pointers remain pointer types
         //
-        let dispatch_ty = Self::strip_receiver_references(receiver_ty);
+        let stripped_receiver = Self::strip_receiver_references(receiver_ty);
+        let lookup_types = if stripped_receiver == receiver_ty {
+            vec![receiver_ty]
+        } else {
+            vec![receiver_ty, stripped_receiver]
+        };
 
         let matching_impls: Vec<_> = self.context.trait_impls.iter().filter(|trait_impl| {
-            self.receiver_type_matches(&trait_impl.target_type, dispatch_ty)
-        }).collect();
-
-        let candidates: Vec<_> = matching_impls.iter().filter_map(|trait_impl| {
-            trait_impl.methods.get(method_name).copied().map(|method_def_id| {
-                (trait_impl.trait_def_id, method_def_id)
+            lookup_types.iter().any(|dispatch_ty| {
+                self.context.trait_impl_is_applicable(trait_impl, dispatch_ty, &self.current_trait_bounds)
             })
         }).collect();
+
+        let mut candidates = Vec::new();
+
+        for trait_impl in &matching_impls {
+            let Some(method_def_id) =
+            trait_impl.methods.get(method_name).copied()
+            else {
+                continue;
+            };
+
+            if candidates.iter().any(|candidate: &ResolvedMethod| {
+                candidate.trait_def_id == Some(trait_impl.trait_def_id)
+            }) {
+                continue;
+            }
+
+            candidates.push(ResolvedMethod {
+                method_def_id,
+                trait_def_id: Some(trait_impl.trait_def_id),
+                deferred_trait_dispatch: false,
+            });
+        }
+
+        for bound in &self.current_trait_bounds {
+            if !lookup_types
+                .iter()
+                .any(|dispatch_ty| &bound.target_type == *dispatch_ty)
+            {
+                continue;
+            }
+
+            let Some(method_def_id) = self
+                .context
+                .get_trait_method(bound.trait_def_id, method_name)
+            else {
+                continue;
+            };
+
+            if candidates.iter().any(|candidate| {
+                candidate.trait_def_id == Some(bound.trait_def_id)
+            }) {
+                continue;
+            }
+
+            candidates.push(ResolvedMethod {
+                method_def_id,
+                trait_def_id: Some(bound.trait_def_id),
+                deferred_trait_dispatch: true,
+            });
+        }
 
         match candidates.as_slice() {
             [] => {
@@ -269,16 +341,18 @@ impl<'ctx> Analyzer<'ctx> {
                 ))
             }
 
-            [(trait_def_id, method_def_id)] => {
-                if self.is_drop_trait(*trait_def_id) && method_name == "drop" {
-                    return Err(self.error(
-                        "S027",
-                        "destructors cannot be called explicitly",
-                        span,
-                    ).with_help("values are destroyed automatically when they leave scope"));
+            [candidate] => {
+                if let Some(trait_def_id) = candidate.trait_def_id {
+                    if self.is_drop_trait(trait_def_id) && method_name == "drop" {
+                        return Err(self.error(
+                            "S027",
+                            "destructors cannot be called explicitly",
+                            span,
+                        ).with_help("values are destroyed automatically when they leave scope"));
+                    }
                 }
-
-                Ok(*method_def_id)
+                
+                Ok(*candidate)
             }
 
             _ => {
@@ -292,7 +366,11 @@ impl<'ctx> Analyzer<'ctx> {
                     span,
                 );
 
-                for (trait_def_id, _) in candidates {
+                for candidate in candidates {
+                    let Some(trait_def_id) = candidate.trait_def_id else {
+                        continue;
+                    };
+
                     let Some(trait_info) = self.context.get_def(trait_def_id) else {
                         continue;
                     };
@@ -303,10 +381,7 @@ impl<'ctx> Analyzer<'ctx> {
                         trait_info.absolute_path.join("::")
                     };
 
-                    error = error.with_note(
-                        format!("candidate provided by trait `{trait_name}`"),
-                        trait_info.span,
-                    );
+                    error = error.with_note(format!("candidate provided by trait `{trait_name}`"), trait_info.span);
                 }
 
                 Err(error)

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use parser::ast::*;
 use parser::module::{ModuleTree, SourceMap};
 use ir::types::Type as IRType;
-use ir::context::{HIRContext, DefID, DefKind, SymbolInfo};
+use ir::context::{HIRContext, DefID, DefKind, SymbolInfo, TraitBound};
 use ir::hir::HIRProgram;
 use errors::error::{HydraError, Span};
 
@@ -22,6 +22,8 @@ pub struct Analyzer<'ctx> {
     pub current_filepath: String,
     pub current_module: Vec<String>,
     pub current_source: String,
+    pub current_trait_bounds: Vec<TraitBound>,
+
     pub errors: Vec<HydraError>,
 }
 
@@ -47,6 +49,7 @@ impl<'ctx> Analyzer<'ctx> {
             current_filepath: String::new(),
             current_module: Vec::new(),
             current_source: String::new(),
+            current_trait_bounds: Vec::new(),
             errors: Vec::new(),
         }
     }

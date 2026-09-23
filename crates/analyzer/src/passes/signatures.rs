@@ -1,4 +1,4 @@
-use ir::{context::{DefID, DefKind}, intrinsic::IntrinsicKind};
+use ir::{context::{DefID, DefKind, TraitBound}, intrinsic::IntrinsicKind};
 use parser::{FunctionDecl, Item};
 use ir::types::Type as IRType;
 
@@ -56,6 +56,7 @@ impl<'ctx> Analyzer<'ctx> {
                             decl,
                             def_id,
                             full_path,
+                            &[],
                             &[]
                         );
                     }
@@ -118,7 +119,7 @@ impl<'ctx> Analyzer<'ctx> {
                             let mut method_path = trait_path.clone();
                             method_path.push(method.name.lexeme.clone());
 
-                            self.populate_one_function_signature(method, method_id, method_path, &[]);
+                            self.populate_one_function_signature(method, method_id, method_path, &[], &[]);
 
                             method_ids.push(method_id);
                         }
@@ -171,6 +172,17 @@ impl<'ctx> Analyzer<'ctx> {
                             .map(|p| p.name.lexeme.clone())
                             .collect();
 
+                        let extension_bounds = match self.lower_where_clause_bounds(extension.where_clause.as_ref()) 
+                        {
+                            Ok(bounds) => bounds,
+
+                            Err(error) => {
+                                self.errors.push(error);
+                                self.current_self_type = previous_self_type;
+                                continue;
+                            }
+                        };
+
                         let parent_path: Vec<String> = parent_name
                             .split("::")
                             .map(|part| part.to_string())
@@ -205,7 +217,8 @@ impl<'ctx> Analyzer<'ctx> {
                                 method,
                                 method_def_id,
                                 method_path,
-                                &extension_generic_params
+                                &extension_generic_params,
+                                &extension_bounds
                             );
                         }
 
@@ -218,8 +231,14 @@ impl<'ctx> Analyzer<'ctx> {
         }
     }
 
-        fn populate_one_function_signature(&mut self, decl: &FunctionDecl, fn_def_id: DefID, 
-        absolute_path: Vec<String>, inherited_generics: &[String]) 
+    fn populate_one_function_signature(
+        &mut self, 
+        decl: &FunctionDecl, 
+        fn_def_id: DefID, 
+        absolute_path: Vec<String>, 
+        inherited_generics: &[String],
+        inherited_bounds: &[TraitBound]
+    ) 
     {
         let mut generic_params = inherited_generics.to_vec();
         for param in &decl.generic_params {
@@ -227,6 +246,15 @@ impl<'ctx> Analyzer<'ctx> {
 
             if !generic_params.contains(&name) {
                 generic_params.push(name);
+            }
+        }
+
+        let mut trait_bounds = inherited_bounds.to_vec();
+        match self.lower_where_clause_bounds(decl.where_clause.as_ref()) {
+            Ok(bounds) => trait_bounds.extend(bounds),
+            Err(error) => {
+                self.errors.push(error); 
+                return;
             }
         }
 
@@ -366,6 +394,7 @@ impl<'ctx> Analyzer<'ctx> {
             return_type,
             generic_params,
             owner_generic_count: inherited_generics.len(),
+            trait_bounds,
             annotations: decl.annotations.clone(),
             intrinsic,
         };

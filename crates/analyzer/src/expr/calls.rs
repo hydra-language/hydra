@@ -142,10 +142,10 @@ impl<'ctx> Analyzer<'ctx> {
 
                 let actual_info = self.context.get_def(actual_def_id).unwrap();
 
-                let (param_types, return_type, function_gp, intrinsic, owner_generic_count) = match &actual_info.kind {
-                    DefKind::Function { params, return_type, intrinsic, generic_params, owner_generic_count, .. } =>
+                let (param_types, return_type, function_gp, trait_bounds, intrinsic, owner_generic_count) = match &actual_info.kind {
+                    DefKind::Function { params, return_type, intrinsic, generic_params, owner_generic_count, trait_bounds, .. } =>
                     {
-                        (params.clone(), return_type.clone(), generic_params.clone(), *intrinsic, *owner_generic_count)
+                        (params.clone(), return_type.clone(), generic_params.clone(), trait_bounds.clone(), *intrinsic, *owner_generic_count)
                     }
 
                     _ => {
@@ -198,7 +198,6 @@ impl<'ctx> Analyzer<'ctx> {
                         span,
                     ));
                 }
-
 
                 //
                 // Foo::method::<U>()
@@ -334,6 +333,8 @@ impl<'ctx> Analyzer<'ctx> {
                 //
                 let resolved_return_type = return_type.substitute(&substitutions);
 
+                self.validate_trait_bounds(&trait_bounds, &substitutions, span)?;
+
                 if let Some(kind) = intrinsic {
                     return Ok(HIRExpr {
                         kind: HIRExprKind::IntrinsicCall {
@@ -355,6 +356,7 @@ impl<'ctx> Analyzer<'ctx> {
                         args,
                         generic_args:
                         resolved_generic_args,
+                        trait_dispatch: None,
                     },
 
                     ty: resolved_return_type,

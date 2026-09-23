@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use errors::error::Span;
 use parser::Annotation;
 use crate::intrinsic::IntrinsicKind;
@@ -16,6 +16,12 @@ impl std::fmt::Display for DefID {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeID(pub usize);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraitBound {
+    pub target_type: Type,
+    pub trait_def_id: DefID,
+}
 
 #[derive(Debug, Clone)]
 pub enum DefKind {
@@ -37,6 +43,8 @@ pub enum DefKind {
         // number of entries at the beginning of generic_params
         // inherited from the extension owner
         owner_generic_count: usize,
+        
+        trait_bounds: Vec<TraitBound>,
         intrinsic: Option<IntrinsicKind>,
     },
 
@@ -75,6 +83,7 @@ pub struct SymbolInfo {
 pub struct TraitImpl {
     pub trait_def_id: DefID,
     pub target_type: Type,
+    pub bounds: Vec<TraitBound>,
     pub methods: HashMap<String, DefID>,
 }
 
@@ -177,5 +186,145 @@ impl HIRContext {
         self.get_exact_trait_impl(trait_def_id, target_type)
             .and_then(|trait_impl| trait_impl.methods.get(method_name))
             .copied()
+    }
+
+    pub fn get_trait_method(&self, trait_def_id: DefID, method_name: &str) -> Option<DefID> {
+        let trait_info = self.get_def(trait_def_id)?;
+
+        let DefKind::Trait { methods } = &trait_info.kind else {
+            return None;
+        };
+
+        methods.iter().copied().find(|method_def_id| {
+            self.get_def(*method_def_id)
+                .map(|method| method.name.as_str())
+            == Some(method_name)
+        })
+    }
+
+    pub fn trait_impl_is_applicable(&self, trait_impl: &TraitImpl, target_type: &Type, assumptions: &[TraitBound]) -> bool 
+    {
+        let mut substitutions = HashMap::new();
+
+        if !Self::match_trait_impl_target(&trait_impl.target_type, target_type, &mut substitutions) {
+            return false;
+        }
+
+        let mut visiting = HashSet::new();
+
+        trait_impl.bounds.iter().all(|bound| {
+            let target = bound.target_type.substitute(&substitutions);
+
+            self.type_implements_trait_inner(&target, bound.trait_def_id, assumptions, &mut visiting)
+        })
+    }
+
+    pub fn type_implements_trait(&self, target_type: &Type, trait_def_id: DefID, assumptions: &[TraitBound]) -> bool 
+    {
+        let mut visiting = HashSet::new();
+
+        self.type_implements_trait_inner(target_type, trait_def_id, assumptions, &mut visiting)
+    }
+
+    fn type_implements_trait_inner(&self, target_type: &Type, trait_def_id: DefID, assumptions: &[TraitBound], visiting: &mut HashSet<(DefID, Type)>) 
+        -> bool 
+    {
+        if assumptions.iter().any(|bound| {
+            bound.trait_def_id == trait_def_id
+            && bound.target_type == *target_type
+        }) 
+        {
+            return true;
+        }
+
+        let key = (trait_def_id, target_type.clone());
+
+        if !visiting.insert(key.clone()) {
+            return false;
+        }
+
+        let result = self.trait_impls.iter().any(|trait_impl| {
+            if trait_impl.trait_def_id != trait_def_id {
+                return false;
+            }
+
+            let mut substitutions = HashMap::new();
+
+            if !Self::match_trait_impl_target(
+                &trait_impl.target_type,
+                target_type,
+                &mut substitutions,
+            ) {
+                return false;
+            }
+
+            trait_impl.bounds.iter().all(|bound| {
+                let target = bound.target_type.substitute(&substitutions);
+
+                self.type_implements_trait_inner(
+                    &target,
+                    bound.trait_def_id,
+                    assumptions,
+                    visiting,
+                )
+            })
+        });
+
+        visiting.remove(&key);
+
+        result
+    }
+
+    fn match_trait_impl_target(pattern: &Type, actual: &Type, substitutions: &mut HashMap<String, Type>) -> bool {
+        match (pattern, actual) {
+            (Type::GENERIC(name), actual) => {
+                if let Some(existing) = substitutions.get(name) {
+                    existing == actual
+                } else {
+                    substitutions.insert(name.clone(), actual.clone());
+                    true
+                }
+            }
+
+            (Type::GENERIC_INSTANCE(pattern_base, pattern_args), Type::GENERIC_INSTANCE(actual_base, actual_args)) => 
+            {
+                pattern_base.def_id == actual_base.def_id
+                && pattern_args.len() == actual_args.len()
+                && pattern_args
+                    .iter()
+                    .zip(actual_args)
+                    .all(|(pattern, actual)| {
+                        Self::match_trait_impl_target(
+                            pattern,
+                            actual,
+                            substitutions,
+                        )
+                    })
+            }
+
+            (Type::ARRAY(pattern, pattern_len), Type::ARRAY(actual, actual_len)) => {
+                pattern_len == actual_len
+                && Self::match_trait_impl_target(
+                    pattern,
+                    actual,
+                    substitutions,
+                )
+            }
+
+            (Type::SLICE(pattern), Type::SLICE(actual)) |
+            (Type::REF(pattern), Type::REF(actual)) |
+            (Type::CONST_REF(pattern), Type::CONST_REF(actual)) |
+            (Type::POINTER(pattern), Type::POINTER(actual)) |
+            (Type::CONST_POINTER(pattern), Type::CONST_POINTER(actual)) |
+            (Type::OPTIONAL(pattern), Type::OPTIONAL(actual)) => {
+                Self::match_trait_impl_target(
+                    pattern,
+                    actual,
+                    substitutions,
+                )
+            }
+
+            _ => pattern == actual,
+        }
     }
 }

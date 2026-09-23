@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ir::context::{DefID, DefKind, HIRContext, SymbolInfo, TraitImpl};
+use ir::context::{DefID, DefKind, HIRContext, SymbolInfo, TraitBound, TraitImpl};
 use ir::hir::{HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRProgram, HIRStmt};
 use ir::types::{Type, TypeRef};
 use ir::instance::Instance;
@@ -276,32 +276,68 @@ impl<'a> Monomorphizer<'a> {
                 }
             }
 
-            HIRExprKind::Call { callee, args, generic_args } => {
-                for arg in args.iter_mut() { self.substitute_expr(arg, subs, local_types); }
+            HIRExprKind::Call { callee, args, generic_args, trait_dispatch } => {
+                for arg in args.iter_mut() {
+                    self.substitute_expr(arg, subs, local_types);
+                }
 
-                let callee_info = self.context.get_def(*callee).unwrap().clone();
-                if let DefKind::Function { generic_params, params, .. } = &callee_info.kind {
-                    if !generic_params.is_empty() {
-                        let mut concrete_args: Vec<Type> = generic_args.iter()
-                            .map(|g| g.substitute(subs))
-                            .collect();
+                if let Some(trait_def_id) = *trait_dispatch {
+                    let receiver_ty = args.first().map(|arg| Self::strip_receiver_references(&arg.ty)).expect(
+                        "ICE: deferred trait call has no receiver"
+                    );
 
-                        if concrete_args.len() < generic_params.len() {
-                            let mut inferred: HashMap<String, Type> = HashMap::new();
-                            for (param_ty, arg) in params.iter().zip(args.iter()) {
-                                self.infer_type_args(param_ty, &arg.ty, &mut inferred);
-                            }
-                            concrete_args = generic_params.iter()
-                                .map(|name| inferred.get(name).cloned().unwrap_or(Type::GENERIC(name.clone())))
-                                .collect();
+                    let method_name = self.context.get_def(*callee).map(|info| info.name.clone()).expect(
+                        "ICE: deferred trait method definition is missing"
+                    );
+
+                    let impl_method = self.context.trait_impls.iter().find_map(|trait_impl| {
+                        if trait_impl.trait_def_id != trait_def_id || 
+                        !self.context.trait_impl_is_applicable(trait_impl, receiver_ty, &[])
+                        {
+                            return None;
                         }
 
-                        if concrete_args.iter().all(|t| !matches!(t, Type::GENERIC(_))) {
-                            let local_subs: HashMap<String, Type> = generic_params.iter().cloned()
-                                .zip(concrete_args.iter().cloned())
-                                .collect();
+                        trait_impl.methods.get(&method_name).copied()
+                    }).unwrap_or_else(|| panic!(
+                        "ICE: no concrete implementation of trait method `{}` for `{}`",
+                        method_name,
+                        receiver_ty,
+                    ));
 
-                            let specialized_callee = self.get_or_create_specialization(*callee, concrete_args);
+                    *callee = impl_method;
+                    *trait_dispatch = None;
+                }
+
+                let callee_info = self.context.get_def(*callee).unwrap().clone();
+
+                if let DefKind::Function { generic_params, params, .. } = &callee_info.kind {
+                    if !generic_params.is_empty() {
+                        let mut concrete_args: Vec<Type> = generic_args.iter().map(|generic| generic.substitute(subs)).collect();
+
+                        if concrete_args.len() < generic_params.len() {
+                            let mut inferred = HashMap::new();
+
+                            for (param_ty, arg) in params.iter().zip(args.iter()) {
+                                self.infer_type_args(
+                                    param_ty,
+                                    &arg.ty,
+                                    &mut inferred,
+                                );
+                            }
+
+                            concrete_args = generic_params.iter().map(|name| {
+                                inferred.get(name).cloned().unwrap_or(Type::GENERIC(name.clone()))
+                            }).collect();
+                        }
+
+                        if concrete_args.iter().all(|ty| !matches!(ty, Type::GENERIC(_))) {
+                            let local_subs: HashMap<String, Type> = generic_params.iter().cloned().zip(concrete_args.iter().cloned()).collect();
+
+                            let specialized_callee = self.get_or_create_specialization(
+                                *callee,
+                                concrete_args,
+                            );
+
                             *callee = specialized_callee;
 
                             expr.ty = self.resolve_type(&original_type.substitute(&local_subs), &local_subs);
@@ -309,7 +345,19 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
             }
+
             _ => {} 
+        }
+    }
+
+    fn strip_receiver_references(ty: &Type) -> &Type {
+        match ty {
+            Type::REF(inner) |
+            Type::CONST_REF(inner) => {
+                Self::strip_receiver_references(inner)
+            }
+
+            _ => ty,
         }
     }
 
@@ -346,7 +394,7 @@ impl<'a> Monomorphizer<'a> {
             _ => HashMap::new(),
         };
 
-        if let DefKind::Function { ref params, ref return_type, ref annotations, .. } = generic_info.kind {
+        if let DefKind::Function { ref params, ref return_type, ref annotations, ref trait_bounds, .. } = generic_info.kind {
             specialized_info.kind = DefKind::Function {
                 params: params.iter().map(|ty| {
                     self.resolve_type(
@@ -357,6 +405,16 @@ impl<'a> Monomorphizer<'a> {
 
                 return_type: self.resolve_type( &return_type.substitute(&subs), &subs),
                 generic_params: vec![],
+
+                trait_bounds: trait_bounds.iter().map(|bound| TraitBound {
+                    target_type: self.resolve_type(
+                        &bound.target_type.substitute(&subs),
+                        &subs,
+                    ),
+
+                    trait_def_id: bound.trait_def_id,
+                }).collect(),
+
                 owner_generic_count: 0,
                 intrinsic: None,
                 annotations: annotations.to_vec(),
@@ -548,6 +606,14 @@ impl<'a> Monomorphizer<'a> {
 
             let mut methods = HashMap::new();
 
+            let concrete_bounds = trait_impl.bounds.iter().map(|bound| TraitBound {
+                target_type: self.resolve_type(
+                    &bound.target_type.substitute(&substitutions),
+                    &substitutions,
+                ),
+                trait_def_id: bound.trait_def_id,
+            }).collect::<Vec<_>>();
+
             for (name, method_def_id) in trait_impl.methods {
                 let method_info = self.context.get_def(method_def_id).unwrap().clone();
 
@@ -574,6 +640,7 @@ impl<'a> Monomorphizer<'a> {
             self.context.register_trait_impl(TraitImpl {
                 trait_def_id: trait_impl.trait_def_id,
                 target_type: concrete_target,
+                bounds: concrete_bounds,
                 methods,
             });
         }

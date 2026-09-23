@@ -1,11 +1,10 @@
 use super::super::Analyzer;
 
-use crate::utils;
+use std::collections::HashMap;
 
-use errors::error::{
-    HydraError,
-    Span,
-};
+use crate::utils;
+use errors::error::{HydraError, Span };
+
 use ir::context::DefKind;
 use ir::hir::{HIRExpr, HIRExprKind};
 use ir::types::{Type as IRType, TypeRef};
@@ -210,16 +209,49 @@ impl<'ctx> Analyzer<'ctx> {
 
             ASTExpr::StructInitializer { name, fields, .. } => {
                 let name_id = utils::get_expr_id(name);
-                let def_id = self.name_resolver.get_resolution(name_id)
-                    .ok_or_else(|| self.error("S002", "undefined struct", span))?;
+
+                let def_id = self.name_resolver.get_resolution(name_id).ok_or_else(|| self.error(
+                    "S002",
+                    "undefined struct",
+                    span,
+                ))?;
 
                 let info = self.context.get_def(def_id).unwrap().clone();
                 let absolute_struct_name = info.absolute_path.join("::");
 
-                let def_fields = match &info.kind {
-                    DefKind::Struct { fields, .. } => fields.clone(),
-                    _ => return Err(self.error("S002", "not a struct", span)),
-                }; 
+                let (def_fields, generic_params) = match &info.kind {
+                    DefKind::Struct { fields, generic_params } => {
+                        (fields.clone(), generic_params.clone())
+                    }
+
+                    _ => {
+                        return Err(self.error("S002", "not a struct", span));
+                    }
+                };
+
+                let type_ref = TypeRef::new(def_id, absolute_struct_name.clone());
+
+                let mut substitutions = HashMap::<String, IRType>::new();
+
+                //
+                // if the surrounding context already tells us which generic
+                // instantiation this is, seed the generic substitutions from it
+                //
+                //     const wrapper: Wrapper<i32> = Wrapper {
+                //         .value = 42,
+                //     };
+                //
+                // gives:
+                //
+                //     T = i32
+                //
+                if let Some(IRType::GENERIC_INSTANCE(expected_base, expected_args)) = expected {
+                    if expected_base.def_id == def_id && expected_args.len() == generic_params.len() {
+                        for (generic_param, expected_arg) in generic_params.iter().zip(expected_args.iter()) {
+                            substitutions.insert(generic_param.clone(), expected_arg.clone());
+                        }
+                    }
+                }
 
                 let mut lowered_values = Vec::new();
 
@@ -236,26 +268,8 @@ impl<'ctx> Analyzer<'ctx> {
                         ));
                     }
 
-                    if let Some((_, value_node)) = fields.iter().find(|(field_token, _)| field_token.lexeme == *def_name) {
-                        let mut val = self.lower_expr_with_type(value_node, Some(def_type))?;
-
-                        val = self.coerce_primitive(val, def_type);
-
-                        if !self.check_type_compatibility(def_type, &val.ty) {
-                            return Err(self.error(
-                                "S001",
-                                format!(
-                                    "field '{}' expected {}, found {}",
-                                    def_name,
-                                    def_type,
-                                    val.ty,
-                                ),
-                                span,
-                            ));
-                        }
-
-                        lowered_values.push(val);
-                    } else {
+                    let Some((_, value_node)) = fields.iter().find(|(field_token, _)| field_token.lexeme == *def_name) else 
+                    {
                         return Err(self.error(
                             "S005",
                             format!(
@@ -264,15 +278,88 @@ impl<'ctx> Analyzer<'ctx> {
                             ),
                             span,
                         ));
+                    };
+
+                    //
+                    // substitute any generic arguments we already know
+                    //
+                    // For Wrapper<i32>:
+                    //
+                    //     T -> i32
+                    //
+                    let mut field_type = def_type.substitute(&substitutions);
+
+                    //
+                    // only pass a concrete expectation downward. passing an unresolved
+                    // T as an expected type doesn't help literals or nested expressions
+                    //
+                    let field_expected = if field_type.contains_generic() {
+                        None
+                    } else {
+                        Some(&field_type)
+                    };
+
+                    let mut val = self.lower_expr_with_type(
+                        value_node,
+                        field_expected,
+                    )?;
+
+                    //
+                    // if this struct didn't have an expected type, infer generic
+                    // arguments from the field itself
+                    //
+                    //     Wrapper {
+                    //         .value = 42,
+                    //     }
+                    //
+                    // infers:
+                    //
+                    //     T = i32
+                    //
+                    Self::infer_generic_bindings(def_type, &val.ty, &mut substitutions);
+
+                    //
+                    // inference may have made this field concrete
+                    //
+                    field_type = def_type.substitute(&substitutions);
+
+                    val = self.coerce_primitive(val, &field_type);
+
+                    if !self.check_type_compatibility(&field_type, &val.ty) {
+                        return Err(self.error(
+                            "S001",
+                            format!(
+                                "field '{}' expected {}, found {}",
+                                def_name,
+                                field_type,
+                                val.ty,
+                            ),
+                            span,
+                        ));
                     }
+
+                    lowered_values.push(val);
                 }
 
+                let ty = if generic_params.is_empty() {
+                    IRType::STRUCT(type_ref)
+                } else {
+                    let generic_args = generic_params.iter().map(|name| {
+                        substitutions.get(name).cloned().unwrap_or_else(|| IRType::GENERIC(name.clone()))
+                    }).collect();
+
+                    IRType::GENERIC_INSTANCE(type_ref, generic_args)
+                };
+
                 Ok(HIRExpr {
-                    kind: HIRExprKind::StructInit { def_id, values: lowered_values },
-                    ty: IRType::STRUCT(TypeRef::new(def_id, absolute_struct_name)),
+                    kind: HIRExprKind::StructInit {
+                        def_id,
+                        values: lowered_values,
+                    },
+                    ty,
                     span,
                 })
-            },
+            }
 
             _ => unreachable!("lower_aggregate_expr() called with non-aggregate expression")
         }

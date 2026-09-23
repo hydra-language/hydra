@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use errors::error::HydraError;
 use ir::{
-    context::{DefID, DefKind, TraitImpl}, types::Type as IRType,
+    context::{DefID, DefKind, TraitBound, TraitImpl}, types::Type as IRType,
 };
 use crate::traits;
 use parser::{ast::Type as ASTType, ExtensionDecl, Item};
@@ -59,7 +59,29 @@ impl<'ctx> Analyzer<'ctx> {
                         }
                     };
 
-                    self.populate_trait_impl(decl, trait_def_id, target_ty);
+                    let previous_self_type =
+                    self.current_self_type.replace(target_ty.clone());
+
+                    let bounds = match self.lower_where_clause_bounds(
+                        decl.where_clause.as_ref(),
+                    ) {
+                        Ok(bounds) => bounds,
+
+                        Err(error) => {
+                            self.errors.push(error);
+                            self.current_self_type = previous_self_type;
+                            continue;
+                        }
+                    };
+
+                    self.current_self_type = previous_self_type;
+
+                    self.populate_trait_impl(
+                        decl,
+                        trait_def_id,
+                        target_ty,
+                        bounds,
+                    );
 
                     continue;
                 }
@@ -82,7 +104,7 @@ impl<'ctx> Analyzer<'ctx> {
         }
     }
 
-    fn populate_trait_impl(&mut self, decl: &ExtensionDecl, trait_def_id: DefID, target_ty: IRType) {
+    fn populate_trait_impl(&mut self, decl: &ExtensionDecl, trait_def_id: DefID, target_ty: IRType, bounds: Vec<TraitBound>) {
         let trait_info = self.context.get_def(trait_def_id).cloned().unwrap();
 
         let trait_name = if trait_info.absolute_path.is_empty() {
@@ -148,6 +170,7 @@ impl<'ctx> Analyzer<'ctx> {
         self.context.register_trait_impl(TraitImpl {
             trait_def_id,
             target_type: target_ty,
+            bounds,
             methods: registered_methods,
         });
     }

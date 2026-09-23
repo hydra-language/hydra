@@ -73,6 +73,7 @@ pub enum HIRExprKind {
         callee: DefID,
         args: Vec<HIRExpr>,
         generic_args: Vec<Type>, 
+        trait_dispatch: Option<DefID>,
     },
 
     BuiltinCall {

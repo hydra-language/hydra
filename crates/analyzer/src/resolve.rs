@@ -164,6 +164,7 @@ impl<'ctx> Resolver<'ctx> {
                                 annotations: vec![], 
                                 return_type: ir::types::Type::VOID, 
                                 generic_params: vec![],
+                                trait_bounds: vec![],
                                 owner_generic_count: 0,
                                 intrinsic: None
                             },
@@ -399,6 +400,7 @@ impl<'ctx> Resolver<'ctx> {
                             return_type: ir::types::Type::VOID,
                             owner_generic_count: 0,
                             generic_params: vec![],
+                            trait_bounds: vec![],
                             intrinsic: None
                         },
                         is_pub: method.is_pub,
@@ -543,6 +545,7 @@ impl<'ctx> Resolver<'ctx> {
                             return_type: ir::types::Type::VOID,
                             owner_generic_count: 0,
                             generic_params: vec![],
+                            trait_bounds: vec![],
                             intrinsic: None
                         },
                         is_pub: method.is_pub,

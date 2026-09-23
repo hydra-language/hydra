@@ -1,15 +1,12 @@
-use ir::{context::DefKind, hir::{HIRBlock, HIRFunction}};
+use ir::{context::DefKind, hir::{HIRBlock, HIRFunction}, types::Type as IRType};
 use parser::FunctionDecl;
-use ir::types::Type as IRType;
 
 use crate::Analyzer;
 
 impl<'ctx> Analyzer<'ctx> {
 
-    pub(crate) fn lower_function(&mut self, decl: &FunctionDecl, parent_path: Option<String>, inherited_generics: &[String]) 
-        -> Option<HIRFunction> 
+    pub(crate) fn lower_function(&mut self, decl: &FunctionDecl, parent_path: Option<String>, inherited_generics: &[String]) -> Option<HIRFunction> 
     {
-
         let (def_id, full_path) = if let Some(parent_path) = parent_path {
             // extension/associated function.
             //
@@ -49,6 +46,7 @@ impl<'ctx> Analyzer<'ctx> {
         } else {
             IRType::VOID
         };
+
         self.current_return_type = Some(ret_type.clone());
 
         let mut ir_params = Vec::new();
@@ -63,8 +61,7 @@ impl<'ctx> Analyzer<'ctx> {
                 }
             };
 
-            let Some(param_def_id) = self.name_resolver.get_parameter(decl.id, param_index) else 
-            {
+            let Some(param_def_id) = self.name_resolver.get_parameter(decl.id, param_index) else {
                 self.errors.push(self.error(
                     "S002",
                     format!(
@@ -77,8 +74,7 @@ impl<'ctx> Analyzer<'ctx> {
                 return None;
             };
 
-            let Some(mut p_info) = self.context.get_def(param_def_id).cloned() else 
-            {
+            let Some(mut p_info) = self.context.get_def(param_def_id).cloned() else {
                 self.errors.push(self.error(
                     "S002",
                     format!(
@@ -107,23 +103,49 @@ impl<'ctx> Analyzer<'ctx> {
             ));
         }
 
-        if let DefKind::Function { ref mut return_type, ref mut params, .. } = info.kind {
+        if let DefKind::Function {
+            ref mut return_type,
+            ref mut params,
+            ..
+        } = info.kind
+        {
             *return_type = ret_type.clone();
             *params = ir_params.iter().map(|(_, ty)| ty.clone()).collect();
         }
+
+        let function_trait_bounds = match &info.kind {
+            DefKind::Function { trait_bounds, .. } => trait_bounds.clone(),
+            _ => Vec::new(),
+        };
 
         self.context.update_def(def_id, info);
 
         let is_inline = decl.annotations.iter().any(|a| a.name == "inline");
 
+        // Install this function's declared trait bounds while its body is
+        // semantically analyzed.
+        //
+        // For example:
+        //
+        //     fn show<T>(value: T) -> void
+        //     where T: Display
+        //
+        // permits the body to rely on `T: Display`.
+        let previous_trait_bounds = std::mem::replace(
+            &mut self.current_trait_bounds,
+            function_trait_bounds,
+        );
+
         let mut ir_body = Vec::new();
+
         if let Some(body_block) = &decl.body {
             match self.lower_block(body_block) {
                 Ok(block) => ir_body = block.stmts,
-                Err(e) => self.errors.push(e), 
+                Err(error) => self.errors.push(error),
             }
         }
 
+        self.current_trait_bounds = previous_trait_bounds;
         self.current_return_type = None;
 
         let fn_name = full_path.join("::");
@@ -143,10 +165,13 @@ impl<'ctx> Analyzer<'ctx> {
             def_id,
             params: ir_params,
             return_type: ret_type,
-            body: HIRBlock { stmts: ir_body, span: decl.name.span },
+            body: HIRBlock {
+                stmts: ir_body,
+                span: decl.name.span,
+            },
             is_extern: decl.is_extern,
             is_inline,
-            generic_params
+            generic_params,
         })
     }
 }
