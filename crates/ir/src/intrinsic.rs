@@ -12,6 +12,8 @@ pub enum IntrinsicKind {
     Alloc,
     Dealloc,
     SliceLen,
+    SlicePtr,
+    WriteStdout,
 }
 
 impl IntrinsicKind {
@@ -90,19 +92,32 @@ impl IntrinsicKind {
                 Some(Self::SliceLen)
             }
 
+            [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__slice_ptr" =>
+            {
+                Some(Self::SlicePtr)
+            }
+
+            [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__write_stdout" =>
+            {
+                Some(Self::WriteStdout)
+            }
+
             _ => None,
         }
     }
 
     pub fn has_side_effects(self) -> bool {
         match self {
-            IntrinsicKind::PtrWrite | IntrinsicKind::Alloc | IntrinsicKind::Dealloc => true,
+            IntrinsicKind::PtrWrite | IntrinsicKind::Alloc | 
+            IntrinsicKind::Dealloc | IntrinsicKind::WriteStdout => true,
 
             IntrinsicKind::SizeOf | IntrinsicKind::AlignOf | 
             IntrinsicKind::PtrRead | IntrinsicKind::PtrOffset |
             IntrinsicKind::PtrNull | IntrinsicKind::PtrNullMut |
             IntrinsicKind::PtrIsNull | IntrinsicKind::PtrFromAddr |
-            IntrinsicKind::SliceLen => false,
+            IntrinsicKind::SliceLen | IntrinsicKind::SlicePtr => false,
         }
     }
 }

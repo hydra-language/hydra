@@ -548,6 +548,133 @@ impl<'ctx> Analyzer<'ctx> {
                     ));
                 }
             }
+
+            IntrinsicKind::SlicePtr => {
+                if generic_params.len() != 1 {
+                    return Err(self.error(
+                        "S017",
+                        "slice_ptr requires exactly one type parameter",
+                        span,
+                    ));
+                }
+
+                if params.len() != 1 {
+                    return Err(self.error(
+                        "S017",
+                        "slice_ptr requires exactly one argument",
+                        span,
+                    ));
+                }
+
+                let expected = &generic_params[0];
+
+                match &params[0] {
+                    IRType::CONST_REF(inner) | IRType::REF(inner) => {
+                        match inner.as_ref() {
+                            IRType::SLICE(element) => {
+                                match element.as_ref() {
+                                    IRType::GENERIC(name) if name == expected => {}
+
+                                    _ => {
+                                        return Err(self.error(
+                                            "S017",
+                                            "slice_ptr expects `&[T]`",
+                                            span,
+                                        ));
+                                    }
+                                }
+                            }
+
+                            _ => {
+                                return Err(self.error(
+                                    "S017",
+                                    "slice_ptr expects `&[T]`",
+                                    span,
+                                ));
+                            }
+                        }
+                    }
+
+                    _ => {
+                        return Err(self.error(
+                            "S017",
+                            "slice_ptr expects `&[T]`",
+                            span,
+                        ));
+                    }
+                }
+
+                match return_type {
+                    IRType::CONST_POINTER(inner) => {
+                        match inner.as_ref() {
+                            IRType::GENERIC(name) if name == expected => {}
+
+                            _ => {
+                                return Err(self.error(
+                                    "S017",
+                                    "slice_ptr must return `*const T`",
+                                    span,
+                                ));
+                            }
+                        }
+                    }
+
+                    _ => {
+                        return Err(self.error(
+                            "S017",
+                            "slice_ptr must return `*const T`",
+                            span,
+                        ));
+                    }
+                }
+            }
+
+            IntrinsicKind::WriteStdout => {
+                if !generic_params.is_empty() {
+                    return Err(self.error(
+                        "S017",
+                        "write_stdout accepts no type parameters",
+                        span,
+                    ));
+                }
+
+                if params.len() != 2 {
+                    return Err(self.error(
+                        "S017",
+                        "write_stdout requires exactly two arguments",
+                        span,
+                    ));
+                }
+
+                match &params[0] {
+                    IRType::CONST_POINTER(inner)
+                    if inner.as_ref() == &IRType::U8 => {}
+
+                    _ => {
+                        return Err(self.error(
+                            "S017",
+                            "write_stdout expects first argument to be `*const u8`",
+                            span,
+                        ));
+                    }
+                }
+
+                if params[1] != IRType::USIZE {
+                    return Err(self.error(
+                        "S017",
+                        "write_stdout expects length to be `usize`",
+                        span,
+                    ));
+                }
+
+                if *return_type != IRType::VOID {
+                    return Err(self.error(
+                        "S017",
+                        "write_stdout must return `void`",
+                        span,
+                    ));
+                }
+            }
         }
 
         Ok(())

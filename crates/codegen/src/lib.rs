@@ -364,6 +364,58 @@ impl<'c> CodeGen<'c> {
 
                 Ok(len.into())
             }
+
+            IntrinsicKind::SlicePtr => {
+                let slice = args.first().ok_or("slice_ptr requires one argument")?;
+                let slice_value = self.compile_operand(slice, mir_fn)?.into_struct_value();
+
+                let ptr = self.builder.build_extract_value(
+                    slice_value,
+                    0,
+                    "slice_ptr",
+                ).ok_or("ICE: slice value has no pointer field")?.into_pointer_value();
+
+                Ok(ptr.into())
+            }
+
+            IntrinsicKind::WriteStdout => {
+                if args.len() != 2 {
+                    return Err("write_stdout requires two arguments".into());
+                }
+
+                let ptr = self.compile_operand(&args[0], mir_fn)?.into_pointer_value();
+                let len = self.compile_operand(&args[1], mir_fn)?.into_int_value();
+                let void_type = self.context.void_type();
+
+                let byte_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+
+                let usize_type = self.context.ptr_sized_int_type(
+                    &self.target_data,
+                    None,
+                );
+
+                let write_fn = self.module.get_function("print_str").unwrap_or_else(|| {
+                    let fn_type = void_type.fn_type(
+                        &[byte_ptr_type.into(), usize_type.into()],
+                        false,
+                    );
+
+                    self.module.add_function(
+                        "print_str",
+                        fn_type,
+                        Some(inkwell::module::Linkage::External),
+                    )
+                });
+
+                self.builder.build_call(
+                    write_fn,
+                    &[ptr.into(), len.into()],
+                    "",
+                );
+
+                // void intrinsics are currently represented as Rvalues.
+                Ok(self.context.i8_type().const_zero().into())
+            }
         }
     }
 

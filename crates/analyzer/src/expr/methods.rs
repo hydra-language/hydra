@@ -31,9 +31,20 @@ impl<'ctx> Analyzer<'ctx> {
         self.lower_instance_method_call(lhs_expr?, &method.lexeme, arguments, generic_args, expected, span)
     }
 
-    pub(crate) fn lower_instance_method_call(&mut self, lhs_expr: HIRExpr, method_name: &str, arguments: &[ASTExpr], generic_args: &[Type], expected: Option<&IRType>, span: Span) 
-        -> Result<HIRExpr, HydraError> 
+    pub(crate) fn lower_instance_method_call(
+        &mut self, 
+        lhs_expr: HIRExpr, 
+        method_name: &str, 
+        arguments: &[ASTExpr], 
+        generic_args: &[Type], 
+        expected: Option<&IRType>, 
+        span: Span
+    ) -> Result<HIRExpr, HydraError> 
     {
+        if method_name == "write" && self.is_formatter_type(&lhs_expr.ty) {
+            return self.lower_formatter_write(lhs_expr, arguments,span);
+        }
+
         let resolution = self.resolve_instance_method(&lhs_expr.ty, method_name, span)?;
 
         let method_def_id = resolution.method_def_id;

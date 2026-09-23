@@ -14,6 +14,7 @@ mod methods;
 mod operators;
 mod places;
 mod values;
+mod format;
 
 impl<'ctx> Analyzer<'ctx> {
 
