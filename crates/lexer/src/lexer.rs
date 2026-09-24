@@ -12,14 +12,24 @@ pub struct Lexer {
     column: usize,
     start_line: usize,
     start_column: usize,
+    byte_offsets: Vec<usize>,
 }
 
 impl Lexer {
 
     pub fn new(input: String) -> Self {
+        let chars: Vec<char> = input.chars().collect();
+
+        let mut byte_offsets: Vec<usize> = input.char_indices()
+            .map(|(offset, _)| offset)
+            .collect();
+
+        byte_offsets.push(input.len());
+
         Self {
-            input: input.clone(),
-            chars: input.chars().collect(),
+            input,
+            chars,
+            byte_offsets,
             current: 0,
             start: 0,
             line: 1,
@@ -52,7 +62,7 @@ impl Lexer {
             self.start_column = self.column;
 
             if let Some(token_type) = self.scan_token()? {
-                let lexeme = &self.input[self.start_offset()..self.current_offset()].to_string();
+                let lexeme = self.input[self.start_offset()..self.current_offset()].to_string();
 
                 tokens.push(Token {
                     token_type,
@@ -502,10 +512,10 @@ impl Lexer {
     }
 
     fn start_offset(&self) -> usize {
-        self.chars[..self.start].iter().map(|c| c.len_utf8()).sum()
+        self.byte_offsets[self.start]
     }
 
     fn current_offset(&self) -> usize {
-        self.chars[..self.current].iter().map(|c| c.len_utf8()).sum()
+        self.byte_offsets[self.current]
     }
 }

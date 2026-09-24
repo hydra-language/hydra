@@ -1,20 +1,12 @@
 [package]
 name = "cli"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 
 [dependencies]
-inkwell = { version = "0.2.0", features = ["llvm14-0"] }
 clap = { version = "4.3", features = ["derive"] }
+driver = { path = "../crates/driver" }
 
-errors = { path = "../crates/errors/" }
-lexer = { path = "../crates/lexer" }
-parser = { path = "../crates/parser/" }
-analyzer = { path = "../crates/analyzer" }
-ir = { path = "../crates/ir" }
-mir = { path = "../crates/mir" }
-borrowcheck = { path = "../crates/borrowcheck" }
-codegen = { path = "../crates/codegen/" }
 
 [[bin]]
 name = "hydrac"

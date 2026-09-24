@@ -24,11 +24,12 @@ pub struct MIRBuilder<'a> {
     const_map: HashMap<DefID, ir::Constant>,
     loop_context: Vec<(BasicBlockID, BasicBlockID)>,
     context: &'a HIRContext,
+    drop_cache: &'a mut HashMap<Type, bool>,
 }
 
 impl<'a> MIRBuilder<'a> {
 
-    pub fn new(context: &'a HIRContext) -> Self {
+    pub fn new(context: &'a HIRContext, drop_cache: &'a mut HashMap<Type, bool>) -> Self {
         Self {
             locals: Vec::new(),
             basic_blocks: Vec::new(),
@@ -37,6 +38,7 @@ impl<'a> MIRBuilder<'a> {
             const_map: HashMap::new(),
             loop_context: Vec::new(),
             context,
+            drop_cache,
         }
     }
 
@@ -1040,23 +1042,29 @@ impl<'a> MIRBuilder<'a> {
         self.context.get_exact_trait_impl(drop_trait_def_id, ty).is_some()
     }
 
-    fn type_needs_drop(&self, ty: &Type) -> bool {
-        if self.type_has_explicit_drop(ty) {
-            return true;
+    fn type_needs_drop(&mut self, ty: &Type) -> bool {
+        if let Some(&needs_drop) = self.drop_cache.get(ty) {
+            return needs_drop;
         }
 
-        if self.is_uninit_type(ty) {
-            return false;
-        }
+        let needs_drop = if self.type_has_explicit_drop(ty) {
+            true
+        } else if self.is_uninit_type(ty) {
+            false
+        } else {
+            match ty {
+                Type::STRUCT(type_ref) => self
+                    .context
+                    .get_struct_fields_ref(type_ref.def_id)
+                    .iter()
+                    .any(|(_, field_ty, _)| self.type_needs_drop(field_ty)),
 
-        match ty {
-            Type::STRUCT(type_ref) => self.context
-                .get_struct_fields(type_ref.def_id)
-                .iter()
-                .any(|(_, field_ty, _)| self.type_needs_drop(field_ty)),
+                _ => false,
+            }
+        };
 
-            _ => false,
-        }
+        self.drop_cache.insert(ty.clone(), needs_drop);
+        needs_drop
     }
 
     fn emit_drop_glue(&mut self, place: Place, ty: &Type, span: Span) {
@@ -1087,16 +1095,16 @@ impl<'a> MIRBuilder<'a> {
             return;
         };
 
-        let fields = self.context.get_struct_fields(type_ref.def_id);
-        for (field_index, (_, field_ty, _)) in fields.into_iter().enumerate() {
-            if !self.type_needs_drop(&field_ty) {
+        let fields = self.context.get_struct_fields_ref(type_ref.def_id);
+        for (field_index, (_, field_ty, _)) in fields.iter().enumerate() {
+            if !self.type_needs_drop(field_ty) {
                 continue;
             }
 
             let mut field_place = place.clone();
             field_place.projection.push(ProjectionElem::Field(field_index));
 
-            self.emit_drop_glue(field_place, &field_ty, span);
+            self.emit_drop_glue(field_place, field_ty, span);
         }
     }
 
@@ -1105,7 +1113,7 @@ impl<'a> MIRBuilder<'a> {
             let local = LocalID(index);
 
             let should_drop = {
-                let decl = &self.locals[index];
+                let decl = self.locals[index].clone();
                 decl.debug_def_id.is_some() && self.type_needs_drop(&decl.ty)
             };
 

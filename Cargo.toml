@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "cli",
+    "crates/driver",
     "crates/errors",
     "crates/lexer",
     "crates/parser",
@@ -11,3 +12,6 @@ members = [
     "crates/borrowcheck",
     "runtime"
 ]
+
+[workspace.package]
+version = "0.4.0"

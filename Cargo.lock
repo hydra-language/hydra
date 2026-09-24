@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "analyzer"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "errors",
  "ir",
@@ -79,7 +79,7 @@ checksum = "2261d10cca569e4643e526d8dc2e62e433cc8aba21ab764233731f8d369bf394"
 
 [[package]]
 name = "borrowcheck"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "errors",
  "ir",
@@ -145,23 +145,15 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
 name = "cli"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
- "analyzer",
- "borrowcheck",
  "clap",
- "codegen",
- "errors",
- "inkwell",
- "ir",
- "lexer",
- "mir",
- "parser",
+ "driver",
 ]
 
 [[package]]
 name = "codegen"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "analyzer",
  "errors",
@@ -179,6 +171,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
+name = "driver"
+version = "0.4.0"
+dependencies = [
+ "analyzer",
+ "borrowcheck",
+ "codegen",
+ "errors",
+ "inkwell",
+ "ir",
+ "lexer",
+ "mir",
+ "parser",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -186,7 +193,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "errors"
-version = "0.1.0"
+version = "0.4.0"
 
 [[package]]
 name = "find-msvc-tools"
@@ -227,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "ir"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "errors",
  "parser",
@@ -247,7 +254,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lexer"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "errors",
 ]
@@ -288,7 +295,7 @@ checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
 
 [[package]]
 name = "mir"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "analyzer",
  "errors",
@@ -332,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "parser"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "errors",
  "lexer",
@@ -396,7 +403,7 @@ checksum = "caf4aa5b0f434c91fe5c7f1ecb6a5ece2130b02ad2a590589dda5146df959001"
 
 [[package]]
 name = "rt"
-version = "0.1.0"
+version = "0.4.0"
 
 [[package]]
 name = "scopeguard"

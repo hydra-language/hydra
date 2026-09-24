@@ -268,7 +268,7 @@ impl<'c> CodeGen<'c> {
                                 )
                             })?;
 
-                            current_ty = self.hir_context.get_struct_fields(type_ref.def_id)[*idx].1 .clone();
+                            current_ty = self.hir_context.get_struct_fields_ref(type_ref.def_id)[*idx].1 .clone();
                         }
 
                         _ => return Err(format!(

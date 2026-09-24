@@ -119,14 +119,16 @@ impl HIRContext {
         self.definitions.insert(id, info);
     }
 
-    pub fn get_struct_fields(&self, id: DefID) -> Vec<(String, Type, bool)> {
-        if let Some(info) = self.get_def(id) {
-            if let DefKind::Struct { fields, .. } = &info.kind {
-                return fields.clone();
-            }
-        }
+    pub fn get_struct_fields_ref(&self, id: DefID) -> &[(String, Type, bool)] {
+        let Some(info) = self.get_def(id) else {
+            panic!("struct fields not found for {}", id);
+        };
 
-        panic!("struct fields not found for {}", id);
+        let DefKind::Struct { fields, .. } = &info.kind else {
+            panic!("definition {} is not a struct", id);
+        };
+
+        fields
     }
 
     pub fn find_struct_by_name(&self, name: &str) -> Option<DefID> {

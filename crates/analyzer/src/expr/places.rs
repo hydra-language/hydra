@@ -44,10 +44,10 @@ impl<'ctx> Analyzer<'ctx> {
 
                 Ok(HIRExpr {
                     kind: HIRExprKind::Assign {
-                        target: Box::new(lowered_target.clone()),
+                        target: Box::new(lowered_target),
                         value: Box::new(assign_value),
                     },
-                    ty: lowered_target.ty,
+                    ty: IRType::VOID,
                     span,
                 })
             },

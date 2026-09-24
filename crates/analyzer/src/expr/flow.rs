@@ -397,9 +397,7 @@ impl<'ctx> Analyzer<'ctx> {
                 let increment_expr = HIRExpr {
                     kind: HIRExprKind::Assign {
                         target: Box::new(HIRExpr {
-                            kind: HIRExprKind::VarRef(
-                                var_def_id,
-                            ),
+                            kind: HIRExprKind::VarRef(var_def_id),
                             ty: loop_ty.clone(),
                             span: variable.span,
                         }),
@@ -407,15 +405,11 @@ impl<'ctx> Analyzer<'ctx> {
                         value: Box::new(HIRExpr {
                             kind: HIRExprKind::Binary {
                                 op: HIRBinOp::Add,
-
                                 lhs: Box::new(HIRExpr {
-                                    kind: HIRExprKind::VarRef(
-                                        var_def_id,
-                                    ),
+                                    kind: HIRExprKind::VarRef(var_def_id),
                                     ty: loop_ty.clone(),
                                     span: variable.span,
                                 }),
-
                                 rhs: Box::new(HIRExpr {
                                     kind: HIRExprKind::IntLiteral(1),
                                     ty: loop_ty.clone(),
@@ -428,7 +422,7 @@ impl<'ctx> Analyzer<'ctx> {
                         }),
                     },
 
-                    ty: loop_ty.clone(),
+                    ty: IRType::VOID,
                     span: variable.span,
                 };
 
@@ -438,9 +432,7 @@ impl<'ctx> Analyzer<'ctx> {
                 let decrement_expr = HIRExpr {
                     kind: HIRExprKind::Assign {
                         target: Box::new(HIRExpr {
-                            kind: HIRExprKind::VarRef(
-                                var_def_id,
-                            ),
+                            kind: HIRExprKind::VarRef(var_def_id),
                             ty: loop_ty.clone(),
                             span: variable.span,
                         }),
@@ -448,15 +440,11 @@ impl<'ctx> Analyzer<'ctx> {
                         value: Box::new(HIRExpr {
                             kind: HIRExprKind::Binary {
                                 op: HIRBinOp::Sub,
-
                                 lhs: Box::new(HIRExpr {
-                                    kind: HIRExprKind::VarRef(
-                                        var_def_id,
-                                    ),
+                                    kind: HIRExprKind::VarRef(var_def_id),
                                     ty: loop_ty.clone(),
                                     span: variable.span,
                                 }),
-
                                 rhs: Box::new(HIRExpr {
                                     kind: HIRExprKind::IntLiteral(1),
                                     ty: loop_ty.clone(),
@@ -469,7 +457,7 @@ impl<'ctx> Analyzer<'ctx> {
                         }),
                     },
 
-                    ty: loop_ty.clone(),
+                    ty: IRType::VOID,
                     span: variable.span,
                 };
 
@@ -663,20 +651,34 @@ impl<'ctx> Analyzer<'ctx> {
 
                 let inc_idx = HIRExpr {
                     kind: HIRExprKind::Assign {
-                        target: Box::new(HIRExpr { kind: HIRExprKind::VarRef(idx_def), ty: IRType::I32, span: item.span }),
+                        target: Box::new(HIRExpr {
+                            kind: HIRExprKind::VarRef(idx_def),
+                            ty: IRType::I32,
+                            span: item.span,
+                        }),
+
                         value: Box::new(HIRExpr {
                             kind: HIRExprKind::Binary {
                                 op: HIRBinOp::Add,
-                                lhs: Box::new(HIRExpr { kind: HIRExprKind::VarRef(idx_def), ty: IRType::I32, span: item.span }),
-                                rhs: Box::new(HIRExpr { kind: HIRExprKind::IntLiteral(1), ty: IRType::I32, span: item.span })
+                                lhs: Box::new(HIRExpr {
+                                    kind: HIRExprKind::VarRef(idx_def),
+                                    ty: IRType::I32,
+                                    span: item.span,
+                                }),
+                                rhs: Box::new(HIRExpr {
+                                    kind: HIRExprKind::IntLiteral(1),
+                                    ty: IRType::I32,
+                                    span: item.span,
+                                }),
                             },
                             ty: IRType::I32,
-                            span: item.span
-                        })
+                            span: item.span,
+                        }),
                     },
-                    ty: IRType::I32,
-                    span: item.span
+                    ty: IRType::VOID,
+                    span: item.span,
                 };
+
                 loop_stmts.push(HIRStmt::Expr(inc_idx));
 
                 let loop_expr = HIRExpr {

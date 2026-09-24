@@ -48,7 +48,7 @@ impl<'c> CodeGen<'c> {
                         }
 
                         Type::STRUCT(type_ref) => {
-                            let fields = self.hir_context.get_struct_fields(type_ref.def_id);
+                            let fields = self.hir_context.get_struct_fields_ref(type_ref.def_id);
                             fields[*index].1.clone()
                         }
 

@@ -86,24 +86,39 @@ impl<'a> Monomorphizer<'a> {
         let generic_func = self.original_functions.get(&instance.def_id).unwrap().clone();
 
         let mut substitutions = HashMap::new();
-        
-        let specialized_params = self.specialized_functions.iter()
-            .find(|f| f.def_id == specialized_def_id)
-            .expect("specialized function should exist").params.clone();
-
-        let mut local_types: HashMap<DefID, Type> = specialized_params.into_iter().collect();
 
         for (param_name, concrete_type) in generic_func.generic_params.iter().zip(instance.type_args.iter()) {
             substitutions.insert(param_name.clone(), concrete_type.clone());
         }
 
+        let specialized_params: Vec<(DefID, Type)> = generic_func
+            .params
+            .iter()
+            .map(|(def_id, ty)| {
+                let substituted = ty.substitute(&substitutions);
+                (*def_id, self.resolve_type(&substituted, &substitutions))
+            })
+            .collect();
+
+        let substituted_return_type = generic_func.return_type.substitute(&substitutions);
+        let specialized_return_type = self.resolve_type(&substituted_return_type, &substitutions);
+
+        let mut local_types: HashMap<DefID, Type> = specialized_params.iter().cloned().collect();
+
         let mut specialized_body = generic_func.body.clone();
+
         for stmt in &mut specialized_body.stmts {
             self.substitute_stmt(stmt, &substitutions, &mut local_types);
         }
 
-        if let Some(f) = self.specialized_functions.iter_mut().find(|f| f.def_id == specialized_def_id) {
-            f.body = specialized_body;
+        if let Some(function) = self
+            .specialized_functions
+            .iter_mut()
+            .find(|function| function.def_id == specialized_def_id)
+        {
+            function.params = specialized_params;
+            function.return_type = specialized_return_type;
+            function.body = specialized_body;
         }
     }
 
@@ -152,7 +167,7 @@ impl<'a> Monomorphizer<'a> {
                 } else {
                     //
                     // keep context as an immutable fallback for things
-                    // that aren't specialization-local, such as globals.
+                    // that aren't specialization-local, such as globals
                     //
                     let source_ty = self.context.get_def(*def_id).and_then(|info| {
                         match &info.kind {
@@ -174,12 +189,37 @@ impl<'a> Monomorphizer<'a> {
                 self.substitute_expr(lhs, subs, local_types);
                 self.substitute_expr(rhs, subs, local_types);
             }
-            HIRExprKind::Unary { operand, .. } |
-            HIRExprKind::Cast { expr: operand, .. } |
-            HIRExprKind::Borrow { target: operand, .. } |
-            HIRExprKind::Dereference { target: operand, .. } |
+
+            HIRExprKind::Unary { operand, .. } | HIRExprKind::Cast { expr: operand, .. } => {
+                self.substitute_expr(operand, subs, local_types);
+            }
+
+            HIRExprKind::Borrow { is_mut, target } => {
+                self.substitute_expr(target, subs, local_types);
+
+                expr.ty = if *is_mut {
+                    Type::REF(Box::new(target.ty.clone()))
+                } else {
+                        Type::CONST_REF(Box::new(target.ty.clone()))
+                    };
+            }
+
+            HIRExprKind::Dereference { target } => {
+                self.substitute_expr(target, subs, local_types);
+
+                expr.ty = match &target.ty {
+                    Type::REF(inner) |
+                    Type::CONST_REF(inner) |
+                    Type::POINTER(inner) |
+                    Type::CONST_POINTER(inner) => inner.as_ref().clone(),
+
+                    _ => expr.ty.clone(),
+                };
+            }
+
             HIRExprKind::OptionalPresent(operand) => {
                 self.substitute_expr(operand, subs, local_types);
+                expr.ty = Type::OPTIONAL(Box::new(operand.ty.clone()));
             }
 
             HIRExprKind::OrElse { optional, fallback } => {
@@ -247,22 +287,13 @@ impl<'a> Monomorphizer<'a> {
                 self.substitute_expr(array, subs, local_types);
                 self.substitute_expr(index, subs, local_types);
             }
+
             HIRExprKind::FieldAccess { object, field_index } => {
                 self.substitute_expr(object, subs, local_types);
 
-                let obj_ty = match &object.ty {
-                    Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) => inner.as_ref(),
-                    other => other,
-                };
-
-                if let Type::STRUCT(type_ref) = obj_ty {
-                    if let Some(info) = self.context.get_def(type_ref.def_id) {
-                        if let DefKind::Struct { fields, ..} = &info.kind {
-                            expr.ty = fields[*field_index].1.clone();
-                        }
-                    }
+                if let Some(field_ty) = self.resolve_field_type(&object.ty, *field_index, subs) {
+                    expr.ty = field_ty;
                 }
-
             }
 
             HIRExprKind::IntrinsicCall { args, type_args, .. } => {
@@ -598,6 +629,10 @@ impl<'a> Monomorphizer<'a> {
                 continue;
             }
 
+            if !self.context.trait_impl_is_applicable(&trait_impl, &generic_instance, &[]) {
+                continue;
+            }
+
             let concrete_target = Type::STRUCT(concrete_ref.clone());
 
             if self.context.get_exact_trait_impl(trait_impl.trait_def_id, &concrete_target).is_some() {
@@ -745,6 +780,54 @@ impl<'a> Monomorphizer<'a> {
             }
 
             other => other.clone(),
+        }
+    }
+
+    fn resolve_field_type(&mut self, object_ty: &Type, field_index: usize, subs: &HashMap<String, Type>) -> Option<Type> {
+        let object_ty = match object_ty {
+            Type::REF(inner) |
+            Type::CONST_REF(inner) |
+            Type::POINTER(inner) |
+            Type::CONST_POINTER(inner) => inner.as_ref(),
+
+            other => other,
+        };
+
+        match object_ty {
+            Type::STRUCT(type_ref) => {
+                let info = self.context.get_def(type_ref.def_id)?;
+                let DefKind::Struct { fields, .. } = &info.kind else {
+                    return None;
+                };
+
+                Some(fields.get(field_index)?.1.clone())
+            }
+
+            Type::GENERIC_INSTANCE(type_ref, args) => {
+                let info = self.context.get_def(type_ref.def_id)?;
+                let DefKind::Struct {
+                    fields,
+                    generic_params,
+                } = &info.kind
+                else {
+                    return None;
+                };
+
+                let field_ty = &fields.get(field_index)?.1;
+
+                let field_subs: HashMap<String, Type> = generic_params
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .collect();
+
+                Some(self.resolve_type(
+                    &field_ty.substitute(&field_subs).substitute(subs),
+                    subs,
+                ))
+            }
+
+            _ => None,
         }
     }
 

@@ -24,9 +24,8 @@ _start:
     # Call main(argc, argv)
     call   main
 
-    # Exit using Linux sys_exit (syscall 60)
-    mov    %eax, %edi           # exit code -> edi
-    mov    $60, %rax            # sys_exit
+    xor    %edi, %edi
+    mov    $60, %rax
     syscall
 
 # ---------------------------------------------------------

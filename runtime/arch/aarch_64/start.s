@@ -13,8 +13,7 @@ _start:
     // Call main(argc, argv)
     bl      main
 
-    // exit(return_code)
-    mov     x1, x0            // move return code from main to x0
-    mov     x8, #93           // syscall number for exit (64-bit)
-    svc     #0                // make syscall
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0
 
