@@ -1,0 +1,15 @@
+[package]
+name = "driver"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+inkwell = { version = "0.2.0", features = ["llvm14-0"] }
+errors = { path = "../errors/" }
+lexer = { path = "../lexer" }
+parser = { path = "../parser/" }
+analyzer = { path = "../analyzer" }
+ir = { path = "../ir" }
+mir = { path = "../mir" }
+borrowcheck = { path = "../borrowcheck" }
+codegen = { path = "../codegen/" }

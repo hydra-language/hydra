@@ -1,0 +1,574 @@
+use std::{
+    collections::HashMap, fs, path::PathBuf, time::Instant,
+};
+
+use analyzer::{
+    Analyzer,
+    Resolver,
+    monomorphizer::Monomorphizer,
+};
+use borrowcheck::borrowcheck::BorrowChecker;
+use codegen::CodeGen;
+use inkwell::{
+    OptimizationLevel,
+    context::Context,
+};
+use ir::context::HIRContext;
+use mir::{
+    MIRProgram,
+    bounds::BoundsChecker,
+    builder::MIRBuilder,
+    optimizer::Optimizer,
+};
+use parser::module::{
+    ModuleTree,
+    SourceMap,
+};
+
+use crate::{
+    emit,
+    error::DriverError,
+    linker,
+    options::{
+        CompileMode,
+        CompilerOptions,
+        EmitKind,
+        OptLevel,
+    },
+    session::Session,
+    sysroot::Sysroot,
+    style::{GREEN, RESET}
+};
+
+pub struct Compiler {
+    session: Session,
+}
+
+impl Compiler {
+
+    pub fn new(options: CompilerOptions) -> Result<Self, DriverError> {
+        options
+            .validate()
+            .map_err(DriverError::message)?;
+
+        let sysroot = Sysroot::discover(
+            options.sysroot.clone()
+        ).map_err(DriverError::message)?;
+
+        Ok(Self {
+            session: Session::new(
+                options,
+                sysroot,
+            ),
+        })
+    }
+
+    pub fn compile(&mut self) -> Result<(), DriverError> {
+        let result = self.compile_inner();
+
+        self.session.timings.print();
+
+        result
+    }
+
+    fn compile_inner(&mut self) -> Result<(), DriverError> {
+        let input = self.session.options.input.clone();
+
+        let contents = fs::read_to_string(&input)
+            .map_err(|error| {
+                DriverError::io(
+                    "failed while reading",
+                    &input,
+                    error,
+                )
+            })?;
+
+        let mut source_map = SourceMap::new();
+
+        let timer = self.session.timings.start(
+            "parse + imports"
+        );
+
+        let mut program = ModuleTree::build(
+            &input,
+            self.session.sysroot.stdlib(),
+            &mut source_map,
+        ).map_err(|errors| {
+            DriverError::diagnostics(
+                errors,
+                contents.clone(),
+                input.clone(),
+            )
+        })?;
+
+        program
+            .resolve_imports(&mut source_map)
+            .map_err(|errors| {
+                DriverError::diagnostics(
+                    errors,
+                    contents.clone(),
+                    input.clone(),
+                )
+            })?;
+
+        program
+            .parse_bodies(&source_map)
+            .map_err(|errors| {
+                DriverError::diagnostics(
+                    errors,
+                    contents.clone(),
+                    input.clone(),
+                )
+            })?;
+
+        self.session.timings.finish(timer);
+
+        if self.session.options.emits(EmitKind::Ast) {
+            let mut all_asts = String::new();
+
+            for (filepath, (_, items)) in &program.parsed_files {
+                all_asts.push_str(
+                    &format!(
+                        "--- FILE: {} ---\n",
+                        filepath.display(),
+                    )
+                );
+
+                for node in items {
+                    all_asts.push_str(
+                        &format!("{:#?}\n\n", node)
+                    );
+                }
+            }
+
+            emit::write_text(
+                &input.with_extension("nodes"),
+                &all_asts,
+                "AST nodes",
+            )?;
+        }
+
+        let mut context = HIRContext::default();
+
+        let timer = self.session.timings.start(
+            "name resolution"
+        );
+
+        let resolver = Resolver::new(
+            &program,
+            &mut context,
+            &source_map,
+        );
+
+        let (name_resolver, global_symbols) =
+            resolver.resolve().map_err(|errors| {
+                DriverError::diagnostics(
+                    errors,
+                    contents.clone(),
+                    input.clone(),
+                )
+            })?;
+
+        self.session.timings.finish(timer);
+
+        let timer = self.session.timings.start(
+            "semantic analysis"
+        );
+
+        let analyzer = Analyzer::new(
+            &program,
+            &mut context,
+            &source_map,
+            name_resolver,
+            global_symbols,
+        );
+
+        let hir = analyzer.analyze().map_err(|errors| {
+            DriverError::diagnostics(
+                errors,
+                contents.clone(),
+                input.clone(),
+            )
+        })?;
+
+        self.session.timings.finish(timer);
+
+        if self.session.options.verbose(1) {
+            emit::info(
+                format!(
+                    "{} HIR functions",
+                    hir.functions.len(),
+                )
+            );
+        }
+        if self.session.options.emits(EmitKind::Hir) {
+            let hir_text = format!("{}", hir.display(&context));
+
+            emit::write_text(
+                &input.with_extension("hir"),
+                &hir_text,
+                "HIR",
+            )?;
+        }
+
+        let timer = self.session.timings.start(
+            "monomorphization"
+        );
+
+        let monomorphizer = Monomorphizer::new(
+            &mut context,
+            hir,
+        );
+
+        let specialized_program = monomorphizer.run();
+
+        self.session.timings.finish(timer);
+
+        if self.session.options.verbose(1) {
+            emit::info(
+                format!(
+                    "{} reachable specialized functions",
+                    specialized_program.functions.len(),
+                )
+            );
+        }
+
+        let timer = self.session.timings.start(
+            "MIR lowering"
+        );
+
+        let mut mir_functions = Vec::with_capacity(
+            specialized_program.functions.len()
+        );
+
+        let mut drop_cache = HashMap::new();
+
+        for hir_fn in &specialized_program.functions {
+            let function_start = Instant::now();
+
+            let builder = MIRBuilder::new(&context, &mut drop_cache);
+            mir_functions.push(builder.build_function(hir_fn.clone()));
+
+            let function_name = context
+                .get_display_name(hir_fn.def_id)
+                .unwrap_or(&hir_fn.name)
+                .to_string();
+
+            self.session.timings.record_item(
+                "MIR lowering",
+                function_name,
+                function_start.elapsed(),
+            );
+        }
+
+        let mut mir_program = MIRProgram {
+            functions: mir_functions,
+        };
+
+        self.session.timings.finish(timer);
+
+        if self.session.options.verbose(1) {
+            emit::info(
+                format!(
+                    "{} MIR functions",
+                    mir_program.functions.len(),
+                )
+            );
+        }
+
+        if self.session.options.emits(EmitKind::Mir) {
+            emit::write_text(
+                &input.with_extension("mir"),
+                &format_mir(&mir_program),
+                "MIR",
+            )?;
+        }
+
+        let timer = self.session.timings.start(
+            "bounds checking"
+        );
+
+        let mut bounds_errors = Vec::new();
+
+        for mir_fn in &mir_program.functions {
+            let function_start = Instant::now();
+
+            let checker = BoundsChecker::new(
+                mir_fn,
+                &context,
+            );
+
+            let result = checker.check();
+
+            self.session.timings.record_item(
+                "bounds checking",
+                mir_fn
+                    .display_name
+                    .as_deref()
+                    .unwrap_or(&mir_fn.name),
+                function_start.elapsed(),
+            );
+
+            if let Err(mut errors) = result {
+                bounds_errors.append(&mut errors);
+            }
+        }
+
+        self.session.timings.finish(timer);
+
+        if !bounds_errors.is_empty() {
+            return Err(
+                DriverError::diagnostics(
+                    bounds_errors,
+                    contents,
+                    input,
+                )
+            );
+        }
+
+        let timer = self.session.timings.start(
+            "borrow checking"
+        );
+
+        let mut borrow_errors = Vec::new();
+
+        for mir_fn in &mir_program.functions {
+            let function_start = Instant::now();
+
+            let mut checker = BorrowChecker::new(
+                mir_fn,
+                &context,
+            );
+
+            let result = checker.check();
+
+            self.session.timings.record_item(
+                "borrow checking",
+                mir_fn
+                    .display_name
+                    .as_deref()
+                    .unwrap_or(&mir_fn.name),
+                function_start.elapsed(),
+            );
+
+            if let Err(mut errors) = result {
+                borrow_errors.append(&mut errors);
+            }
+        }
+
+        self.session.timings.finish(timer);
+
+        if !borrow_errors.is_empty() {
+            return Err(
+                DriverError::diagnostics(
+                    borrow_errors,
+                    contents,
+                    input,
+                )
+            );
+        }
+
+        if self.session.options.should_optimize_mir() {
+            let timer = self.session.timings.start(
+                "MIR optimization"
+            );
+
+            Optimizer::optimize(&mut mir_program);
+
+            self.session.timings.finish(timer);
+        }
+
+        if self.session.options.emits(EmitKind::MirOpt) {
+            emit::write_text(
+                &input.with_extension("opt.mir"),
+                &format_mir(&mir_program),
+                "optimized MIR",
+            )?;
+        }
+
+        if self.session.options.mode == CompileMode::Check {
+            return Ok(());
+        }
+
+        let module_name = self.session.options.module_name();
+        let llvm_context = Context::create();
+
+        let timer = self.session.timings.start(
+            "LLVM codegen"
+        );
+
+        let mut codegen = CodeGen::new(
+            &llvm_context,
+            &context,
+            &module_name,
+        );
+
+        codegen
+            .generate(&mir_program)
+            .map_err(DriverError::message)?;
+
+        self.session.timings.finish(timer);
+
+        if self.session.options.emits(EmitKind::LlvmIr) {
+            let path = input.with_extension("pre.ll");
+
+            codegen
+                .module
+                .print_to_file(&path)
+                .map_err(|error| {
+                    DriverError::message(
+                        format!(
+                            "failed to emit LLVM IR: {}",
+                            error,
+                        )
+                    )
+                })?;
+
+            println!(
+                "{}[INFO]{} LLVM IR written to: {}",
+                GREEN,
+                RESET,
+                path.display(),
+            );
+        }
+
+        if self.session.options.should_optimize_llvm() {
+            let timer = self.session.timings.start(
+                "LLVM optimization"
+            );
+
+            CodeGen::run_ir_passes(&codegen.module);
+
+            self.session.timings.finish(timer);
+        }
+
+        if self.session.options.emits(EmitKind::LlvmIrOpt) {
+            let path = input.with_extension("opt.ll");
+
+            codegen
+                .module
+                .print_to_file(&path)
+                .map_err(|error| {
+                    DriverError::message(
+                        format!(
+                            "failed to emit optimized LLVM IR: {}",
+                            error,
+                        )
+                    )
+                })?;
+
+            println!(
+                "{}[INFO]{} optimized LLVM IR written to: {}",
+                GREEN,
+                RESET,
+                path.display(),
+            );
+        }
+
+        let optimization_level = llvm_opt_level(
+            self.session.options.opt_level
+        );
+
+        if self.session.options.emits(EmitKind::Asm) {
+            let path = input.with_extension("s");
+
+            CodeGen::emit_asm(
+                &codegen.module,
+                &codegen.triple,
+                optimization_level,
+                &path,
+            );
+
+            println!(
+                "{}[INFO]{} assembly written to: {}",
+                GREEN,
+                RESET,
+                path.display(),
+            );
+        }
+
+        let object = object_path(
+            &self.session.options
+        );
+
+        let timer = self.session.timings.start(
+            "object emission"
+        );
+
+        CodeGen::emit_object(
+            &codegen.module,
+            &codegen.triple,
+            optimization_level,
+            &object,
+        );
+
+        self.session.timings.finish(timer);
+
+        if self.session.options.keeps_object() {
+            println!(
+                "{}[INFO]{} object written to: {}",
+                GREEN,
+                RESET,
+                object.display(),
+            );
+        }
+
+        if self.session.options.mode == CompileMode::NoLink {
+            return Ok(());
+        }
+
+        let executable = executable_path(
+            &self.session.options
+        );
+
+        let timer = self.session.timings.start("link");
+
+        linker::link(
+            &self.session,
+            &object,
+            &executable,
+        )?;
+
+        self.session.timings.finish(timer);
+
+        if !self.session.options.keeps_object() {
+            let _ = fs::remove_file(&object);
+        }
+
+        Ok(())
+    }
+}
+
+fn format_mir(program: &MIRProgram) -> String {
+    program
+        .functions
+        .iter()
+        .map(|function| format!("{}", function))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn llvm_opt_level(level: OptLevel) -> OptimizationLevel {
+    match level {
+        OptLevel::O0 => OptimizationLevel::None,
+        OptLevel::O1 => OptimizationLevel::Less,
+        OptLevel::O2 => OptimizationLevel::Default,
+        OptLevel::O3 => OptimizationLevel::Aggressive,
+    }
+}
+
+fn object_path(options: &CompilerOptions) -> PathBuf {
+    options
+        .output_path()
+        .with_extension("o")
+}
+
+fn executable_path(options: &CompilerOptions) -> PathBuf {
+    let mut path = options.output_path();
+
+    if cfg!(target_os = "windows") {
+        path.set_extension("exe");
+    }
+
+    path
+}
