@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{env, path::PathBuf};
 
 use clap::{
     ArgAction, Parser, ValueEnum,
@@ -116,6 +116,13 @@ pub struct Cli {
 
     #[arg(
         long,
+        value_name = "LINKER",
+        help = "use the specified linker instead of the system default"
+    )]
+    pub linker: Option<String>,
+
+    #[arg(
+        long,
         help = "print compiler phase timings"
     )]
     pub time_passes: bool,
@@ -130,6 +137,7 @@ pub struct Cli {
 }
 
 impl Cli {
+
     pub fn into_options(self) -> Option<CompilerOptions> {
         let input = self.input?;
 
@@ -151,19 +159,22 @@ impl Cli {
             CompileMode::Build
         };
 
+        let linker = Cli::resolve_linker(self.linker, env::var("HYDRA_LINKER").ok());
+
         Some(CompilerOptions {
             input,
             output: self.output,
             sysroot: self.sysroot,
-            emit: self
-                .emit
-                .into_iter()
-                .map(EmitKind::from)
-                .collect(),
+            linker,
+            emit: self.emit.into_iter().map(EmitKind::from).collect(),
             mode,
             opt_level,
             time_passes: self.time_passes,
             verbosity: self.verbose
         })
+    }
+
+    pub(crate) fn resolve_linker(cli: Option<String>, environment: Option<String>) -> Option<String> {
+        cli.or_else(|| environment.filter(|linker| !linker.is_empty()))
     }
 }

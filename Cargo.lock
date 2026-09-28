@@ -144,14 +144,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
-name = "cli"
-version = "0.4.0"
-dependencies = [
- "clap",
- "driver",
-]
-
-[[package]]
 name = "codegen"
 version = "0.4.0"
 dependencies = [
@@ -206,6 +198,14 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "hydrac"
+version = "0.4.0"
+dependencies = [
+ "clap",
+ "driver",
+]
 
 [[package]]
 name = "inkwell"
