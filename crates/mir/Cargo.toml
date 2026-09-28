@@ -7,3 +7,6 @@ edition = "2021"
 ir = { path = "../ir" }
 errors = { path = "../errors" }
 analyzer = { path = "../analyzer/" }
+
+[lints]
+workspace = true

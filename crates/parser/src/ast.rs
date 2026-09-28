@@ -79,6 +79,30 @@ pub enum Type {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum MatchPattern {
+    Value(Box<Expr>),
+
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        is_inclusive: bool
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchArm {
+    pub pattern: MatchPattern,
+    pub binding: Option<(NodeID, Token)>,
+    pub body: Block,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchElse {
+    pub binding: Option<(NodeID, Token)>,
+    pub body: Block,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
 
     /// A literal value (number, string, bool)
@@ -151,6 +175,14 @@ pub enum Expr {
     While { id: NodeID, condition: Box<Expr>, body: Block },
     For { id: NodeID, variable: Token, start: Box<Expr>, end: Box<Expr>, is_inclusive: bool, body: Block },
     ForEach { id: NodeID, item: Token, iterable: Box<Expr>, body: Block },
+
+    Match {
+        id: NodeID,
+        value: Box<Expr>,
+        arms: Vec<MatchArm>,
+        else_arm: Option<MatchElse>,
+        token: Token,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

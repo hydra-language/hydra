@@ -1,5 +1,5 @@
 use crate::CodeGen;
-use ir::{context::DefKind, types::Type};
+use ir::types::Type;
 use mir::{LocalID, MIRFunction, Place, ProjectionElem, Statement, StatementKind, Terminator};
 use inkwell::{IntPredicate, values::{IntValue, PointerValue}};
 use analyzer::traits;

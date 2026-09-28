@@ -17,7 +17,7 @@ pub struct Scope {
 
 /// this struct holds the results of the name resolution pass.
 /// later phases (like semantic analysis) will use this to look up what a syntax node actually points to.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct NameResolver {
     // maps an AST NodeID (e.g., a Type::Path or Expr::Variable) to its resolved DefID
     pub resolved_paths: HashMap<NodeID, DefID>,

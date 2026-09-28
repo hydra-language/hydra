@@ -1,7 +1,9 @@
 use super::Analyzer;
-use errors::error::HydraError;
-use ir::expr;
-use parser::ast::Stmt as ASTStmt;
+
+use errors::error::{HydraError, Span};
+
+use parser::ast::{Stmt as ASTStmt, Expr as ASTExpr};
+
 use ir::types::Type as IRType;
 use ir::context::DefKind;
 use ir::hir::{HIRStmt, HIRExpr, HIRExprKind, HIRBlock}; 
@@ -78,27 +80,13 @@ impl<'ctx> Analyzer<'ctx> {
             },
 
             ASTStmt::Return { value, .. } => {
-                if let Some(v) = value {
-                    let expected = self.current_return_type.clone();
-                    let mut val = self.lower_expr_with_type(v, expected.as_ref())?;
-
-                    if let Some(expected) = expected.as_ref() {
-                        val = self.coerce_primitive(val, expected);
-                    }
-
-                    Ok(HIRStmt::Expr(HIRExpr {
-                        kind: HIRExprKind::Return(Some(Box::new(val))),
-                        ty: IRType::VOID,
-                        span
-                    }))
-                } else {
-                    Ok(HIRStmt::Expr(HIRExpr {
-                        kind: HIRExprKind::Return(None),
-                        ty: IRType::VOID,
-                        span
-                    }))
-                }
-            },
+                Ok(HIRStmt::Expr(
+                    self.lower_return_expr(
+                        value.as_deref(),
+                        span,
+                    )?,
+                ))
+            }
 
             ASTStmt::Break { condition, .. } => {
                 let break_expr = HIRExpr { kind: HIRExprKind::Break, ty: IRType::VOID, span };
@@ -136,5 +124,63 @@ impl<'ctx> Analyzer<'ctx> {
                 }
             },
         }
+    }
+
+    pub(crate) fn lower_return_expr(&mut self, value: Option<&ASTExpr>, span: Span) -> Result<HIRExpr, HydraError> {
+        let expected = self.current_return_type.clone().expect("ICE: return lowered outside of a function");
+
+        let value = match value {
+            Some(value) => {
+                let mut value = self.lower_expr_with_type(
+                    value,
+                    Some(&expected),
+                )?;
+
+                if expected != IRType::VOID {
+                    value = self.coerce_primitive(
+                        value,
+                        &expected,
+                    );
+                }
+
+                if !self.check_type_compatibility(
+                    &expected,
+                    &value.ty,
+                ) {
+                    return Err(self.error(
+                        "S001",
+                        format!(
+                            "type mismatch: expected '{}', found '{}'",
+                            expected,
+                            value.ty,
+                        ),
+                        value.span,
+                    ));
+                }
+
+                Some(Box::new(value))
+            }
+
+            None => {
+                if expected != IRType::VOID {
+                    return Err(self.error(
+                        "S001",
+                        format!(
+                            "type mismatch: expected '{}', found 'void'",
+                            expected,
+                        ),
+                        span,
+                    ));
+                }
+
+                None
+            }
+        };
+
+        Ok(HIRExpr {
+            kind: HIRExprKind::Return(value),
+            ty: IRType::VOID,
+            span,
+        })
     }
 }

@@ -1,5 +1,3 @@
-use core::hash;
-
 use super::token::{Token, TokenType};
 use errors::error::{HydraError, Span};
 

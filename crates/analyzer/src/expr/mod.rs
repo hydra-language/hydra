@@ -43,7 +43,7 @@ impl<'ctx> Analyzer<'ctx> {
         //
         let lowering_expected = match (node, expected) {
             (ASTExpr::Literal { token, .. }, Some(IRType::OPTIONAL(_))) if matches!(token.token_type, TokenType::NONE) => expected,
-            (ASTExpr::If { .. }, Some(IRType::OPTIONAL(_))) => expected,
+            (ASTExpr::If { .. } | ASTExpr::Match { .. }, Some(IRType::OPTIONAL(_)))  => expected,
             (_, Some(IRType::OPTIONAL(inner))) => Some(inner.as_ref()),
 
             _ => expected,
@@ -75,8 +75,9 @@ impl<'ctx> Analyzer<'ctx> {
                 self.lower_place_expr(node, lowering_expected, span)
             }
 
-            ASTExpr::If { .. } | ASTExpr::While { .. } | 
-            ASTExpr::For { .. } | ASTExpr::ForEach { .. } | ASTExpr::OrElse { .. } => {
+            ASTExpr::If { .. } | ASTExpr::While { .. } | ASTExpr::For { .. } | 
+            ASTExpr::ForEach { .. } | ASTExpr::OrElse { .. } | ASTExpr::Match { .. } => 
+            {
                 self.lower_control_flow_expr(node, lowering_expected, span)
             }
 

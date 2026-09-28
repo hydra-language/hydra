@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 
-use crate::Rvalue::Aggregate;
 use crate::{
     AggregateKind, BasicBlock, BasicBlockID, FunctionRef, LocalDecl, LocalID, MIRFunction, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator
 };
 use crate::Operand;
 
 use errors::error::Span;
-use ir::hir::{HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRStmt};
+use ir::hir::{HIRBinOp, HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRStmt};
 use ir::types::Type;
 use ir::context::{DefKind, DefID, HIRContext};
 use ir::Constant;
@@ -322,6 +321,11 @@ impl<'a> MIRBuilder<'a> {
                 Operand::Copy(Place { local: unit_local, projection: vec![] })
             }
 
+            HIRExprKind::Binary { op, lhs, rhs } if matches!(op, HIRBinOp::And | HIRBinOp::Or) =>
+            {
+                self.lower_short_circuit_bool(*op, lhs, rhs, expr.span)
+            }
+
             HIRExprKind::Binary { op, lhs, rhs } => {
                 let left_op = self.lower_expr_to_operand(lhs);
                 let right_op = self.lower_expr_to_operand(rhs);
@@ -631,9 +635,34 @@ impl<'a> MIRBuilder<'a> {
             }
 
             HIRExprKind::Block(block) => {
-                self.lower_block(block);
-                let unit_local = self.new_local(Type::VOID, false, None);
-                Operand::Copy(Place { local: unit_local, projection: vec![] })
+                if expr.ty == Type::VOID {
+                    self.lower_block(block);
+
+                    let unit_local = self.new_local(
+                        Type::VOID,
+                        false,
+                        None,
+                    );
+
+                    return Operand::Copy(Place {
+                        local: unit_local,
+                        projection: vec![],
+                    });
+                }
+
+                let Some((last, prefix)) = block.stmts.split_last() else {
+                    panic!("ICE: value-producing HIR block has no value");
+                };
+
+                for stmt in prefix {
+                    self.lower_stmt(stmt);
+                }
+
+                let HIRStmt::Expr(value) = last else {
+                    panic!("ICE: value-producing HIR block does not end in an expression");
+                };
+
+                self.lower_expr_to_operand(value)
             }
 
             HIRExprKind::ArrayInit { elements } => {
@@ -1213,5 +1242,86 @@ impl<'a> MIRBuilder<'a> {
 
             _ => false,
         }
+    }
+
+    fn lower_short_circuit_bool(&mut self, op: HIRBinOp, lhs: &HIRExpr, rhs: &HIRExpr, span: Span) -> Operand {
+        let lhs = self.lower_expr_to_operand(lhs);
+
+        let rhs_bb = self.new_block();
+        let short_bb = self.new_block();
+        let merge_bb = self.new_block();
+
+        let result_local = self.new_local(
+            Type::BOOL,
+            false,
+            None,
+        );
+
+        let result_place = Place {
+            local: result_local,
+            projection: vec![],
+        };
+
+        let (true_target, false_target, short_value) = match op {
+            HIRBinOp::And => (
+                rhs_bb,
+                short_bb,
+                false,
+            ),
+
+            HIRBinOp::Or => (
+                short_bb,
+                rhs_bb,
+                true,
+            ),
+
+            _ => unreachable!("ICE: short-circuit lowering called for non-logical operator")
+        };
+
+        self.terminate_block(Terminator::SwitchInt {
+            discriminant: lhs,
+            true_target,
+            false_target,
+        });
+
+        self.current_block = short_bb;
+
+        self.push_statement(Statement {
+            kind: StatementKind::Assign(
+                result_place.clone(),
+                Rvalue::Use(
+                    Operand::Const(
+                        Constant::Bool(short_value),
+                    ),
+                ),
+            ),
+            span,
+        });
+
+        self.terminate_block(Terminator::Goto {
+            target: merge_bb,
+        });
+
+        self.current_block = rhs_bb;
+
+        let rhs = self.lower_expr_to_operand(rhs);
+
+        if matches!(self.basic_blocks[self.current_block.0].terminator, Terminator::Unreachable) {
+            self.push_statement(Statement {
+                kind: StatementKind::Assign(
+                    result_place.clone(),
+                    Rvalue::Use(rhs),
+                ),
+                span,
+            });
+
+            self.terminate_block(Terminator::Goto {
+                target: merge_bb,
+            });
+        }
+
+        self.current_block = merge_bb;
+
+        Operand::Copy(result_place)
     }
 }

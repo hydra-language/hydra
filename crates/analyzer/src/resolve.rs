@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 
+use ir::types::Type as IRType;
+use lexer::Token;
+use parser::Type;
 use parser::{ast::*, module::SourceMap};
 use parser::module::{ModuleTree, ResolvedState};
 use ir::context::{HIRContext, DefID, DefKind, SymbolInfo};
@@ -576,6 +579,42 @@ impl<'ctx> Resolver<'ctx> {
         self.leave_scope();
     }
 
+    fn resolve_match_pattern(&mut self, pattern: &MatchPattern) {
+        match pattern {
+            MatchPattern::Value(value) => self.resolve_expr(value),
+            
+            MatchPattern::Range { start, end, .. } => {
+                self.resolve_expr(start);
+                self.resolve_expr(end);
+            }
+        }
+    }
+
+    fn resolve_match_branch(&mut self, binding: Option<&(NodeID, Token)>, body: &Block) {
+        self.enter_scope();
+
+        if let Some((id, name)) = binding {
+            let info = SymbolInfo {
+                name: name.lexeme.clone(),
+                span: name.span,
+                absolute_path: vec![],
+                kind: DefKind::Variable {
+                    ty: IRType::VOID,
+                    is_mutable: false,
+                },
+                is_pub: false,
+            };
+
+            let def_id = self.context.insert_def(info);
+
+            self.current_scope.define(Namespace::Value, name.lexeme.clone(), def_id).ok();
+            self.name_resolver.record_resolution(*id, def_id);
+        }
+
+        self.resolve_block(body);
+        self.leave_scope();
+    }
+
     fn resolve_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::VariableDecl { id, name, type_annotation, initializer, .. } => {
@@ -769,6 +808,19 @@ impl<'ctx> Resolver<'ctx> {
                 self.resolve_expr(name);
                 for (_, expr) in fields {
                     self.resolve_expr(expr);
+                }
+            }
+
+            Expr::Match { value, arms, else_arm, .. } => {
+                self.resolve_expr(value);
+
+                for arm in arms {
+                    self.resolve_match_pattern(&arm.pattern);
+                    self.resolve_match_branch(arm.binding.as_ref(), &arm.body);
+                }
+
+                if let Some(else_arm) = else_arm {
+                    self.resolve_match_branch(else_arm.binding.as_ref(), &else_arm.body);
                 }
             }
 

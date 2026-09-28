@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use crate::{
-    FunctionRef, LocalID, MIRFunction, MIRProgram, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator
+    LocalID, MIRFunction, MIRProgram, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator
 };
 use ir::context::DefID;
 use ir::hir::{HIRBinOp, HIRUnaryOp};
@@ -18,21 +18,19 @@ impl Optimizer {
 
         while changed && iterations < 20 {
             changed = false;
-    
+
             for function in &mut program.functions {
                 changed |= Self::simplify_dataflow(function);
-
-                // cse and licm here
                 changed |= Self::eliminate_common_subexpressions(function);
-
                 changed |= Self::simplify_branches(function);
-                changed |= Self::eliminate_dead_blocks(function); 
+                changed |= Self::eliminate_dead_blocks(function);
                 changed |= Self::eliminate_dead_stores(function);
                 changed |= Self::merge_blocks(function);
             }
 
             iterations += 1;
         }
+
     }
 
     /// Evaluates expressions after propagation until a fixed point is reached 
@@ -45,12 +43,12 @@ impl Optimizer {
         
         while local_changed && iterations < 100 {
             local_changed = false;
-            
+
             local_changed |= Self::propagate_copies(function);
             local_changed |= Self::propagate_constants(function);
             local_changed |= Self::propagate_aggregate_fields(function);
             local_changed |= Self::fold_constants(function);
-            
+
             if local_changed {
                 overall_changed = true;
             }
@@ -66,60 +64,80 @@ impl Optimizer {
     // ========================================================================
 
     /// Block Merging (CFG Flattening)
-    /// If Block A goes unconditionally to Block B, and Block B is ONLY reached 
+    /// If Block A goes unconditionally to Block B, and Block B is ONLY reached
     /// from Block A, append B into A and bypass B entirely.
+    ///
+    /// Merging changes predecessor relationships, so this pass rebuilds the
+    /// predecessor map after every successful merge and continues until the
+    /// function reaches a local fixed point.
     fn merge_blocks(function: &mut MIRFunction) -> bool {
-        let mut preds: HashMap<usize, Vec<usize>> = HashMap::new();
-        
-        // 1. Build a map of Predecessors (Who points to who?)
-        for (i, block) in function.basic_blocks.iter().enumerate() {
-            match &block.terminator {
-                Terminator::Goto { target } => preds.entry(target.0).or_default().push(i),
-                Terminator::SwitchInt { true_target, false_target, .. } => {
-                    preds.entry(true_target.0).or_default().push(i);
-                    preds.entry(false_target.0).or_default().push(i);
-                }
-                Terminator::Call { target, .. } => {
-                    preds.entry(target.0).or_default().push(i);
-                }
-                _ => {}
-            }
-        }
+        let mut overall_changed = false;
 
-        // 2. Look for an exclusive 1-to-1 connection
-        for i in 0..function.basic_blocks.len() {
-            if let Terminator::Goto { target } = &function.basic_blocks[i].terminator {
-                let target_idx = target.0;
-                
-                // Prevent merging a block into itself (infinite loop)
-                if target_idx == i { continue; }
+        loop {
+            let mut preds: HashMap<usize, Vec<usize>> = HashMap::new();
 
-                if let Some(target_preds) = preds.get(&target_idx) {
-                    // If the target is ONLY reached by Block `i`...
-                    if target_preds.len() == 1 && target_preds[0] == i {
-                        
-                        // Extract B's payload
-                        let b_stmts = function.basic_blocks[target_idx].statements.clone();
-                        let b_term = function.basic_blocks[target_idx].terminator.clone();
-                        
-                        // Merge into A
-                        let block_a = &mut function.basic_blocks[i];
-                        block_a.statements.extend(b_stmts);
-                        block_a.terminator = b_term;
-                        
-                        // Neutralize B (Dead Block Elimination will sweep it up in the next loop pass)
-                        let block_b = &mut function.basic_blocks[target_idx];
-                        block_b.statements.clear();
-                        block_b.terminator = Terminator::Unreachable;
-                        
-                        // We return true immediately. Modifying the CFG invalidates our `preds` map, 
-                        // so we let the master loop restart us with a fresh graph.
-                        return true; 
+            for (i, block) in function.basic_blocks.iter().enumerate() {
+                match &block.terminator {
+                    Terminator::Goto { target } => {
+                        preds.entry(target.0).or_default().push(i);
                     }
+                    Terminator::SwitchInt {
+                        true_target,
+                        false_target,
+                        ..
+                    } => {
+                        preds.entry(true_target.0).or_default().push(i);
+                        preds.entry(false_target.0).or_default().push(i);
+                    }
+                    Terminator::Call { target, .. } => {
+                        preds.entry(target.0).or_default().push(i);
+                    }
+                    _ => {}
                 }
             }
+
+            let mut merge = None;
+
+            for i in 0..function.basic_blocks.len() {
+                let Terminator::Goto { target } = &function.basic_blocks[i].terminator else {
+                    continue;
+                };
+
+                let target_idx = target.0;
+
+                if target_idx == 0 || target_idx == i {
+                    continue;
+                }
+
+                let Some(target_preds) = preds.get(&target_idx) else {
+                    continue;
+                };
+
+                if target_preds.len() == 1 && target_preds[0] == i {
+                    merge = Some((i, target_idx));
+                    break;
+                }
+            }
+
+            let Some((source_idx, target_idx)) = merge else {
+                break;
+            };
+
+            let target_statements = std::mem::take(&mut function.basic_blocks[target_idx].statements);
+            let target_terminator = std::mem::replace(
+                &mut function.basic_blocks[target_idx].terminator,
+                Terminator::Unreachable,
+            );
+
+            function.basic_blocks[source_idx]
+                .statements
+                .extend(target_statements);
+            function.basic_blocks[source_idx].terminator = target_terminator;
+
+            overall_changed = true;
         }
-        false
+
+        overall_changed
     }
 
     /// Copy Propagation
@@ -148,16 +166,20 @@ impl Optimizer {
 
         // 2. Safety Check: Only propagate if BOTH variables are assigned exactly once.
         // (Function arguments start at 0 assignments in the body, so src_count <= 1 is safe).
-        let safe_copies: HashMap<LocalID, LocalID> = copy_values
-            .into_iter()
-            .filter(|(dest, src)| {
-                let dest_count = assign_counts.get(dest).copied().unwrap_or(0);
-                let src_count = assign_counts.get(src).copied().unwrap_or(0);
-                dest_count == 1 && src_count <= 1
-            })
-            .collect();
+        let safe_copies: HashMap<LocalID, LocalID> = copy_values.into_iter().filter(|(dest, src)| {
+            if dest == src {
+                return false;
+            }
 
-        if safe_copies.is_empty() { return false; }
+            let dest_count = assign_counts.get(dest).copied().unwrap_or(0);
+            let src_count = assign_counts.get(src).copied().unwrap_or(0);
+
+            dest_count == 1 && src_count <= 1
+        }).collect();
+
+        if safe_copies.is_empty() { 
+            return false; 
+        }
         
         let mut changed = false;
 
@@ -468,11 +490,16 @@ impl Optimizer {
     }
 
     fn eliminate_dead_stores(function: &mut MIRFunction) -> bool {
-        let mut loop_changed = false;
         let mut overall_changed = false;
-        
+        let mut iterations = 0;
+
+        let initial_statement_count: usize = function
+            .basic_blocks
+            .iter()
+            .map(|block| block.statements.len())
+            .sum();
+
         loop {
-            loop_changed = false;
             let mut read_counts: HashMap<LocalID, usize> = HashMap::new();
 
             for block in &function.basic_blocks {
@@ -480,6 +507,7 @@ impl Optimizer {
                     match &stmt.kind {
                         StatementKind::Assign(place, rval) => {
                             Self::count_reads_in_rvalue(rval, &mut read_counts);
+
                             for proj in &place.projection {
                                 if let ProjectionElem::Index(idx_local) = proj {
                                     *read_counts.entry(*idx_local).or_insert(0) += 1;
@@ -488,6 +516,7 @@ impl Optimizer {
                         }
                         StatementKind::Drop(place) => {
                             *read_counts.entry(place.local).or_insert(0) += 1;
+
                             for proj in &place.projection {
                                 if let ProjectionElem::Index(idx_local) = proj {
                                     *read_counts.entry(*idx_local).or_insert(0) += 1;
@@ -498,9 +527,18 @@ impl Optimizer {
                 }
 
                 match &block.terminator {
-                    Terminator::SwitchInt { discriminant, .. } => Self::count_reads(discriminant, &mut read_counts),
-                    Terminator::Call { args, destination, .. } => {
-                        for arg in args { Self::count_reads(arg, &mut read_counts); }
+                    Terminator::SwitchInt { discriminant, .. } => {
+                        Self::count_reads(discriminant, &mut read_counts);
+                    }
+                    Terminator::Call {
+                        args,
+                        destination,
+                        ..
+                    } => {
+                        for arg in args {
+                            Self::count_reads(arg, &mut read_counts);
+                        }
+
                         for proj in &destination.projection {
                             if let ProjectionElem::Index(idx_local) = proj {
                                 *read_counts.entry(*idx_local).or_insert(0) += 1;
@@ -511,49 +549,73 @@ impl Optimizer {
                 }
             }
 
+            let before: usize = function
+                .basic_blocks
+                .iter()
+                .map(|block| block.statements.len())
+                .sum();
+
             for block in &mut function.basic_blocks {
-                let original_len = block.statements.len();
-                
                 block.statements.retain(|stmt| {
-                    if let StatementKind::Assign(place, rval) = &stmt.kind {
+                    let StatementKind::Assign(place, rval) = &stmt.kind else {
+                        return true;
+                    };
 
-                        // never delete an effectful intrinsic merely because
-                        // its result is unused.
-                        if let Rvalue::Intrinsic { kind, .. } = rval {
-                            if kind.has_side_effects() {
-                                return true;
-                            }
+                    if let Rvalue::Intrinsic { kind, .. } = rval {
+                        if kind.has_side_effects() {
+                            return true;
                         }
-
-                        if place.local.0 == 0 || !place.projection.is_empty() { return true; }
-                        read_counts.get(&place.local).unwrap_or(&0) > &0
-                    } else {
-                        true 
                     }
-                });
 
-                if block.statements.len() < original_len {
-                    loop_changed = true;
-                    overall_changed = true;
-                }
+                    if place.local.0 == 0 || !place.projection.is_empty() {
+                        return true;
+                    }
+
+                    read_counts.get(&place.local).copied().unwrap_or(0) > 0
+                });
             }
-            
-            if !loop_changed { break; }
+
+            let after: usize = function
+                .basic_blocks
+                .iter()
+                .map(|block| block.statements.len())
+                .sum();
+
+            if before == after {
+                break;
+            }
+
+            overall_changed = true;
+            iterations += 1;
+
+            assert!(
+                iterations <= initial_statement_count,
+                "dead-store elimination failed to converge",
+            );
         }
+
         overall_changed
     }
 
     fn simplify_branches(function: &mut MIRFunction) -> bool {
         let mut changed = false;
+
         for block in &mut function.basic_blocks {
-            if let Terminator::SwitchInt { discriminant, true_target, false_target } = &block.terminator {
-                if let Operand::Const(Constant::Bool(val)) = discriminant {
-                    let definitive_target = if *val { *true_target } else { *false_target };
-                    block.terminator = Terminator::Goto { target: definitive_target };
-                    changed = true;
-                }
+            if let Terminator::SwitchInt { discriminant: Operand::Const(Constant::Bool(val)), true_target, false_target } = &block.terminator {
+                let definitive_target = if *val { 
+                    *true_target 
+                } else { 
+                    *false_target 
+                };
+
+                block.terminator = Terminator::Goto { 
+                    target: definitive_target 
+                };
+
+                changed = true;
             }
         }
+
         changed
     }
 
@@ -791,11 +853,11 @@ impl Optimizer {
 
             Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. } => {
                 if place.projection.is_empty() {
-                    if let Some(&src_local) =
-                    safe_copies.get(&place.local)
-                    {
-                        place.local = src_local;
-                        changed = true;
+                    if let Some(&src_local) = safe_copies.get(&place.local) {
+                        if place.local != src_local {
+                            place.local = src_local;
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -816,11 +878,16 @@ impl Optimizer {
         if let Operand::Copy(place) | Operand::Move(place) = op {
             if place.projection.is_empty() {
                 if let Some(&src_local) = safe_copies.get(&place.local) {
+                    if place.local == src_local {
+                        return false;
+                    }
+
                     place.local = src_local;
                     return true;
                 }
             }
         }
+
         false
     }
 
@@ -870,7 +937,7 @@ impl Optimizer {
         }
     }
 
-    fn remap_locals_and_blocks(blocks: &mut Vec<crate::BasicBlock>, local_offset: usize, block_offset: usize,destination_local: LocalID) 
+    fn remap_locals_and_blocks(blocks: &mut [crate::BasicBlock], local_offset: usize, block_offset: usize,destination_local: LocalID) 
     {
         // Helper closure to shift a single LocalID
         let shift_local = |local: &mut LocalID| {

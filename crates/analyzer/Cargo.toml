@@ -12,3 +12,6 @@ errors = { path = "../errors" }
 [lib]
 name = "analyzer"
 path = "src/lib.rs"
+
+[lints]
+workspace = true

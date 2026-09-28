@@ -22,6 +22,7 @@ pub fn get_expr_span(expr: &ASTExpr) -> Span {
         ASTExpr::While { condition, .. } => get_expr_span(condition),
         ASTExpr::For { variable, .. } => variable.span,
         ASTExpr::ForEach { item, .. } => item.span,
+        ASTExpr::Match { token, .. } => token.span, 
         ASTExpr::Cast { value, .. } => get_expr_span(value),
         ASTExpr::FunctionCall { callee, .. } => get_expr_span(callee),
         ASTExpr::Borrow { right, .. } => get_expr_span(right),
@@ -54,6 +55,7 @@ pub fn get_expr_id(expr: &ASTExpr) -> NodeID {
         ASTExpr::While { id, .. } => *id,
         ASTExpr::For { id, .. } => *id,
         ASTExpr::ForEach { id, .. } => *id,
+        ASTExpr::Match { id, .. } => *id,
     }
 }
 

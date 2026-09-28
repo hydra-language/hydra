@@ -8,3 +8,6 @@ mir = { path = "../mir" }
 lexer = { path = "../lexer" }
 ir = { path = "../ir" }
 errors = { path = "../errors" }
+
+[lints]
+workspace = true

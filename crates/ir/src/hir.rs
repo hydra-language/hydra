@@ -2,7 +2,6 @@ use errors::error::Span;
 use crate::intrinsic::IntrinsicKind;
 use crate::types::Type;
 use crate::context::DefID;
-use std::fmt;
 
 #[derive(Debug, Clone)]
 pub struct HIRProgram {

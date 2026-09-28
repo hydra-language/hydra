@@ -97,11 +97,14 @@ impl Parser {
             if self.previous().token_type == TokenType::Semicolon {
                 return;
             }
+
             match self.peek().token_type {
                 TokenType::LET | TokenType::CONST | TokenType::FOR | 
-                TokenType::IF | TokenType::WHILE | TokenType::RETURN => return,
+                TokenType::IF | TokenType::WHILE | TokenType::RETURN |
+                TokenType::MATCH => return,
                 _ => {}
             }
+
             self.advance();
         }
     }
@@ -461,7 +464,7 @@ impl Parser {
         } else {
             let expr = self.parse_expression()?;
 
-            let is_block_expr = matches!(expr, Expr::If { .. } | Expr::While { .. } | Expr::For { .. } | Expr::ForEach { .. });
+            let is_block_expr = matches!(expr, Expr::If { .. } | Expr::While { .. } | Expr::For { .. } | Expr::ForEach { .. } | Expr::Match { .. });
 
             if is_block_expr {
                 self.match_token(TokenType::Semicolon);
@@ -1249,6 +1252,7 @@ impl Parser {
         if self.match_token(TokenType::WHILE) { return self.parse_while(); }
         if self.match_token(TokenType::FOR) { return self.parse_for(); }
         if self.match_token(TokenType::FOREACH) { return self.parse_foreach(); }
+        if self.match_token(TokenType::MATCH) { return self.parse_match(); }
 
         let id = self.next_node_id();
         let current_token = &self.tokens[self.current];
@@ -1340,6 +1344,129 @@ impl Parser {
             id,
             elements,
             token: start_token,
+        })
+    }
+
+    fn parse_match(&mut self) -> Result<Expr, HydraError> {
+        let id = self.next_node_id();
+        let token = self.previous().clone();
+        let has_paren = self.match_token(TokenType::LeftParen);
+
+        if !has_paren {
+            self.allow_struct = false;
+        }
+
+        let value = self.parse_expression()?;
+
+        if !has_paren {
+            self.allow_struct = true;
+        }
+
+        if has_paren {
+            self.consume(TokenType::RightParen, "expected ')' after match value")?;
+        }
+
+        self.consume(TokenType::LeftBrace, "expected '{' to start match")?;
+
+        let mut arms = Vec::new();
+        while !self.check(TokenType::RightBrace) && !self.is_at_end() {
+            let pattern = self.parse_match_pattern()?;
+            let binding = self.parse_match_binding()?;
+
+            self.consume(TokenType::EqualArrow, "expected '=>' after match pattern")?;
+
+            let body = self.parse_match_arm_body()?;
+
+            arms.push(MatchArm {
+                pattern, 
+                binding, 
+                body
+            });
+        }
+
+        self.consume(TokenType::RightBrace, "expected '}' to end match")?;
+
+        let else_arm = if self.match_token(TokenType::ELSE) {
+            let binding = self.parse_match_binding()?;
+            let body = self.parse_block()?;
+
+            Some(MatchElse {
+                binding,
+                body
+            })
+        } else {
+            None
+        };
+
+        Ok(Expr::Match {
+            id,
+            value: Box::new(value),
+            arms,
+            else_arm,
+            token,
+        })
+    }
+
+    fn parse_match_pattern(&mut self) -> Result<MatchPattern, HydraError> {
+        let start = self.parse_expression()?;
+
+        let is_inclusive = if self.match_token(TokenType::DoubleDotEqual) {
+            Some(true)
+        } else if self.match_token(TokenType::DoubleDot) {
+            Some(false)
+        } else {
+            None
+        };
+
+        let Some(is_inclusive) = is_inclusive else {
+            return Ok(MatchPattern::Value(Box::new(start)));
+        };
+
+        let end = self.parse_expression()?;
+
+        Ok(MatchPattern::Range {
+            start: Box::new(start),
+            end: Box::new(end),
+            is_inclusive
+        })
+    }
+
+    fn parse_match_binding(&mut self) -> Result<Option<(NodeID, Token)>, HydraError> {
+        if !self.match_token(TokenType::Colon) {
+            return Ok(None);
+        }
+
+        let id = self.next_node_id();
+        let name = self.consume_identifier("expected binding name after ':'")?.clone();
+
+        Ok(Some((id, name)))
+    }
+
+    fn parse_match_arm_body(&mut self) -> Result<Block, HydraError> {
+        if self.check(TokenType::LeftBrace) {
+            let body = self.parse_block()?;
+
+            if !self.match_token(TokenType::Comma) {
+                self.match_token(TokenType::Semicolon);
+            }
+
+            return Ok(body);
+        }
+
+        let id = self.next_node_id();
+        let expr = self.parse_expression()?;
+
+        if !self.match_token(TokenType::Comma) && !self.match_token(TokenType::Semicolon) {
+            return Err(self.error(
+                self.peek(),
+                "P002",
+                "expected ',' or ';' after match arm expression",
+            ));
+        }
+
+        Ok(Block {
+            id,
+            statements: vec![Stmt::Expr(Box::new(expr))],
         })
     }
 

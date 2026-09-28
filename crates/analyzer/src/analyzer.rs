@@ -67,7 +67,7 @@ impl<'ctx> Analyzer<'ctx> {
 
     pub fn analyze(mut self) -> Result<HIRProgram, Vec<HydraError>> {
         let mut functions = Vec::new();
-        let mut structs = Vec::new();
+        let structs = Vec::new();
         let globals = Vec::new(); 
 
         self.populate_struct_definitions();
@@ -144,8 +144,6 @@ impl<'ctx> Analyzer<'ctx> {
                                 continue;
                             }
                         };
-
-                        let registry_key = self.get_impl_registry_key(&target_ty);
 
                         let extension_generic_params: Vec<String> = decl
                             .generic_params

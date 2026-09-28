@@ -731,33 +731,6 @@ impl<'a> BorrowChecker<'a> {
         (reads, writes)
     }
 
-    fn extract_rvalue_reads(&self, rvalue: &Rvalue, reads: &mut HashSet<LocalID>) {
-        match rvalue {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(_, op, _) => {
-                if let Operand::Copy(p) | Operand::Move(p) = op { reads.insert(p.local); }
-            }
-            Rvalue::BinaryOp(_, lhs, rhs) => {
-                if let Operand::Copy(p) | Operand::Move(p) = lhs { reads.insert(p.local); }
-                if let Operand::Copy(p) | Operand::Move(p) = rhs { reads.insert(p.local); }
-            }
-            Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. } => {
-                reads.insert(place.local);
-            }
-            Rvalue::Aggregate(_, operands) => {
-                for op in operands {
-                    if let Operand::Copy(p) | Operand::Move(p) = op { reads.insert(p.local); }
-                }
-            }
-            Rvalue::Intrinsic { args, .. } => {
-                for op in args {
-                    if let Operand::Copy(p) | Operand::Move(p) = op {
-                        reads.insert(p.local);
-                    }
-                }
-            }
-        }
-    }
-
     fn resolve_local(&self, local: LocalID) -> (String, Option<error::Span>) {
         if let Some(def_id) = self.mir.locals[local.0].debug_def_id {
             if let Some(info) = self.context.get_def(def_id) {

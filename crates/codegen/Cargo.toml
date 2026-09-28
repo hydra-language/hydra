@@ -11,3 +11,6 @@ lexer = { path = "../lexer" }
 parser = { path = "../parser" }
 mir = { path = "../mir/" }
 ir = { path = "../ir/" }
+
+[lints]
+workspace = true
