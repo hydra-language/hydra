@@ -52,6 +52,7 @@ pub struct CompilerOptions {
     pub input: PathBuf,
     pub output: Option<PathBuf>,
     pub sysroot: Option<PathBuf>,
+    pub linker: Option<String>,
     pub emit: Vec<EmitKind>,
     pub mode: CompileMode,
     pub opt_level: OptLevel,

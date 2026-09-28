@@ -13,3 +13,6 @@ ir = { path = "../ir" }
 mir = { path = "../mir" }
 borrowcheck = { path = "../borrowcheck" }
 codegen = { path = "../codegen/" }
+
+[lints]
+workspace = true

@@ -10,46 +10,36 @@ use crate::{
     session::Session,
 };
 
-pub fn link(
-    session: &Session,
-    object: &Path,
-    executable: &Path,
-) -> Result<(), DriverError> {
-    if cfg!(target_os = "windows") {
-        let status = Command::new("clang")
-            .arg(object)
-            .arg("-o")
-            .arg(executable)
-            .status()
-            .map_err(|error| {
-                DriverError::message(
-                    format!("failed to invoke linker: {}", error)
-                )
-            })?;
+pub fn link(session: &Session, object: &Path, executable: &Path) -> Result<(), DriverError> {
+    let mut command = Command::new("clang");
 
-        if !status.success() {
-            return Err(DriverError::message("linking failed"));
-        }
-
-        return Ok(());
+    if let Some(linker) = session.options.linker.as_deref() {
+        command.arg(format!("-fuse-ld={}", linker));
     }
 
-    let start_object = assemble_start(session)?;
-    let runtime_lib = runtime_library(session)?;
+    if cfg!(target_os = "windows") {
+        command
+            .arg(object)
+            .arg("-o")
+            .arg(executable);
+    } else {
+        let start_object = assemble_start(session)?;
+        let runtime_lib = runtime_library(session)?;
 
-    let status = Command::new("clang")
-        .arg("-nostartfiles")
-        .arg("-o")
-        .arg(executable)
-        .arg(&start_object)
-        .arg(object)
-        .arg(&runtime_lib)
-        .status()
-        .map_err(|error| {
-            DriverError::message(
-                format!("failed to invoke linker: {}", error)
-            )
-        })?;
+        command
+            .arg("-nostartfiles")
+            .arg("-o")
+            .arg(executable)
+            .arg(&start_object)
+            .arg(object)
+            .arg(&runtime_lib);
+    }
+
+    let status = command.status().map_err(|error| {
+        DriverError::message(
+            format!("failed to invoke linker: {}", error)
+        )
+    })?;
 
     if !status.success() {
         return Err(DriverError::message("linking failed"));
