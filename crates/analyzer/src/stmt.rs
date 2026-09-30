@@ -56,10 +56,10 @@ impl<'ctx> Analyzer<'ctx> {
 
                 let mut info = self.context.get_def(def_id).unwrap().clone();
                 if *is_const {
-                    info.kind = DefKind::Constant {
+                    info.kind = DefKind::Variable {
                         ty: final_type.clone(),
-                        value: ir::Constant::Float(0.0, final_type.clone()),
-                    };
+                        is_mutable: !*is_const,
+                    }
                 } else {
                     info.kind = DefKind::Variable { ty: final_type.clone(), is_mutable: true };
                 }
