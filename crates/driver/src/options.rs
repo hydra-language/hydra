@@ -71,11 +71,11 @@ impl CompilerOptions {
     }
 
     pub fn should_optimize_mir(&self) -> bool {
-        self.opt_level.optimizes_mir() || self.emits(EmitKind::MirOpt)
+        self.opt_level.optimizes_mir()
     }
 
     pub fn should_optimize_llvm(&self) -> bool {
-        self.opt_level.optimizes_llvm() || self.emits(EmitKind::LlvmIrOpt)
+        self.opt_level.optimizes_llvm()
     }
 
     pub fn output_path(&self) -> PathBuf {
@@ -112,15 +112,27 @@ impl CompilerOptions {
             return Err(format!("'{}' is not a hydra file", self.input.display()));
         }
 
-        if self.mode == CompileMode::Check
-            && self.emit.iter().any(|kind| {
-                matches!(
-                    kind,
-                    EmitKind::LlvmIr | EmitKind::LlvmIrOpt | EmitKind::Asm | EmitKind::Object
-                )
-            })
+        if self.mode == CompileMode::Check && self.emit.iter().any(|kind| matches!(kind, EmitKind::LlvmIr | EmitKind::LlvmIrOpt | EmitKind::Asm | EmitKind::Object))
         {
             return Err("`--check` cannot be combined with backend emit stages".to_string());
+        }
+
+        if self.opt_level == OptLevel::O0 {
+            if self.emits(EmitKind::MirOpt) {
+                return Err(
+                    "`--emit mir-opt` requires optimization to be enabled; \
+                        pass `-O1`, `-O2`, `-O3`, or `--release`"
+                        .to_string(),
+                );
+            }
+
+            if self.emits(EmitKind::LlvmIrOpt) {
+                return Err(
+                    "`--emit llvm-ir-opt` requires optimization to be enabled; \
+                        pass `-O1`, `-O2`, `-O3`, or `--release`"
+                        .to_string(),
+                );
+            }
         }
 
         Ok(())

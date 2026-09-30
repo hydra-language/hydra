@@ -1,29 +1,26 @@
-use std::{
-    collections::HashMap, fs, path::PathBuf, time::Instant,
-};
+use std::{collections::HashMap, fs, path::PathBuf, time::Instant};
 
-use analyzer::{
-    Analyzer,
-    Resolver,
-    monomorphizer::Monomorphizer,
-};
+use analyzer::{Analyzer, Resolver, monomorphizer::Monomorphizer};
+
 use borrowcheck::borrowcheck::BorrowChecker;
+
 use codegen::CodeGen;
-use inkwell::{
-    OptimizationLevel,
-    context::Context,
-};
+
 use ir::context::HIRContext;
+
 use mir::{
     MIRProgram,
     bounds::BoundsChecker,
     builder::MIRBuilder,
-    optimizer::Optimizer,
+    optimizer::{OptimizationLevel as MirOptimizationLevel, Optimizer},
 };
+
 use parser::module::{
     ModuleTree,
     SourceMap,
 };
+
+use inkwell::{OptimizationLevel, context::Context};
 
 use crate::{
     emit,
@@ -373,7 +370,7 @@ impl Compiler {
                 "MIR optimization"
             );
 
-            Optimizer::optimize(&mut mir_program);
+            Optimizer::optimize(&mut mir_program, mir_opt_level(self.session.options.opt_level));
 
             self.session.timings.finish(timer);
         }
@@ -437,7 +434,7 @@ impl Compiler {
                 "LLVM optimization"
             );
 
-            CodeGen::run_ir_passes(&codegen.module);
+            CodeGen::run_ir_passes(&codegen.module, llvm_opt_level(self.session.options.opt_level));
 
             self.session.timings.finish(timer);
         }
@@ -465,9 +462,7 @@ impl Compiler {
             );
         }
 
-        let optimization_level = llvm_opt_level(
-            self.session.options.opt_level
-        );
+        let optimization_level = llvm_opt_level(self.session.options.opt_level);
 
         if self.session.options.emits(EmitKind::Asm) {
             let path = input.with_extension("s");
@@ -540,12 +535,7 @@ impl Compiler {
 }
 
 fn format_mir(program: &MIRProgram) -> String {
-    program
-        .functions
-        .iter()
-        .map(|function| format!("{}", function))
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    program.functions.iter().map(|function| format!("{}", function)).collect::<Vec<_>>().join("\n\n")
 }
 
 fn llvm_opt_level(level: OptLevel) -> OptimizationLevel {
@@ -557,10 +547,17 @@ fn llvm_opt_level(level: OptLevel) -> OptimizationLevel {
     }
 }
 
+fn mir_opt_level(level: OptLevel) -> MirOptimizationLevel {
+    match level {
+        OptLevel::O0 => MirOptimizationLevel::O0,
+        OptLevel::O1 => MirOptimizationLevel::O1,
+        OptLevel::O2 => MirOptimizationLevel::O2,
+        OptLevel::O3 => MirOptimizationLevel::O3,
+    }
+}
+
 fn object_path(options: &CompilerOptions) -> PathBuf {
-    options
-        .output_path()
-        .with_extension("o")
+    options.output_path().with_extension("o")
 }
 
 fn executable_path(options: &CompilerOptions) -> PathBuf {

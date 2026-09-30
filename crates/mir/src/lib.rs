@@ -46,6 +46,7 @@ pub struct LocalDecl {
     pub ty: Type,
     pub is_mutable: bool,
     pub debug_def_id: Option<DefID>, // Optional: Keep track of which DefID this maps to for debugging/diagnostics
+    pub debug_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]

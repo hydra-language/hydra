@@ -6,11 +6,26 @@ use ir::context::DefID;
 use ir::hir::{HIRBinOp, HIRUnaryOp};
 use ir::Constant;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OptimizationLevel {
+    /// No MIR optimization
+    O0,
+
+    /// Local dataflow simplification, branch cleanup, dead-code cleanup, and block merging
+    O1,
+
+    /// O1 plus common subexpression elimination
+    O2,
+
+    /// O2 plus MIR inlining for functions marked `#[inline]`
+    O3,
+}
+
 pub struct Optimizer;
 
 impl Optimizer {
 
-    pub fn optimize(program: &mut MIRProgram) {
+    pub fn optimize(program: &mut MIRProgram, level: OptimizationLevel) {
         let mut changed = true;
         let mut iterations = 0;
 
@@ -21,7 +36,11 @@ impl Optimizer {
 
             for function in &mut program.functions {
                 changed |= Self::simplify_dataflow(function);
-                changed |= Self::eliminate_common_subexpressions(function);
+
+                if level >= OptimizationLevel::O2 {
+                    changed |= Self::eliminate_common_subexpressions(function);
+                }
+
                 changed |= Self::simplify_branches(function);
                 changed |= Self::eliminate_dead_blocks(function);
                 changed |= Self::eliminate_dead_stores(function);

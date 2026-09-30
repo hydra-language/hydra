@@ -15,10 +15,10 @@ impl fmt::Display for MIRFunction {
                 ""
             };
 
-            let debug_str = if let Some(def) = local.debug_def_id {
-                format!(" // {}", def)
-            } else {
-                String::new()
+            let debug_str = match (&local.debug_name, local.debug_def_id) {
+                (Some(name), _) => format!(" // {}", name),
+                (None, Some(def_id)) => format!(" // {}", def_id),
+                (None, None) => String::new(),
             };
 
             writeln!(f, "    let {}_{}: {};{}", mut_str, i, local.ty, debug_str)?;

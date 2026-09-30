@@ -44,7 +44,16 @@ impl<'a> MIRBuilder<'a> {
     /// creates a new local variable (temporary or named) and returns its ID
     fn new_local(&mut self, ty: Type, is_mutable: bool, debug_def_id: Option<DefID>) -> LocalID {
         let id = LocalID(self.locals.len());
-        self.locals.push(LocalDecl { ty, is_mutable, debug_def_id });
+
+        let debug_name = debug_def_id.and_then(|def_id| self.context.get_def(def_id)).map(|info| info.name.clone());
+
+        self.locals.push(LocalDecl {
+            ty,
+            is_mutable,
+            debug_def_id,
+            debug_name,
+        });
+
         id
     }
 
