@@ -20,7 +20,6 @@ pub struct MIRBuilder<'a> {
     basic_blocks: Vec<BasicBlock>,
     current_block: BasicBlockID,
     var_map: HashMap<DefID, LocalID>, // we need to map HIR variables (DefID) to MIR locals (LocalID)
-    const_map: HashMap<DefID, ir::Constant>,
     loop_context: Vec<(BasicBlockID, BasicBlockID)>,
     context: &'a HIRContext,
     drop_cache: &'a mut HashMap<Type, bool>,
@@ -34,7 +33,6 @@ impl<'a> MIRBuilder<'a> {
             basic_blocks: Vec::new(),
             current_block: BasicBlockID(0),
             var_map: HashMap::new(),
-            const_map: HashMap::new(),
             loop_context: Vec::new(),
             context,
             drop_cache,
@@ -165,38 +163,25 @@ impl<'a> MIRBuilder<'a> {
     fn lower_stmt(&mut self, stmt: &HIRStmt) {
         match stmt {
             HIRStmt::VarDecl { def_id, ty, init, span: decl_span, .. } => {
-                let is_const = matches!(
-                    self.context.get_def(*def_id).map(|i| &i.kind),
-                    Some(DefKind::Constant { .. })
-                );
+                let is_mutable = match self.context.get_def(*def_id).map(|info| &info.kind) {
+                    Some(DefKind::Variable { is_mutable, .. }) => *is_mutable,
+                    Some(DefKind::Constant { .. }) => false,
+                    _ => false,
+                };
 
-                if is_const {
-                    let is_scalar = matches!(
-                        init.as_ref().map(|e| &e.ty),
-                        Some(Type::I8)  | Some(Type::I16) | Some(Type::I32) | Some(Type::I64) |
-                        Some(Type::U8)  | Some(Type::U16) | Some(Type::U32) | Some(Type::U64) |
-                        Some(Type::F32) | Some(Type::F64) | Some(Type::BOOL) | Some(Type::CHAR)
-                    );
-
-                    if is_scalar {
-                        if let Some(expr) = init {
-                            if let Some(value) = fold::const_fold_hir(expr, self.context) {
-                                self.const_map.insert(*def_id, value);
-                                return;
-                            }
-                        }
-                    }
-                }
-
-                let local_id = self.new_local(ty.clone(), false, Some(*def_id));
+                let local_id = self.new_local(ty.clone(), is_mutable, Some(*def_id));
 
                 self.var_map.insert(*def_id, local_id);
 
                 if let Some(expr) = init {
-                    let operand = self.lower_expr_to_operand(expr);
+                    let operand = if let Some(value) = fold::const_fold_hir(expr, self.context) {
+                        Operand::Const(value)
+                    } else {
+                        self.lower_expr_to_operand(expr)
+                    };
 
                     self.push_statement(Statement {
-                        kind: crate::StatementKind::Assign(
+                        kind: StatementKind::Assign(
                             Place { local: local_id, projection: vec![] },
                             Rvalue::Use(operand),
                         ),
@@ -293,15 +278,25 @@ impl<'a> MIRBuilder<'a> {
             
             HIRExprKind::VarRef(def_id) => {
                 if let Some(&local) = self.var_map.get(def_id) {
-                    let place = Place { local, projection: vec![] };
-                    if self.is_copy_type(&expr.ty) { Operand::Copy(place) } else { Operand::Move(place) }
-                } else if let Some(value) = self.const_map.get(def_id) {
-                    Operand::Const(value.clone())
+                    let place = Place {
+                        local,
+                        projection: vec![],
+                    };
+
+                    if self.is_copy_type(&expr.ty) {
+                        Operand::Copy(place)
+                    } else {
+                        Operand::Move(place)
+                    }
                 } else {
                     let info = self.context.get_def(*def_id).expect("variable or constant not found");
+
                     match &info.kind {
-                        DefKind::Constant { value, .. } => Operand::Const(value.clone()),
-                        _ => panic!("DefID {:?} is neither a local variable nor a constant", def_id),
+                        DefKind::Constant { value, .. } => {
+                            Operand::Const(value.clone())
+                        }
+
+                        _ => panic!("variable `{}` has no MIR local variable nor is a constant", info.name)
                     }
                 }
             }

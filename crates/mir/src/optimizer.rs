@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::{
     LocalID, MIRFunction, MIRProgram, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator
 };
+use analyzer::fold;
 use ir::context::DefID;
 use ir::hir::{HIRBinOp, HIRUnaryOp};
 use ir::Constant;
@@ -441,6 +442,20 @@ impl Optimizer {
                             
                             if let Some(new_const) = folded {
                                 *rval = Rvalue::Use(Operand::Const(new_const));
+                                changed = true;
+                            }
+                        }
+
+                        Rvalue::Cast(kind, Operand::Const(value), target) => {
+                            if let Some(new_const) = fold::fold_cast(
+                                *kind,
+                                value.clone(),
+                                target,
+                            ) {
+                                *rval = Rvalue::Use(
+                                    Operand::Const(new_const),
+                                );
+
                                 changed = true;
                             }
                         }

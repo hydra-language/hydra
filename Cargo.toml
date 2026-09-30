@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.2"
+version = "0.4.3"
 
 [workspace.lints.rust]
 non_camel_case_types = "allow"
