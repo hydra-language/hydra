@@ -8,7 +8,27 @@ use mir::{Rvalue, Operand, AggregateKind, MIRFunction};
 
 use crate::CodeGen;
 
+fn is_integer_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::ISIZE |
+        Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::USIZE
+    )
+}
+
+fn is_unsigned_integer_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::USIZE
+    )
+}
+
+fn is_float_type(ty: &Type) -> bool {
+    matches!(ty, Type::F32 | Type::F64)
+}
+
 impl<'c> CodeGen<'c> {
+
 
     pub fn compile_rvalue(&mut self, rvalue: &Rvalue, mir_fn: &MIRFunction) -> Result<BasicValueEnum<'c>, String> {
         match rvalue {
@@ -171,62 +191,103 @@ impl<'c> CodeGen<'c> {
 
                     CastKind::Numeric => {
                         match (src_ty.clone(), dest_ty) {
-                            // Float to Int
-                            (Type::F32 | Type::F64, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::U8 | Type::U16 | Type::U32 | Type::U64) => {
-                                Ok(self.builder.build_float_to_signed_int(
-                                    val.into_float_value(), dest_llvm_ty.into_int_type(), "fptosi"
+                            (Type::F32, Type::F32) | (Type::F64, Type::F64) => {
+                                Ok(val)
+                            }
+
+                            (Type::F32, Type::F64) => {
+                                Ok(self.builder.build_float_ext(
+                                    val.into_float_value(),
+                                    dest_llvm_ty.into_float_type(),
+                                    "fpext",
                                 ).into())
                             }
-                            // Int to Float
-                            (Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::U8 | Type::U16 | Type::U32 | Type::U64, Type::F32 | Type::F64) => {
-                                Ok(self.builder.build_signed_int_to_float(
-                                    val.into_int_value(), dest_llvm_ty.into_float_type(), "sitofp"
+
+                            (Type::F64, Type::F32) => {
+                                Ok(self.builder.build_float_trunc(
+                                    val.into_float_value(),
+                                    dest_llvm_ty.into_float_type(),
+                                    "fptrunc",
                                 ).into())
                             }
-                            // Int to Int (Resize)
-                            (src, dest) if src.is_numeric() && dest.is_numeric() => {
+
+                            (src, dest) if is_float_type(&src) && is_integer_type(dest) => {
+                                let float_val = val.into_float_value();
+                                let int_ty = dest_llvm_ty.into_int_type();
+
+                                if is_unsigned_integer_type(dest) {
+                                    Ok(self.builder.build_float_to_unsigned_int(
+                                        float_val,
+                                        int_ty,
+                                        "fptoui",
+                                    ).into())
+                                } else {
+                                    Ok(self.builder.build_float_to_signed_int(
+                                        float_val,
+                                        int_ty,
+                                        "fptosi",
+                                    ).into())
+                                }
+                            }
+
+                            (src, dest) if is_integer_type(&src) && is_float_type(dest) => {
+                                let int_val = val.into_int_value();
+                                let float_ty = dest_llvm_ty.into_float_type();
+
+                                if is_unsigned_integer_type(&src) {
+                                    Ok(self.builder.build_unsigned_int_to_float(
+                                        int_val,
+                                        float_ty,
+                                        "uitofp",
+                                    ).into())
+                                } else {
+                                    Ok(self.builder.build_signed_int_to_float(
+                                        int_val,
+                                        float_ty,
+                                        "sitofp",
+                                    ).into())
+                                }
+                            }
+
+                            (src, dest) if is_integer_type(&src) && is_integer_type(dest) => {
                                 let int_val = val.into_int_value();
                                 let dest_int_ty = dest_llvm_ty.into_int_type();
+
                                 let src_width = int_val.get_type().get_bit_width();
                                 let dest_width = dest_int_ty.get_bit_width();
 
                                 if src_width > dest_width {
-                                    Ok(self.builder.build_int_truncate(int_val, dest_int_ty, "trunc").into())
-                                } else {
-                                    let is_unsigned = matches!(
-                                        src, 
-                                        Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::USIZE | Type::CHAR | Type::BOOL
-                                    );
-
-                                    if is_unsigned {
-                                        Ok(self.builder.build_int_z_extend(int_val, dest_int_ty, "zext").into())
+                                    Ok(self.builder.build_int_truncate(
+                                        int_val,
+                                        dest_int_ty,
+                                        "trunc",
+                                    ).into())
+                                } else if src_width < dest_width {
+                                    if is_unsigned_integer_type(&src) {
+                                        Ok(self.builder.build_int_z_extend(
+                                            int_val,
+                                            dest_int_ty,
+                                            "zext",
+                                        ).into())
                                     } else {
-                                        Ok(self.builder.build_int_s_extend(int_val, dest_int_ty, "sext").into())
+                                        Ok(self.builder.build_int_s_extend(
+                                            int_val,
+                                            dest_int_ty,
+                                            "sext",
+                                        ).into())
                                     }
+                                } else {
+                                    Ok(val)
                                 }
                             }
-                            // Float to Float (Resize)
-                            (Type::F32, Type::F64) => {
-                                Ok(
-                                    self.builder.build_float_ext(
-                                        val.into_float_value(), 
-                                        dest_llvm_ty.into_float_type(), 
-                                        "fpext"
-                                    ).into()
-                                )
-                            }
 
-                            (Type::F64, Type::F32) => {
-                                Ok(
-                                    self.builder.build_float_trunc(
-                                        val.into_float_value(), 
-                                        dest_llvm_ty.into_float_type(), 
-                                        "fptrunc"
-                                    ).into()
-                                )
+                            _ => {
+                                Err(format!(
+                                    "unsupported cast from {:?} to {:?}",
+                                    src_ty,
+                                    dest_ty,
+                                ))
                             }
-
-                            _ => Err(format!("unsupported cast from {:?} to {:?}", src_ty, dest_ty)),
                         }
                     }
                 }

@@ -587,18 +587,29 @@ impl<'c> CodeGen<'c> {
         ptr
     }
 
-    pub fn run_ir_passes(module: &Module) {
+    pub fn run_ir_passes(module: &Module, level: OptimizationLevel) {
+        if matches!(level, OptimizationLevel::None) {
+            return;
+        }
+
         let fpm = PassManager::create(module);
 
+        // 01
         fpm.add_promote_memory_to_register_pass();
         fpm.add_instruction_combining_pass();
         fpm.add_reassociate_pass();
-        fpm.add_gvn_pass();
         fpm.add_cfg_simplification_pass();
-        fpm.add_basic_alias_analysis_pass();
-        fpm.add_tail_call_elimination_pass();
-        fpm.add_loop_vectorize_pass();
-        fpm.add_slp_vectorize_pass();
+
+        if !matches!(level, OptimizationLevel::Default | OptimizationLevel::Aggressive) {
+            fpm.add_gvn_pass();
+            fpm.add_basic_alias_analysis_pass();
+            fpm.add_tail_call_elimination_pass();
+        }
+        
+        if matches!(level, OptimizationLevel::Aggressive) {
+            fpm.add_loop_vectorize_pass();
+            fpm.add_slp_vectorize_pass();
+        }
 
         fpm.initialize();
 
