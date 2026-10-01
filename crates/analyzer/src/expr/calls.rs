@@ -67,8 +67,13 @@ impl<'ctx> Analyzer<'ctx> {
                     _ => "".to_string()
                 };
 
-                if call_name_debug == "print" || call_name_debug == "println" {
-                    return self.lower_print_call(arguments, call_name_debug == "println", span);
+                match call_name_debug.as_str() {
+                    "print" => return self.lower_print_call(arguments, false, false, span),
+                    "println" => return self.lower_print_call(arguments, true, false, span),
+                    "eprint" => return self.lower_print_call(arguments, false, true, span),
+                    "eprintln" => return self.lower_print_call(arguments, true, true, span),
+
+                    _ => {}
                 }
 
                 // fetch the ID of the callee expression, not the outer FunctionCall

@@ -1,2 +1,3 @@
 include core::io::writer::Writer;
 include core::io::stdout::Stdout;
+include core::io::stderr::Stderr;

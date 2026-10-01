@@ -220,7 +220,7 @@ Hydra also does not support uninitialized local declarations. If a value has no 
 
 ## 5. Type Syntax
 
-A type may be a primitive, named type, generic type, array, slice, reference, or raw pointer.
+A type may be a primitive, named type, generic type, array, slice, reference, raw pointer, or optional type.
 
 ### Named Types
 
@@ -494,14 +494,15 @@ const ptr = reference as *const i32;
 From lowest precedence to highest:
 
 1. Assignment
-2. Logical OR: `||`
-3. Logical AND: `&&`
-4. Equality: `==`, `!=`
-5. Comparison: `<`, `<=`, `>`, `>=`
-6. Addition and subtraction: `+`, `-`
-7. Multiplication, division, modulo: `*`, `/`, `%`
-8. Prefix operations: `!`, `-`, `&`, `&mut`, `*`
-9. Calls, member access, indexing, casts, and qualified access
+2. Optional fallback: `orelse`
+3. Logical OR: `||`
+4. Logical AND: `&&`
+5. Equality: `==`, `!=`
+6. Comparison: `<`, `<=`, `>`, `>=`
+7. Addition and subtraction: `+`, `-`
+8. Multiplication, division, modulo: `*`, `/`, `%`
+9. Prefix operations: `!`, `-`, `&`, `&mut`, `*`
+10. Calls, member access, indexing, casts, and qualified access
 
 Parentheses may be used to explicitly control evaluation order:
 
@@ -883,11 +884,9 @@ extension<T> Box<T> where T : Display {
 
 Traits define required behavior that types may implement.
 
-Trait syntax is considered a fundamental part of Hydra even while compiler support is still being developed.
-
 ### Trait Declaration
 
-The initial trait model consists of required function declarations.
+The current trait model consists of required function declarations.
 
 ```rust
 trait Display {
@@ -895,7 +894,7 @@ trait Display {
 }
 ```
 
-Trait functions do not have bodies in the initial trait implementation.
+Trait functions do not have bodies unless default trait methods are added in the future.
 
 Receiver forms use the same syntax as extension methods:
 
@@ -1441,6 +1440,173 @@ fn main() -> void {
 
 ---
 
+
+## 28. Optional Types
+
+Hydra supports optional values directly in the type system.
+
+### Syntax
+
+```rust
+T?
+```
+
+Example:
+
+```rust
+const value: i32? = find_value();
+```
+
+An optional represents either:
+
+* a value of `T`, or
+* `None`.
+
+Absence is written exactly as:
+
+```rust
+None
+```
+
+Hydra does not use a `Some(value)` constructor. A present optional value is simply the underlying `T` in a context that expects `T?`.
+
+```rust
+fn maybe_value(condition: bool) -> i32? {
+    if condition {
+        return 10;
+    }
+
+    return None;
+}
+```
+
+A `T?` cannot be used as a plain `T` while `None` is still a reachable possibility. The programmer must account for `None`, normally with `match` or `orelse`.
+
+Nested optional types such as `T??` are not currently supported.
+
+Hydra's optional model is intentionally apophatic: once the `None` possibility has actually been eliminated from a control-flow path, what remains is the underlying value.
+
+---
+
+## 29. `match`
+
+`match` partitions a value into explicit patterns and an optional catch-all `else` branch.
+
+### Syntax
+
+```rust
+match value {
+    pattern => expression;
+    pattern: binding => {
+        // ...
+    }
+} else: remaining {
+    // ...
+}
+```
+
+Parentheses around the matched expression are optional:
+
+```rust
+match (value) {
+    // ...
+}
+```
+
+Current match patterns support individual value patterns and integer ranges:
+
+```rust
+match value {
+    0 => handle_zero();
+    1..=10: number => handle_small(number);
+} else: remaining {
+    handle_other(remaining);
+}
+```
+
+A match arm may bind the matched value using `pattern: binding`.
+
+```rust
+match value {
+    1: number => println("{}", number);
+} else {
+    // ...
+}
+```
+
+The `else` branch may also bind the unmatched value:
+
+```rust
+match value {
+    0 => handle_zero();
+} else: remaining {
+    handle_other(remaining);
+}
+```
+
+`else` is Hydra's catch-all branch. Hydra does not require a separate `_ => ...` wildcard arm.
+
+A `match` must be exhaustive. An `else` branch always makes the match exhaustive. Without `else`, the explicit patterns must cover the complete domain recognized by the compiler, including `None` for an optional subject.
+
+For optional values, `None` is a normal matchable case:
+
+```rust
+const value: i32? = maybe_value();
+
+match value {
+    None => println("no value");
+} else: number {
+    println("{}", number);
+}
+```
+
+If `None` has already been matched explicitly, an `else` binding for a `T?` subject is a plain `T`. If `None` can still reach the `else` branch, the binding remains `T?`.
+
+`match` is also value-producing. The final expression in the selected block becomes that branch's result, and branch result types must be compatible.
+
+```rust
+const result: i32 = match value {
+    1: number => {
+        number + 10;
+    }
+} else: number {
+    number;
+};
+```
+
+Exhaustiveness does not itself remove optionality. If a reachable branch can still produce `None`, the overall match result remains optional.
+
+---
+
+## 30. `orelse`
+
+`orelse` handles the absent case of an optional expression without requiring a full `match`.
+
+### Syntax
+
+```rust
+optional-expression orelse fallback-expression
+```
+
+Example:
+
+```rust
+const value: i32? = find_value();
+const result: i32 = value orelse 0;
+```
+
+The left operand must have type `T?`. If it contains a value, the expression evaluates to the underlying `T`. If it is `None`, the fallback expression is evaluated instead.
+
+The fallback is type-checked as the underlying `T`, so the result of `orelse` is a plain `T`.
+
+```rust
+const port: u16? = configured_port();
+const effective_port: u16 = port orelse 8080;
+```
+
+
+---
+
 # Planned Features
 
 The features in this section are intended or under consideration but are not yet part of Hydra's stable core grammar.
@@ -1451,7 +1617,7 @@ Their exact syntax and semantics may change.
 
 ## P1. Generic Traits
 
-Traits are initially being introduced without generic trait parameters.
+Trait declarations currently do not accept generic trait parameters.
 
 Generic traits are planned.
 
@@ -1479,7 +1645,7 @@ The exact implementation rules remain subject to development.
 
 ## P2. Default Trait Methods
 
-Traits initially consist of required function declarations:
+Trait declarations currently consist of required function declarations:
 
 ```rust
 trait Display {
@@ -1531,103 +1697,7 @@ This syntax is intentionally considered provisional and may change before implem
 
 ---
 
-## P4. Optional Types
-
-Hydra plans to support optional values directly in the type syntax.
-
-### Syntax
-
-```rust
-T?
-```
-
-Example:
-
-```rust
-const value: i32? = find_value();
-```
-
-An optional represents either:
-
-* a value of `T`, or
-* `None`.
-
-Absence is written exactly as:
-
-```rust
-None
-```
-
-Hydra does not use a `Some(value)` constructor.
-
-A present optional value is represented directly by the underlying value:
-
-```rust
-fn maybe_value(condition: bool) -> i32? {
-    if condition {
-        return 10;
-    }
-
-    return None;
-}
-```
-
-Conceptually, once the `None` case has been eliminated, the only remaining possibility is the value itself.
-
-This style may be described as **apophatic programming**: instead of wrapping the positive case in a constructor, the program eliminates the negative case and what remains is the value.
-
----
-
-## P5. `match`
-
-Pattern matching is planned.
-
-One major use will be exhaustive handling of optional values.
-
-The intended shape is:
-
-```rust
-match value {
-    None => handle_none(),
-    value => use_value(value),
-}
-```
-
-For an optional `T?`, handling `None` leaves the remaining arm as the contained `T`.
-
-There is no required `Some(value)` pattern.
-
-The complete pattern grammar may expand as `match` is implemented.
-
----
-
-## P6. `orelse`
-
-`orelse` is planned as an expression-level way to provide an alternative when an optional has no value.
-
-Conceptually, it behaves similarly to an `unwrap_or_else` operation.
-
-Example:
-
-```rust
-const value: i32? = find_value();
-
-const result = value orelse 0;
-```
-
-Control flow may also be usable as the alternative:
-
-```rust
-const result = value orelse return 0;
-```
-
-When the optional contains a value, the expression evaluates to the underlying value.
-
-When it contains `None`, the expression after `orelse` is evaluated instead.
-
----
-
-## P7. Error Unions
+## P4. Error Unions
 
 Hydra plans to represent fallible return values using an error-union type.
 
@@ -1665,7 +1735,7 @@ A program requiring multiple error variants should represent those variants thro
 
 ---
 
-## P8. Error Propagation
+## P5. Error Propagation
 
 A postfix `!` operator is currently the preferred direction for error propagation, although the syntax is not yet final.
 
@@ -1700,7 +1770,7 @@ The postfix propagation syntax remains provisional.
 
 ---
 
-## P9. `never`
+## P6. `never`
 
 Hydra plans to provide a bottom type named:
 
@@ -1730,7 +1800,7 @@ The `panic` expression has type `never`, which can satisfy the surrounding expre
 
 ---
 
-## P10. `panic`
+## P7. `panic`
 
 A standard panic facility is planned alongside the `never` type.
 
@@ -1746,7 +1816,7 @@ Runtime failures such as dynamic out-of-bounds indexing may eventually use this 
 
 ---
 
-## P11. Range-Based Array and Slice Indexing
+## P8. Range-Based Array and Slice Indexing
 
 Hydra currently uses ranges in `for` loops:
 
@@ -1903,7 +1973,34 @@ for-expression
 foreach-expression
     := "foreach" IDENTIFIER "in" expression block
 
+match-expression
+    := "match" expression "{"
+           match-arm*
+       "}"
+       ("else" match-binding? block)?
+     | "match" "(" expression ")" "{"
+           match-arm*
+       "}"
+       ("else" match-binding? block)?
+
+match-arm
+    := match-pattern match-binding? "=>" match-arm-body
+
+match-pattern
+    := expression
+     | expression (".." | "..=") expression
+
+match-binding
+    := ":" IDENTIFIER
+
+match-arm-body
+    := block ["," | ";"]
+     | expression ("," | ";")
+
 type
+    := type-base ["?"]
+
+type-base
     := path
      | path "<" type-list ">"
      | "[" type "," INTEGER "]"
@@ -1917,11 +2014,14 @@ expression
     := assignment-expression
 
 assignment-expression
-    := logical-or
+    := orelse-expression
        (
            ("=" | "+=" | "-=" | "*=" | "/=" | "%=")
            assignment-expression
        )?
+
+orelse-expression
+    := logical-or ("orelse" orelse-expression)?
 
 logical-or
     := logical-and ("||" logical-and)*
@@ -1980,22 +2080,11 @@ annotation
 Planned additions include:
 
 ```text
-optional-type
-    := type "?"
-
 error-union
     := type "|" type
 
-match-expression
-    := "match" expression "{"
-           match-arm*
-       "}"
-
-match-arm
-    := pattern "=>" expression
-
-orelse-expression
-    := expression "orelse" expression
+error-propagation
+    := postfix "!"
 
 never-type
     := "never"

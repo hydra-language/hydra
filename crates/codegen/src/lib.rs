@@ -378,30 +378,35 @@ impl<'c> CodeGen<'c> {
                 Ok(ptr.into())
             }
 
-            IntrinsicKind::WriteStdout => {
+            IntrinsicKind::WriteStdout | IntrinsicKind::WriteStderr => {
                 if args.len() != 2 {
-                    return Err("write_stdout requires two arguments".into());
+                    return Err("output write requires two arguments".into());
                 }
 
                 let ptr = self.compile_operand(&args[0], mir_fn)?.into_pointer_value();
                 let len = self.compile_operand(&args[1], mir_fn)?.into_int_value();
+
                 let void_type = self.context.void_type();
-
                 let byte_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
-
                 let usize_type = self.context.ptr_sized_int_type(
                     &self.target_data,
                     None,
                 );
 
-                let write_fn = self.module.get_function("print_str").unwrap_or_else(|| {
+                let function_name = match kind {
+                    IntrinsicKind::WriteStdout => "print_str",
+                    IntrinsicKind::WriteStderr => "print_err",
+                    _ => unreachable!(),
+                };
+
+                let write_fn = self.module.get_function(function_name).unwrap_or_else(|| {
                     let fn_type = void_type.fn_type(
                         &[byte_ptr_type.into(), usize_type.into()],
                         false,
                     );
 
                     self.module.add_function(
-                        "print_str",
+                        function_name,
                         fn_type,
                         Some(inkwell::module::Linkage::External),
                     )
@@ -413,7 +418,6 @@ impl<'c> CodeGen<'c> {
                     "",
                 );
 
-                // void intrinsics are currently represented as Rvalues.
                 Ok(self.context.i8_type().const_zero().into())
             }
 

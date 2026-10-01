@@ -10,6 +10,10 @@ use errors::error::{HydraError, Span};
 
 use crate::scope::{NameResolver, Namespace, Scope};
 
+fn is_builtin_print(name: &str) -> bool {
+    matches!(name, "print" | "println" | "eprint" | "eprintln")
+}
+
 /// The result of name resolution.
 ///
 /// Contains:
@@ -648,20 +652,26 @@ impl<'ctx> Resolver<'ctx> {
     fn resolve_expr(&mut self, expr: &Expr) {
         match expr {
             Expr::Variable { id, name } => {
-                if name.lexeme == "print" || name.lexeme == "println" { return; }
+                if is_builtin_print(&name.lexeme) {
+                    return;
+                }
 
-                if let Some(def_id) = self.current_scope.resolve(Namespace::Value, &name.lexeme, self.context)
-                    .or_else(|| self.current_scope.resolve(Namespace::Type, &name.lexeme, self.context)) 
+                if let Some(def_id) = self.current_scope.resolve(Namespace::Value, &name.lexeme, self.context).or_else(|| {
+                    self.current_scope.resolve(Namespace::Type, &name.lexeme, self.context) }) 
                 {
                     self.name_resolver.record_resolution(*id, def_id);
                 } else {
-                    self.error(name.span, "R001", format!("cannot find value `{}` in this scope", name.lexeme));
+                    self.error(
+                        name.span,
+                        "R001",
+                        format!("cannot find value `{}` in this scope", name.lexeme),
+                    );
                 }
             }
 
             Expr::Path { id, segments } => {
-                if segments.len() == 1 && (segments[0].lexeme == "print" || segments[0].lexeme == "println") { 
-                    return; 
+                if segments.len() == 1 && is_builtin_print(&segments[0].lexeme) {
+                    return;
                 }
 
                 if segments.len() == 2 {

@@ -14,6 +14,7 @@ pub enum IntrinsicKind {
     SliceLen,
     SlicePtr,
     WriteStdout,
+    WriteStderr,
     Uninit,
     FormatI64,
     FormatU64,
@@ -109,6 +110,12 @@ impl IntrinsicKind {
             }
 
             [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__write_stderr" =>
+            {
+                Some(Self::WriteStderr)
+            }
+
+            [core, intrinsics, name]
                 if core == "core" && intrinsics == "intrinsics" && name == "__uninit" =>
             {
                 Some(Self::Uninit)
@@ -140,8 +147,8 @@ impl IntrinsicKind {
         match self {
             IntrinsicKind::PtrWrite | IntrinsicKind::Alloc | 
             IntrinsicKind::Dealloc | IntrinsicKind::WriteStdout |
-            IntrinsicKind::FormatI64 | IntrinsicKind::FormatU64 |
-            IntrinsicKind::FormatChar => true,
+            IntrinsicKind::WriteStderr | IntrinsicKind::FormatI64 | 
+            IntrinsicKind::FormatU64 | IntrinsicKind::FormatChar => true,
 
             IntrinsicKind::SizeOf | IntrinsicKind::AlignOf | 
             IntrinsicKind::PtrRead | IntrinsicKind::PtrOffset |

@@ -629,11 +629,17 @@ impl<'ctx> Analyzer<'ctx> {
                 }
             }
 
-            IntrinsicKind::WriteStdout => {
+            IntrinsicKind::WriteStdout | IntrinsicKind::WriteStderr => {
+                let name = if kind == IntrinsicKind::WriteStdout {
+                    "write_stdout"
+                } else {
+                    "write_stderr"
+                };
+
                 if !generic_params.is_empty() {
                     return Err(self.error(
                         "S017",
-                        "write_stdout accepts no type parameters",
+                        format!("{name} accepts no type parameters"),
                         span,
                     ));
                 }
@@ -641,19 +647,18 @@ impl<'ctx> Analyzer<'ctx> {
                 if params.len() != 2 {
                     return Err(self.error(
                         "S017",
-                        "write_stdout requires exactly two arguments",
+                        format!("{name} requires exactly two arguments"),
                         span,
                     ));
                 }
 
                 match &params[0] {
-                    IRType::CONST_POINTER(inner)
-                    if inner.as_ref() == &IRType::U8 => {}
+                    IRType::CONST_POINTER(inner) if inner.as_ref() == &IRType::U8 => {}
 
                     _ => {
                         return Err(self.error(
                             "S017",
-                            "write_stdout expects first argument to be `*const u8`",
+                            format!("{name} expects first argument to be `*const u8`"),
                             span,
                         ));
                     }
@@ -662,7 +667,7 @@ impl<'ctx> Analyzer<'ctx> {
                 if params[1] != IRType::USIZE {
                     return Err(self.error(
                         "S017",
-                        "write_stdout expects length to be `usize`",
+                        format!("{name} expects length to be `usize`"),
                         span,
                     ));
                 }
@@ -670,7 +675,7 @@ impl<'ctx> Analyzer<'ctx> {
                 if *return_type != IRType::VOID {
                     return Err(self.error(
                         "S017",
-                        "write_stdout must return `void`",
+                        format!("{name} must return `void`"),
                         span,
                     ));
                 }

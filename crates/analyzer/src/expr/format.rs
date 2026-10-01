@@ -10,9 +10,10 @@ use parser::ast::Expr as ASTExpr;
 use crate::{traits, Analyzer};
 
 const FORMATTER_PATH: &str = "core::fmt::formatter::Formatter";
-const FORMATTER_NEW_PATH: &str = "core::fmt::formatter::Formatter::new";
 const FORMATTER_WRITE_PATH: &str = "core::fmt::formatter::Formatter::write";
 const FORMATTER_WRITELN_PATH: &str = "core::fmt::formatter::Formatter::writeln";
+const FORMATTER_STDOUT_PATH: &str = "core::fmt::formatter::Formatter::stdout";
+const FORMATTER_STDERR_PATH: &str = "core::fmt::formatter::Formatter::stderr";
 
 impl<'ctx> Analyzer<'ctx> {
 
@@ -389,24 +390,29 @@ impl<'ctx> Analyzer<'ctx> {
         }
     }
 
-    pub(crate) fn lower_print_call(&mut self, arguments: &[ASTExpr], append_newline: bool, span: Span) -> Result<HIRExpr, HydraError> {
-        let formatter_def_id = self.context.find_struct_by_name(FORMATTER_PATH)
-            .ok_or_else(|| {
-                self.error(
-                    "S002",
-                    "compiler formatting support requires `core::fmt::Formatter`",
-                    span,
-                )
-            })?;
+    pub(crate) fn lower_print_call(&mut self, arguments: &[ASTExpr], append_newline: bool, stderr: bool, span: Span) -> Result<HIRExpr, HydraError> 
+    {
+        let formatter_def_id = self.context.find_struct_by_name(FORMATTER_PATH).ok_or_else(|| {
+            self.error(
+                "S002",
+                "compiler formatting support requires `core::fmt::Formatter`",
+                span,
+            )
+        })?;
 
-        let new_def_id = self.context.find_function_by_name(FORMATTER_NEW_PATH)
-            .ok_or_else(|| {
-                self.error(
-                    "S002",
-                    "compiler formatting support requires `Formatter::new`",
-                    span,
-                )
-            })?;
+        let constructor_path = if stderr {
+            FORMATTER_STDERR_PATH
+        } else {
+            FORMATTER_STDOUT_PATH
+        };
+
+        let new_def_id = self.context.find_function_by_name(constructor_path).ok_or_else(|| {
+            self.error(
+                "S002",
+                format!("compiler formatting support requires `{}`", constructor_path),
+                span,
+            )
+        })?;
 
         let formatter_ty = IRType::STRUCT(TypeRef::new(formatter_def_id, FORMATTER_PATH.to_string()));
         let temp_name = format!(

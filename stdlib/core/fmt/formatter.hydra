@@ -1,23 +1,41 @@
-include core::intrinsics;
-
 include core::io;
 
+include core::intrinsics;
+
 pub struct Formatter {
-    writer: io::Stdout;
+    stdout: io::Stdout;
+    stderr: io::Stderr;
+    write_stderr: bool;
 }
 
 extension Formatter {
 
     #[inline]
     pub fn new() -> Formatter {
+        return Formatter::stdout();
+    }
+
+    #[inline]
+    pub fn stdout() -> Formatter {
         return Formatter {
-            .writer = io::Stdout {}
+            .stdout = io::Stdout {},
+            .stderr = io::Stderr {},
+            .write_stderr = false,
+        };
+    }
+
+    #[inline]
+    pub fn stderr() -> Formatter {
+        return Formatter {
+            .stdout = io::Stdout {},
+            .stderr = io::Stderr {},
+            .write_stderr = true,
         };
     }
 
     #[inline]
     pub fn write(&mut self, text: &[u8]) -> void {
-        self.writer::write(
+        self::write_raw(
             intrinsics::__slice_ptr::<u8>(text),
             intrinsics::__slice_len::<u8>(text)
         );
@@ -30,9 +48,11 @@ extension Formatter {
     }
 
     pub fn write_raw(&mut self, ptr: *const u8, len: usize) -> void {
-        self.writer::write(
-            ptr, 
-            len
-        );
+        if self.write_stderr {
+            self.stderr::write(ptr, len);
+            return;
+        }
+
+        self.stdout::write(ptr, len);
     }
 }

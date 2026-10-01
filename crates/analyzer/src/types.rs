@@ -178,7 +178,6 @@ impl<'ctx> Analyzer<'ctx> {
             IRType::U32 => lit_val >= 0,
             IRType::I64 | IRType::ISIZE => true,
             IRType::U64 | IRType::USIZE => true,
-            IRType::F32 | IRType::F64 => true,
             IRType::BOOL => lit_val == 0 || lit_val == 1,
             _ => false, 
         }

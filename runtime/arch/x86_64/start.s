@@ -6,10 +6,13 @@ str_false:  .ascii "false"
 str_minus:  .ascii "-"
 str_nl:     .ascii "\n"
 
+.type print_err, @function
+
 .text
 
 .global _start
 .global print_str
+.global print_err
 
 # ---------------------------------------------------------
 # Entry Point
@@ -37,5 +40,13 @@ print_str:
     mov    %rdi, %rsi           # rsi = pointer to string
     mov    $1, %rdi             # fd = 1 (stdout)
     mov    $1, %rax             # sys_write (syscall 1)
+    syscall
+    ret
+
+print_err:
+    mov %rsi, %rdx
+    mov %rdi, %rsi
+    mov $2, %rdi
+    mov $1, %rax
     syscall
     ret
