@@ -1,0 +1,32 @@
+include vec3::Vec3;
+
+include ray::Ray;
+include random::Random;
+
+include interval::Interval;
+include sphere::Sphere;
+
+include material::HitRecord;
+
+include core::marker::Copy;
+
+pub trait Hit {
+    fn hit(&self, r: Ray, ray_t: Interval, record: &mut HitRecord) -> bool;
+}
+
+pub struct Hittable {
+    pub sphere: Sphere?;
+}
+
+extension Copy on Hittable;
+
+extension Hit on Hittable {
+    
+    fn hit(&self, r: Ray, ray_t: Interval, record: &mut HitRecord) -> bool {
+        match self.sphere {
+            None => {}
+        } else: sphere {
+            return sphere::hit(r, ray_t, record);
+        }
+    }
+}

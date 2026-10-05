@@ -1,122 +1,177 @@
 include math::Math;
+include random::Random;
 
-struct Vec3 {
-    vec: [f64, 3];
+include core::marker::Copy;
 
-    fn new(x: f64, y: f64, z: f64) -> Vec3 {
+pub struct Vec3 {
+    x: f64;
+    y: f64;
+    z: f64;
+}
+
+extension Copy on Vec3;
+
+extension Vec3 {
+    
+    pub fn new(x: f64, y: f64, z: f64) -> Vec3 {
         return Vec3 {
-            .vec = { x, y, z }
+            .x = x,
+            .y = y,
+            .z = z,
         };
     }
 
-    fn zero() -> Vec3 {
+    pub fn zero() -> Vec3 {
         return Vec3 {
-            .vec = { 0.0, 0.0, 0.0 }
+            .x = 0,
+            .y = 0,
+            .z = 0,
         };
     }
 
-    fn add(&const self, other: Vec3) -> Vec3 {
-        return Vec3 {
-            .vec = {
-                self.vec[0] + other.vec[0],
-                self.vec[1] + other.vec[1],
-                self.vec[2] + other.vec[2]
-            }
-        };
+    pub fn normalize(v: Vec3) -> Vec3 {
+        const len: f64 = v::length();
+
+        if len > 0.0 {
+            return v::scale(1.0 / len);
+        }
+
+        return v;
     }
 
-    fn subtract(&const self, other: Vec3) -> Vec3 {
-        return Vec3 {
-            .vec = {
-                self.vec[0] - other.vec[0],
-                self.vec[1] - other.vec[1],
-                self.vec[2] - other.vec[2]
-            }
-        };
-    }
-
-    fn multiply(&const self, other: Vec3) -> Vec3 {
-        return Vec3 {
-            .vec = {
-                self.vec[0] * other.vec[0],
-                self.vec[1] * other.vec[1],
-                self.vec[2] * other.vec[2]
-            }
-        };
-    }
-
-    fn cross(&const self, other: Vec3) -> Vec3 {
+    pub fn random(rng: &mut Random) -> Vec3 {
         return Vec3::new(
-            self.vec[1] * other.vec[2] - self.vec[2] * other.vec[1],
-            self.vec[2] * other.vec[0] - self.vec[0] * other.vec[2],
-            self.vec[0] * other.vec[1] - self.vec[1] * other.vec[0]
+            rng::random_number(),
+            rng::random_number(),
+            rng::random_number()
         );
     }
 
-    fn scale(&const self, t: f64) -> Vec3 {
-        return Vec3 {
-            .vec = {
-                self.vec[0] * t,
-                self.vec[1] * t,
-                self.vec[2] * t
+    pub fn random_within_range(rng: &mut Random, min: f64, max: f64) -> Vec3 {
+        return Vec3::new(
+            rng::random_range(min, max),
+            rng::random_range(min, max),
+            rng::random_range(min, max)
+        );
+    }
+
+    pub fn random_normalize(rng: &mut Random) -> Vec3 {
+        while true {
+            const p = Vec3::random_within_range(rng, -1, 1);
+            const lensq = p::length_squared();
+
+            if 1e-160 < lensq && lensq <= 1 {
+                return p::scale(1.0 / Math::sqrt(lensq));
             }
-        };
-    }
-
-    fn dot(&const self, other: Vec3) -> f64 {
-        return self.vec[0] * other.vec[0] + self.vec[1] * other.vec[1] + self.vec[2] * other.vec[2];
-    }
-
-    fn length(&const self) -> f64 {
-        return Math::sqrt(self::dot(*self));
-    }
-
-    fn length_squared(&const self) -> f64 {
-        return self::dot(*self);
-    }
-
-    fn normalize(self: Vec3) -> Vec3 {
-        const len = self::length();
-
-        if len > 0.0 {
-            return self::scale(1.0 / len);
         }
-
-        return self;
     }
 
-    fn reflect(v: Vec3, n: Vec3) -> Vec3 {
+    pub fn random_on_hemisphere(rng: &mut Random, normal: Vec3) -> Vec3 {
+        const on_unit_sphere = Vec3::random_normalize(rng);
+
+        if on_unit_sphere::dot(normal) > 0.0 {
+            return on_unit_sphere;
+        } else {
+            return on_unit_sphere::scale(-1.0);
+        }
+    }
+
+    pub fn random_in_unit_disk(rng: &mut Random) -> Vec3 {
+        while true {
+            const p = Vec3::new(
+                rng::random_range(-1, 1),
+                rng::random_range(-1, 1),
+                0
+            );
+
+            if p::length_squared() < 1 {
+                return p;
+            }
+        }
+    }
+
+    pub fn reflect(v: Vec3, n: Vec3) -> Vec3 {
         return v::subtract(n::scale(2.0 * v::dot(n)));
     }
 
-    fn refract(uv: Vec3, n: Vec3, eoe: f64) -> Vec3 {
+    pub fn refract(uv: Vec3, n: Vec3, eoe: f64) -> Vec3 {
         let uv_inv = uv::scale(-1.0);
 
         const cos_theta = Math::min(uv_inv::dot(n), 1.0);
+        let r_out_perp: Vec3 = uv::add(n::scale(cos_theta))::scale(eoe);
+        let r_out_para = n::scale(-Math::sqrt(Math::abs(1.0 - r_out_perp::dot(r_out_perp))));
 
-        let r_out_prep: Vec3 = uv::add(n::scale(cos_theta))::scale(eoe);
-        let r_out_parallel = n::scale(-Math::sqrt(Math::abs(1.0 - r_out_prep::dot(r_out_prep))));
-
-        return r_out_prep::add(r_out_parallel);
+        return r_out_perp::add(r_out_para);
     }
 
-    fn near_zero(&const self) -> bool {
-        const s = 0.00000001;
 
-        return (Math::abs(self.vec[0]) < s) && 
-            (Math::abs(self.vec[1]) < s) && 
-            (Math::abs(self.vec[2]) < s); 
+    pub fn add(&self, other: Vec3) -> Vec3 {
+        return Vec3 {
+            .x = self.x + other.x,
+            .y = self.y + other.y,
+            .z = self.z + other.z,
+        };
     }
 
-    fn get_x(&const self) -> f64 {
-        return self.vec[0];
+    pub fn subtract(&self, other: Vec3) -> Vec3 {
+        return Vec3 {
+            .x = self.x - other.x,
+            .y = self.y - other.y,
+            .z = self.z - other.z,
+        };
     }
 
-    fn get_y(&const self) -> f64 {
-        return self.vec[1];
+    pub fn multiply(&self, other: Vec3) -> Vec3 {
+        return Vec3 {
+            .x = self.x * other.x,
+            .y = self.y * other.y,
+            .z = self.z * other.z,
+        };
     }
 
-    fn get_z(&const self) -> f64 {
-        return self.vec[2];
+    pub fn cross(&self, other: Vec3) -> Vec3 {
+        return Vec3::new(
+            (self.y * other.z) - (self.z * other.y),
+            (self.z * other.x) - (self.x * other.z),
+            (self.x * other.y) - (self.y * other.x)
+        );
+    }
+
+    pub fn scale(&self, factor: f64) -> Vec3 {
+        return Vec3 {
+            .x = self.x * factor,
+            .y = self.y * factor,
+            .z = self.z * factor,
+        };
+    }
+
+    pub fn dot(&self, other: Vec3) -> f64 {
+        return (self.x * other.x) + (self.y * other.y) + (self.z * other.z);
+    }
+
+    pub fn length_squared(&self) -> f64 {
+        return self::dot(*self);
+    }
+
+    pub fn length(&self) -> f64 {
+        return Math::sqrt(self::length_squared());
+    }
+
+    pub fn near_zero(&self) -> bool {
+        const s = 1e-8;
+
+        return Math::abs(self.x) < s && Math::abs(self.y) < s && Math::abs(self.z) < s;
+    }
+
+    pub fn x(&self) -> f64 {
+        return self.x;
+    }
+
+    pub fn y(&self) -> f64 {
+        return self.y;
+    }
+
+    pub fn z(&self) -> f64 {
+        return self.z;
     }
 }

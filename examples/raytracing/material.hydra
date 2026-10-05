@@ -1,0 +1,192 @@
+include vec3::Vec3;
+
+include ray::Ray;
+include random::Random;
+
+include math::Math;
+
+include core::marker::Copy;
+
+pub struct HitRecord {
+    pub p: Vec3;
+    pub normal: Vec3;
+    pub material: (&Material)?;
+    pub t: f64;
+    pub front_face: bool;
+}
+
+extension Copy on HitRecord;
+
+extension HitRecord {
+    
+    pub fn initialize() -> HitRecord {
+        return HitRecord {
+            .p = Vec3::zero(),
+            .normal = Vec3::zero(),
+            .t = 0.0,
+            .front_face = false,
+            .material = None
+        };
+    }
+
+    pub fn set_face_normal(&mut self, r: Ray, outward_normal: Vec3) -> void {
+        self.front_face = r::direction()::dot(outward_normal) < 0;
+
+        if self.front_face {
+            self.normal = outward_normal;
+        } else {
+            self.normal = outward_normal::scale(-1.0);
+        }
+    }
+}
+
+pub trait Scatter {
+    fn scatter(&self, r_in: Ray, record: &HitRecord, attenuation: &mut Vec3, scattered: &mut Ray, rng: &mut Random) -> bool;
+}
+
+pub struct Lambertian {
+    albedo: Vec3;
+}
+
+extension Copy on Lambertian;
+
+extension Scatter on Lambertian {
+    #[inline]
+    fn scatter(&self, r_in: Ray, record: &HitRecord, attenuation: &mut Vec3, scattered: &mut Ray, rng: &mut Random) -> bool {
+        let scatter_direction = record.normal::add(Vec3::random_normalize(rng));
+
+        if scatter_direction::near_zero() {
+            scatter_direction = record.normal;
+        }
+
+        *scattered = Ray::initialize(record.p, scatter_direction);
+        *attenuation = self.albedo;
+
+        return true;
+    }
+}
+
+extension Lambertian {
+    
+    #[inline]
+    pub fn new(albedo: Vec3) -> Lambertian {
+        return Lambertian {
+            .albedo = albedo
+        };
+    }
+}
+
+pub struct Metal {
+    albedo: Vec3;
+    fuzz: f64;
+}
+
+extension Copy on Metal;
+
+extension Scatter on Metal {
+    #[inline]
+    fn scatter(&self, r_in: Ray, record: &HitRecord, attenuation: &mut Vec3, scattered: &mut Ray, rng: &mut Random) -> bool {
+        const reflected = Vec3::reflect(r_in::direction()::normalize(), record.normal);
+
+        *scattered = Ray::initialize(record.p, reflected::add(Vec3::random_normalize(rng)::scale(self.fuzz)));
+        *attenuation = self.albedo;
+
+        return scattered::direction()::dot(record.normal) > 0;
+    }
+}
+
+extension Metal {
+    
+    pub fn new(albedo: Vec3, fuzz: f64) -> Metal {
+        return Metal {
+            .albedo = albedo,
+            .fuzz = fuzz
+        };
+    }
+}
+
+pub struct Dielectric {
+    refraction_index: f64;
+}
+
+extension Copy on Dielectric;
+
+extension Scatter on Dielectric {
+    #[inline]
+    fn scatter(&self, r_in: Ray, record: &HitRecord, attenuation: &mut Vec3, scattered: &mut Ray, rng: &mut Random) -> bool {
+        *attenuation = Vec3::new(1.0, 1.0, 1.0);
+
+        const ri = if record.front_face { 
+            1.0 / self.refraction_index; 
+        } else { 
+            self.refraction_index; 
+        };
+
+        const unit_direction = r_in::direction()::normalize();
+
+        const cos_theta = -Math::min(record.normal::dot(unit_direction), 1.0);
+        const sin_theta = Math::sqrt(1.0 - cos_theta * cos_theta);
+
+        const no_refract: bool = (ri * sin_theta) > 1.0;
+
+        let direction = Vec3::zero();
+        if no_refract || Dielectric::reflectance(cos_theta, ri) > rng::random_number() {
+            direction = Vec3::reflect(unit_direction, record.normal);
+        } else {
+            direction = Vec3::refract(unit_direction, record.normal, ri);
+        }
+
+        *scattered = Ray::initialize(record.p, direction);
+
+        return true;
+    }
+}
+
+extension Dielectric {
+    
+    pub fn new(refraction_index: f64) -> Dielectric {
+        return Dielectric {
+            .refraction_index = refraction_index
+        };
+    }
+
+    pub fn reflectance(cosine: f64, refraction_index: f64) -> f64 {
+        let r0 = (1 - refraction_index) / (1 + refraction_index);
+        r0 = r0 * r0;
+
+        return r0 + (1 - r0) * Math::pow(1 - cosine, 5);
+    }
+}
+
+pub struct Material {
+    pub lambertian: Lambertian?;
+    pub metal: Metal?;
+    pub dielectric: Dielectric?;
+}
+
+extension Copy on Material;
+
+extension Scatter on Material {
+    #[inline]
+    fn scatter(&self, r_in: Ray, record: &HitRecord, attenuation: &mut Vec3, scattered: &mut Ray, rng: &mut Random) -> bool {
+        match self.lambertian {
+            None => {} // not confident on this doing anything except
+        } else: material {
+            return material::scatter(r_in, record, attenuation, scattered, rng);
+        }
+
+        match self.metal {
+            None => {}
+        } else: material {
+            return material::scatter(r_in, record, attenuation, scattered, rng);
+        }
+
+        match self.dielectric {
+            None => {}
+        } else: material {
+            return material::scatter(r_in, record, attenuation, scattered, rng);
+        }
+
+        return false;
+    }
+}

@@ -1,0 +1,228 @@
+include vec3::Vec3;
+include color::Color;
+include ray::Ray;
+
+include material::Material;
+include material::HitRecord;
+
+include hit::Hittable;
+include hittables::Hittables;
+
+include sphere::Sphere;
+include interval::Interval;
+
+include math::Math;
+include random::Random; 
+
+pub struct CameraConfig {
+    pub aspect_ratio: f64;
+    pub image_width: usize;
+    pub samples_per_pixel: i32;
+    pub max_depth: i32;
+    pub vfov: f64;
+    pub look_from: Vec3;
+    pub look_at: Vec3;
+    pub vup: Vec3;
+    pub defocus_angle: f64;
+    pub focus_dist: f64;
+}
+
+pub struct Camera {
+    config: CameraConfig;
+
+    image_height: i32;
+    pixel_samples_scale: f64;
+
+    center: Vec3;
+    pixel_00_location: Vec3;
+    pixel_delta_u: Vec3;
+    pixel_delta_v: Vec3;
+
+    u: Vec3;
+    v: Vec3;
+    w: Vec3;
+
+    defocus_disk_u: Vec3;
+    defocus_disk_v: Vec3;
+
+    rng: Random;
+}
+
+extension Camera {
+
+    pub fn new(config: CameraConfig, rng: Random) -> Camera {
+        let camera = Camera {
+            .config = config,
+
+            .image_height = 0,
+            .pixel_samples_scale = 0.0,
+
+            .center = Vec3::zero(),
+            .pixel_00_location = Vec3::zero(),
+            .pixel_delta_u = Vec3::zero(),
+            .pixel_delta_v = Vec3::zero(),
+
+            .u = Vec3::zero(),
+            .v = Vec3::zero(),
+            .w = Vec3::zero(),
+
+            .defocus_disk_u = Vec3::zero(),
+            .defocus_disk_v = Vec3::zero(),
+
+            .rng = rng
+        };
+
+        camera::initialize();
+
+        return camera;
+    }
+    
+    fn initialize(&mut self) -> void {
+        self.image_height = (self.config.image_width as f64 / self.config.aspect_ratio) as i32;
+
+        if self.image_height < 1 {
+            self.image_height = 1;
+        }
+
+        self.pixel_samples_scale = 1.0 / (self.config.samples_per_pixel as f64);
+
+        self.center = self.config.look_from;
+
+        const theta = Math::degrees_to_radians(self.config.vfov);
+        const h = Math::tan(theta / 2.0);
+
+        const viewport_height = 2.0 * h * self.config.focus_dist;
+        const viewport_width = viewport_height * (self.config.image_width as f64 / self.image_height as f64);
+
+        self.w = self.config.look_from::subtract(self.config.look_at)::normalize();
+        self.u = self.config.vup::cross(self.w)::normalize();
+        self.v = self.w::cross(self.u);
+
+        const viewport_u = self.u::scale(viewport_width);
+        const viewport_v = self.v::scale(-viewport_height);
+
+        self.pixel_delta_u = viewport_u::scale(
+            1.0 / self.config.image_width as f64
+        );
+
+        self.pixel_delta_v = viewport_v::scale(
+            1.0 / self.image_height as f64
+        );
+
+        const viewport_upper_left = self.center::subtract(self.w::scale(self.config.focus_dist))
+            ::subtract(viewport_u::scale(0.5))
+            ::subtract(viewport_v::scale(0.5));
+
+        self.pixel_00_location = viewport_upper_left::add(
+            self.pixel_delta_u::add(self.pixel_delta_v)::scale(0.5)
+        );
+
+        const defocus_radius = self.config.focus_dist *
+            Math::tan(Math::degrees_to_radians(self.config.defocus_angle / 2.0));
+
+        self.defocus_disk_u = self.u::scale(defocus_radius);
+        self.defocus_disk_v = self.v::scale(defocus_radius);
+    }
+
+    fn sample_square(&mut self) -> Vec3 {
+        return Vec3::new(
+            self.rng::random_number() - 0.5,
+            self.rng::random_number() - 0.5,
+            0.0
+        );
+    }
+
+    fn get_ray(&mut self, i: i32, j: i32) -> Ray {
+        const offset = self::sample_square();
+
+        const pixel_sample = self.pixel_00_location
+            ::add(self.pixel_delta_u::scale(i as f64 + offset::x()))
+            ::add(self.pixel_delta_v::scale(j as f64 + offset::y()));
+
+        const ray_origin = if self.config.defocus_angle <= 0.0 {
+            self.center;
+        } else {
+            self::defocus_disk_sample();
+        };
+
+        const ray_direction = pixel_sample::subtract(ray_origin);
+
+        return Ray::initialize(ray_origin, ray_direction);
+    }
+
+    fn defocus_disk_sample(&mut self) -> Vec3 {
+        const p = Vec3::random_in_unit_disk(&mut self.rng);
+
+        return self.center
+            ::add(self.defocus_disk_u::scale(p::x()))
+            ::add(self.defocus_disk_v::scale(p::y()));
+    }
+
+    fn ray_color(&mut self, r: Ray, depth: i32, world: &Hittables) -> Vec3 {
+        if depth <= 0 {
+            return Vec3::zero();
+        }
+
+        let record = HitRecord::initialize();
+
+        if world::hit(r, Interval::new(0.001, (1.0 / 0.0)), &mut record) {
+            let scattered = Ray::new(
+                Vec3::zero(), 
+                Vec3::zero()
+            );
+
+            let attenuation = Vec3::zero();
+
+            match record.material {
+                None => {
+                    return Vec3::zero();
+                }
+            } else: material {
+                if material::scatter(r, &record, &mut attenuation, &mut scattered, &mut self.rng) {
+                    return attenuation::multiply(
+                        self::ray_color(scattered, depth - 1, world)
+                    );
+                }
+            }
+
+            return Vec3::zero();
+        }
+
+        const unit_direction: Vec3 = r::direction()::normalize();
+        const a = 0.5 * (unit_direction::y() + 1.0);
+
+        const white = Vec3::new(1.0, 1.0, 1.0);
+        const blue = Vec3::new(0.5, 0.7, 1.0);
+
+        return white::scale(1.0 - a)::add(blue::scale(a));
+    }
+
+    pub fn render(&mut self, world: &Hittables) -> void {
+        println("P3\n{} {}\n255", self.config.image_width, self.image_height);
+
+        for j in 0..self.image_height {
+            eprint("\rscanlines remaining: {} ", self.image_height - j);
+            
+            const start: usize = 0;
+            for i in start..self.config.image_width {
+                let pixel_color = Vec3::zero();
+
+                for _ in 0..self.config.samples_per_pixel {
+                    const r = self::get_ray(i as i32, j);
+
+                    pixel_color = pixel_color::add(
+                        self::ray_color(r, self.config.max_depth, world)
+                    );
+                }
+
+                const averaged_colors = pixel_color::scale(
+                    self.pixel_samples_scale
+                );
+
+                Color::write_color(averaged_colors);
+            }
+        }
+
+        eprintln("\rdone!                       ");
+    }
+}

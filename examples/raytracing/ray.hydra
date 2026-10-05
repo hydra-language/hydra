@@ -1,33 +1,40 @@
+include core::marker::Copy;
+
 include vec3::Vec3;
 
-struct Ray {
-    orig: Vec3;
-    dir: Vec3;
+pub struct Ray {
+    origin: Vec3;
+    direction: Vec3;
+}
 
-    fn new(origin: Vec3, direction: Vec3) -> Ray {
-        return Ray {    
-            .orig = Vec3::zero(),
-            .dir = Vec3::zero()
-        };
-    }
+extension Copy on Ray;
 
-    fn initialize(orig: Vec3, dir: Vec3) -> Ray {
+extension Ray {
+    
+    pub fn new(origin: Vec3, direction: Vec3) -> Ray {
         return Ray {
-            .orig = orig,
-            .dir = dir
+            .origin = Vec3::zero(),
+            .direction = Vec3::zero()
         };
     }
 
-    fn at(self: &const Ray, t: f64) -> Vec3 {
-        let scaled: Vec3 = self.dir::scale(t);
-        return self.orig::add(scaled);
+    fn initialize(origin: Vec3, direction: Vec3) -> Ray {
+        return Ray {
+            .origin = origin,
+            .direction = direction
+        };
+    }
+
+    fn at(&self, t: f64) -> Vec3 {
+        let scaled: Vec3 = self.direction::scale(t);
+        return self.origin::add(scaled);
     }
 
     fn origin(&self) -> Vec3 {
-        return self.orig;
+        return self.origin;
     }
 
     fn direction(&self) -> Vec3 {   
-        return self.dir;
+        return self.direction;
     }
 }

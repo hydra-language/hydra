@@ -1,0 +1,63 @@
+include alloc::vec::Vec;
+
+include vec3::Vec3;
+include ray::Ray;
+
+include interval::Interval;
+include material::HitRecord;
+
+include hit::Hittable;
+include hit::Hit;
+
+pub struct Hittables {
+    objects: Vec<Hittable>;
+}
+
+extension Hittables {
+    
+    pub fn initialize() -> Hittables {
+        return Hittables {
+            .objects = Vec::new(),
+        };
+    }
+
+    pub fn initialize_with_object(object: Hittable) -> Hittables {
+        let list = Hittables::initialize();
+
+        list.objects::push(object);
+
+        return list;
+    }
+
+    pub fn add(&mut self, object: Hittable) -> void {
+        self.objects::push(object);
+    }
+
+    pub fn len(&self) -> usize {
+        return self.objects::len();
+    }
+}
+
+extension Hit on Hittables {
+    #[inline]
+    fn hit(&self, r: Ray, ray_t: Interval, record: &mut HitRecord) -> bool {
+        let temp_record = HitRecord::initialize();
+        let hit_anything: bool = false;
+        let closest_so_far = ray_t.max;
+
+        let i: usize = 0;
+        while i < self.objects::len() {
+            const object = self.objects::get_unchecked(i);
+
+            if object::hit(r, Interval::new(ray_t.min, closest_so_far), &mut temp_record) {
+                hit_anything = true;
+                closest_so_far = temp_record.t;
+                *record = temp_record;
+            }
+
+            i += 1;
+        }
+
+        return hit_anything;
+    }
+}

@@ -1,9 +1,14 @@
-struct Math {
-    const INFINITY: f64 = 1.0 / 0.0;
+pub struct Math;
 
-    fn sqrt(n: f64) -> f64 {
-        if n <= 0.0 { 
-            return 0.0; 
+extension Math {
+
+    pub fn degrees_to_radians(degrees: f64) -> f64 {
+        return degrees * 3.1415926 / 180.0;
+    }
+
+    pub fn sqrt(n: f64) -> f64 {
+        if n <= 0.0 {
+            return 0.0;
         }
 
         let x: f64 = n;
@@ -13,11 +18,11 @@ struct Math {
         while true {
             let diff: f64 = x - y;
 
-            if (diff < 0.0) {
-                diff = 0.0 - diff; 
+            if diff < 0.0 {
+                diff = 0.0 - diff;
             }
 
-            if (diff < e) { break; }
+            break if diff < e;
 
             x = (x + y) / 2.0;
             y = n / x;
@@ -26,7 +31,50 @@ struct Math {
         return x;
     }
 
-    fn min(a: f64, b: f64) -> f64 {
+    pub fn tan(x: f64) -> f64 {
+        const PI: f64 = 3.1415926;
+        const HALF_PI: f64 = 1.57079632;
+
+        let angle = x;
+        if angle < 0.0 {
+            angle = -angle;
+        }
+
+        while angle >= PI {
+            angle -= PI;
+        }
+
+        const is_inverted: bool = if angle > HALF_PI {
+            angle = PI - angle;
+            true;
+        } else {
+            false;
+        };
+
+        const x2 = angle * angle;
+        const num = angle * (105.0 - 10.0 * x2);
+        const den = 105.0 - 45.0 * x2 + x2 * x2;
+
+        const result = num / den;
+
+        if is_inverted {
+            return -result;
+        } else {
+            return result;
+        }
+    }
+
+    pub fn pow(base: f64, exponent: i32) -> f64 {
+        let result = 1.0;
+
+        for _ in 0..exponent {
+            result *= base;
+        }
+
+        return result;
+    }
+
+    pub fn min(a: f64, b: f64) -> f64 {
         if a < b {
             return a;
         } else {
@@ -34,7 +82,7 @@ struct Math {
         }
     }
 
-    fn abs(a: f64) -> f64 {
+    pub fn abs(a: f64) -> f64 {
         if a < 0.0 {
             return 0.0 - a;
         }

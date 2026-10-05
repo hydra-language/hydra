@@ -1,18 +1,29 @@
 include vec3::Vec3;
-include math::Math;
 
-struct Sphere {
+include ray::Ray;
+include random::Random;
+
+include interval::Interval;
+
+include math::Math;
+include material::Material;
+include material::HitRecord;
+
+include hit::Hit;
+
+include core::marker::Copy;
+
+pub struct Sphere {
     center: Vec3;
     radius: f64;
+    material: &Material;
+}
 
-    fn initialize(c: Vec3, r: f64) -> Sphere {
-        return Sphere {
-            .center = c,
-            .radius = r
-        };
-    }
+extension Copy on Sphere;
 
-    fn hit(&const self, r: Ray, ray_t: Interval) -> f64 {
+extension Hit on Sphere {
+    #[inline]
+    fn hit(&self, r: Ray, ray_t: Interval, record: &mut HitRecord) -> bool {
         let oc: Vec3 = r::origin()::subtract(self.center);
 
         let a = r::direction()::length_squared();
@@ -22,20 +33,38 @@ struct Sphere {
         let discriminant = half_b * half_b - a * c;
 
         if discriminant < 0.0 {
-            return -1.0;
+            return false;
         }
 
         let sqrtd = Math::sqrt(discriminant);
 
         let root = (0.0 - half_b - sqrtd) / a;
         if !ray_t::surrounds(root) {
-            root = (0.0 - half_b - sqrtd) / a;
+            root = (0.0 - half_b + sqrtd) / a;
 
             if !ray_t::surrounds(root) {
-                return -1.0;
+                return false;
             }
         }
 
-        return root;
+        record.t = root;
+        record.p = r::at(record.t);
+
+        const outward_normal = record.p::subtract(self.center)::scale(1.0 / self.radius);
+        record::set_face_normal(r, outward_normal);
+        record.material = self.material;
+
+        return true;
+    }
+}
+
+extension Sphere {
+    
+    pub fn initialize(c: Vec3, r: f64, material: &Material) -> Sphere {
+        return Sphere {
+            .center = c,
+            .radius = r,
+            .material = material
+        };
     }
 }

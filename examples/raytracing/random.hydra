@@ -1,0 +1,35 @@
+include core::marker::Copy;
+
+pub struct Random {
+    state: i64;
+}
+
+extension Copy on Random;
+
+extension Random {
+
+    pub fn new(seed: i64) -> Random {
+        let state = seed % 2147483647;
+
+        if state <= 0 {
+            state += 2147483646;
+        }
+
+        return Random {
+            .state = state
+        };
+    }
+
+    pub fn next(&mut self) -> i64 {
+        self.state = (self.state * 16807) % 2147483647;
+        return self.state;
+    }
+
+    pub fn random_number(&mut self) -> f64 {
+        return (self::next() as f64) / 2147483647.0;
+    }
+
+    pub fn random_range(&mut self, min: f64, max: f64) -> f64 {
+        return min + (max - min) * self::random_number();
+    }
+}

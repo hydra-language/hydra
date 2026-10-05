@@ -1,0 +1,187 @@
+include alloc::vec::Vec;
+
+include vec3::Vec3;
+include sphere::Sphere;
+
+include hit::Hittable;
+include hittables::Hittables;
+
+include material::Material;
+include material::Lambertian;
+include material::Metal;
+include material::Dielectric;
+
+include camera::Camera;
+include camera::CameraConfig;
+
+include random::Random;
+
+fn main() -> void {
+    let rng = Random::new(1);
+    let world = Hittables::initialize();
+    let materials: Vec<Material> = Vec::with_capacity(500);
+
+    materials::push(Material {
+        .lambertian = Lambertian::new(Vec3::new(0.5, 0.5, 0.5)),
+        .metal = None,
+        .dielectric = None
+    });
+
+    const ground_material = materials::last();
+
+    world::add(Hittable {
+        .sphere = Sphere::initialize(
+            Vec3::new(0.0, -1000.0, 0.0),
+            1000.0,
+            ground_material
+        )
+    });
+
+    let a: i32 = -11;
+    while a < 11 {
+        let b: i32 = -11;
+
+        while b < 11 {
+            const choose_mat = rng::random_number();
+
+            const center = Vec3::new(
+                a as f64 + 0.9 * rng::random_number(),
+                0.2,
+                b as f64 + 0.9 * rng::random_number()
+            );
+
+            if center::subtract(Vec3::new(4.0, 0.2, 0.0))::length() > 0.9 {
+                if choose_mat < 0.8 {
+                    const albedo = Vec3::random(&mut rng)::multiply(
+                        Vec3::random(&mut rng)
+                    );
+
+                    materials::push(Material {
+                        .lambertian = Lambertian::new(albedo),
+                        .metal = None,
+                        .dielectric = None
+                    });
+
+                    const sphere_material = materials::last();
+
+                    world::add(Hittable {
+                        .sphere = Sphere::initialize(
+                            center,
+                            0.2,
+                            sphere_material
+                        )
+                    });
+                } else if choose_mat < 0.95 {
+                    const albedo = Vec3::random_within_range(&mut rng, 0.5, 1.0);
+                    const fuzz = rng::random_range(0.0, 0.5);
+
+                    materials::push(Material {
+                        .lambertian = None,
+                        .metal = Metal::new(albedo, fuzz),
+                        .dielectric = None
+                    });
+
+                    const sphere_material = materials::last();
+
+                    world::add(Hittable {
+                        .sphere = Sphere::initialize(
+                            center,
+                            0.2,
+                            sphere_material
+                        )
+                    });
+                } else {
+                    materials::push(Material {
+                        .lambertian = None,
+                        .metal = None,
+                        .dielectric = Dielectric::new(1.5)
+                    });
+
+                    const sphere_material = materials::last();
+
+                    world::add(Hittable {
+                        .sphere = Sphere::initialize(
+                            center,
+                            0.2,
+                            sphere_material
+                        )
+                    });
+                }
+            }
+
+            b += 1;
+        }
+
+        a += 1;
+    }
+
+    materials::push(Material {
+        .lambertian = None,
+        .metal = None,
+        .dielectric = Dielectric::new(1.5)
+    });
+
+    const mat1 = materials::last();
+
+    world::add(Hittable {
+        .sphere = Sphere::initialize(
+            Vec3::new(0.0, 1.0, 0.0),
+            1.0,
+            mat1
+        )
+    });
+
+    materials::push(Material {
+        .lambertian = Lambertian::new(
+            Vec3::new(0.4, 0.2, 0.1)
+        ),
+        .metal = None,
+        .dielectric = None
+    });
+
+    const mat2 = materials::last();
+
+    world::add(Hittable {
+        .sphere = Sphere::initialize(
+            Vec3::new(-4.0, 1.0, 0.0),
+            1.0,
+            mat2
+        )
+    });
+
+    materials::push(Material {
+        .lambertian = None,
+        .metal = Metal::new(
+            Vec3::new(0.7, 0.6, 0.5),
+            0.0
+        ),
+        .dielectric = None
+    });
+
+    const mat3 = materials::last();
+
+    world::add(Hittable {
+        .sphere = Sphere::initialize(
+            Vec3::new(4.0, 1.0, 0.0),
+            1.0,
+            mat3
+        )
+    });
+
+    const config = CameraConfig {
+        .aspect_ratio = 16.0 / 9.0,
+        .image_width = 600,
+        .samples_per_pixel = 100,
+        .max_depth = 100,
+        .vfov = 20.0,
+        .look_from = Vec3::new(13.0, 2.0, 3.0),
+        .look_at = Vec3::zero(),
+        .vup = Vec3::new(0.0, 1.0, 0.0),
+        .defocus_angle = 0.6,
+        .focus_dist = 10.0
+    };
+
+    let camera = Camera::new(config, rng);
+
+    camera::render(&world);
+}
