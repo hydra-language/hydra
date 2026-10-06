@@ -166,60 +166,95 @@ impl Optimizer {
     fn propagate_copies(function: &mut MIRFunction) -> bool {
         let mut assign_counts = HashMap::new();
         let mut copy_values = HashMap::new();
+        let mut address_taken = HashSet::new();
 
-        // 1. Tally up assignments and record pure copies
         for block in &function.basic_blocks {
             for stmt in &block.statements {
-                if let StatementKind::Assign(place, rval) = &stmt.kind {
-                    assign_counts.entry(place.local).and_modify(|c| *c += 1).or_insert(1);
-                    
-                    if place.projection.is_empty() {
-                        if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rval {
-                            if src.projection.is_empty() {
-                                copy_values.insert(place.local, src.local);
+                match &stmt.kind {
+                    StatementKind::Assign(place, rval) => {
+                        *assign_counts.entry(place.local).or_insert(0) += 1;
+
+                        if place.projection.is_empty() {
+                            if let Rvalue::Use(Operand::Copy(src)) = rval {
+                                if src.projection.is_empty() {
+                                    copy_values.insert(place.local, src.local);
+                                }
                             }
                         }
+
+                        match rval {
+                            Rvalue::Ref(_, borrowed) |
+                            Rvalue::SliceRef {
+                                place: borrowed,
+                                ..
+                            } => {
+                                address_taken.insert(borrowed.local);
+                            }
+
+                            _ => {}
+                        }
                     }
+
+                    StatementKind::Drop(_) => {}
                 }
             }
-        }
 
-        // 2. Safety Check: Only propagate if BOTH variables are assigned exactly once.
-        // (Function arguments start at 0 assignments in the body, so src_count <= 1 is safe).
-        let safe_copies: HashMap<LocalID, LocalID> = copy_values.into_iter().filter(|(dest, src)| {
-            if dest == src {
-                return false;
+            if let Terminator::Call { destination, .. } = &block.terminator {
+                *assign_counts.entry(destination.local).or_insert(0) += 1;
             }
-
-            let dest_count = assign_counts.get(dest).copied().unwrap_or(0);
-            let src_count = assign_counts.get(src).copied().unwrap_or(0);
-
-            dest_count == 1 && src_count <= 1
-        }).collect();
-
-        if safe_copies.is_empty() { 
-            return false; 
         }
-        
+
+        let safe_copies: HashMap<LocalID, LocalID> = copy_values
+            .into_iter()
+            .filter(|(dest, src)| {
+                if dest == src {
+                    return false;
+                }
+
+                if address_taken.contains(dest) || address_taken.contains(src) {
+                    return false;
+                }
+
+                let dest_count = assign_counts.get(dest).copied().unwrap_or(0);
+                let src_count = assign_counts.get(src).copied().unwrap_or(0);
+
+                dest_count == 1 && src_count <= 1
+            })
+            .collect();
+
+        if safe_copies.is_empty() {
+            return false;
+        }
+
         let mut changed = false;
 
-        // 3. Replace Uses
         for block in &mut function.basic_blocks {
             for stmt in &mut block.statements {
                 if let StatementKind::Assign(_, rval) = &mut stmt.kind {
-                    changed |= Self::replace_locals_in_rvalue(rval, &safe_copies);
+                    changed |= Self::replace_locals_in_rvalue(
+                        rval,
+                        &safe_copies,
+                    );
                 }
             }
 
             match &mut block.terminator {
                 Terminator::SwitchInt { discriminant, .. } => {
-                    changed |= Self::replace_local(discriminant, &safe_copies);
+                    changed |= Self::replace_local(
+                        discriminant,
+                        &safe_copies,
+                    );
                 }
+
                 Terminator::Call { args, .. } => {
                     for arg in args {
-                        changed |= Self::replace_local(arg, &safe_copies);
+                        changed |= Self::replace_local(
+                            arg,
+                            &safe_copies,
+                        );
                     }
                 }
+
                 _ => {}
             }
         }
@@ -541,21 +576,12 @@ impl Optimizer {
                     match &stmt.kind {
                         StatementKind::Assign(place, rval) => {
                             Self::count_reads_in_rvalue(rval, &mut read_counts);
-
-                            for proj in &place.projection {
-                                if let ProjectionElem::Index(idx_local) = proj {
-                                    *read_counts.entry(*idx_local).or_insert(0) += 1;
-                                }
-                            }
+                            Self::count_projection_reads(place, &mut read_counts);
                         }
+
                         StatementKind::Drop(place) => {
                             *read_counts.entry(place.local).or_insert(0) += 1;
-
-                            for proj in &place.projection {
-                                if let ProjectionElem::Index(idx_local) = proj {
-                                    *read_counts.entry(*idx_local).or_insert(0) += 1;
-                                }
-                            }
+                            Self::count_projection_reads(place, &mut read_counts);
                         }
                     }
                 }
@@ -564,6 +590,7 @@ impl Optimizer {
                     Terminator::SwitchInt { discriminant, .. } => {
                         Self::count_reads(discriminant, &mut read_counts);
                     }
+
                     Terminator::Call {
                         args,
                         destination,
@@ -573,12 +600,9 @@ impl Optimizer {
                             Self::count_reads(arg, &mut read_counts);
                         }
 
-                        for proj in &destination.projection {
-                            if let ProjectionElem::Index(idx_local) = proj {
-                                *read_counts.entry(*idx_local).or_insert(0) += 1;
-                            }
-                        }
+                        Self::count_projection_reads(destination, &mut read_counts);
                     }
+
                     _ => {}
                 }
             }
@@ -629,6 +653,65 @@ impl Optimizer {
         }
 
         overall_changed
+    }
+
+    fn count_projection_reads(place: &Place, counts: &mut HashMap<LocalID, usize>) {
+        if !place.projection.is_empty() {
+            *counts.entry(place.local).or_insert(0) += 1;
+        }
+
+        for projection in &place.projection {
+            if let ProjectionElem::Index(index_local) = projection {
+                *counts.entry(*index_local).or_insert(0) += 1;
+            }
+        }
+    }
+
+    fn count_reads_in_rvalue(rval: &Rvalue, counts: &mut HashMap<LocalID, usize>) {
+        match rval {
+            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(_, op, _) => {
+                Self::count_reads(op, counts);
+            }
+
+            Rvalue::BinaryOp(_, lhs, rhs) => {
+                Self::count_reads(lhs, counts);
+                Self::count_reads(rhs, counts);
+            }
+
+            Rvalue::Aggregate(_, ops) => {
+                for op in ops {
+                    Self::count_reads(op, counts);
+                }
+            }
+
+            Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. } => {
+                *counts.entry(place.local).or_insert(0) += 1;
+
+                for projection in &place.projection {
+                    if let ProjectionElem::Index(index_local) = projection {
+                        *counts.entry(*index_local).or_insert(0) += 1;
+                    }
+                }
+            }
+
+            Rvalue::Intrinsic { args, .. } => {
+                for op in args {
+                    Self::count_reads(op, counts);
+                }
+            }
+        }
+    }
+
+    fn count_reads(op: &Operand, counts: &mut HashMap<LocalID, usize>) {
+        if let Operand::Copy(place) | Operand::Move(place) = op {
+            *counts.entry(place.local).or_insert(0) += 1;
+
+            for projection in &place.projection {
+                if let ProjectionElem::Index(index_local) = projection {
+                    *counts.entry(*index_local).or_insert(0) += 1;
+                }
+            }
+        }
     }
 
     fn simplify_branches(function: &mut MIRFunction) -> bool {
@@ -873,28 +956,37 @@ impl Optimizer {
 
     fn replace_locals_in_rvalue(rval: &mut Rvalue, safe_copies: &HashMap<LocalID, LocalID>) -> bool {
         let mut changed = false;
+
         match rval {
             Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(_, op, _) => {
-                changed |= Self::replace_local(op, safe_copies);
-            }
-            Rvalue::BinaryOp(_, lhs, rhs) => {
-                changed |= Self::replace_local(lhs, safe_copies);
-                changed |= Self::replace_local(rhs, safe_copies);
-            }
-            Rvalue::Aggregate(_, ops) => {
-                for op in ops { changed |= Self::replace_local(op, safe_copies); }
+                changed |= Self::replace_local(
+                    op,
+                    safe_copies,
+                );
             }
 
-            Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. } => {
-                if place.projection.is_empty() {
-                    if let Some(&src_local) = safe_copies.get(&place.local) {
-                        if place.local != src_local {
-                            place.local = src_local;
-                            changed = true;
-                        }
-                    }
+            Rvalue::BinaryOp(_, lhs, rhs) => {
+                changed |= Self::replace_local(
+                    lhs,
+                    safe_copies,
+                );
+
+                changed |= Self::replace_local(
+                    rhs,
+                    safe_copies,
+                );
+            }
+
+            Rvalue::Aggregate(_, ops) => {
+                for op in ops {
+                    changed |= Self::replace_local(
+                        op,
+                        safe_copies,
+                    );
                 }
             }
+
+            Rvalue::Ref(_, _) | Rvalue::SliceRef { .. } => {}
 
             Rvalue::Intrinsic { args, .. } => {
                 for op in args {
@@ -905,6 +997,7 @@ impl Optimizer {
                 }
             }
         }
+
         changed
     }
 
@@ -923,52 +1016,6 @@ impl Optimizer {
         }
 
         false
-    }
-
-    fn count_reads_in_rvalue(rval: &Rvalue, counts: &mut HashMap<LocalID, usize>) {
-        match rval {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(_, op, _) => {
-                Self::count_reads(op, counts);
-            }
-            Rvalue::BinaryOp(_, lhs, rhs) => {
-                Self::count_reads(lhs, counts);
-                Self::count_reads(rhs, counts);
-            }
-            Rvalue::Aggregate(_, ops) => {
-                for op in ops { Self::count_reads(op, counts); }
-            }
-
-            Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. } => {
-                *counts
-                    .entry(place.local)
-                    .or_insert(0) += 1;
-
-                for proj in &place.projection {
-                    if let ProjectionElem::Index(idx_local) = proj {
-                        *counts
-                            .entry(*idx_local)
-                            .or_insert(0) += 1;
-                    }
-                }
-            }
-
-            Rvalue::Intrinsic { args, .. } => {
-                for op in args {
-                    Self::count_reads(op, counts);
-                }
-            }
-        }
-    }
-
-    fn count_reads(op: &Operand, counts: &mut HashMap<LocalID, usize>) {
-        if let Operand::Copy(place) | Operand::Move(place) = op {
-            *counts.entry(place.local).or_insert(0) += 1;
-            for proj in &place.projection {
-                if let ProjectionElem::Index(idx_local) = proj {
-                    *counts.entry(*idx_local).or_insert(0) += 1;
-                }
-            }
-        }
     }
 
     fn remap_locals_and_blocks(blocks: &mut [crate::BasicBlock], local_offset: usize, block_offset: usize,destination_local: LocalID) 

@@ -459,7 +459,11 @@ impl<'a> MIRBuilder<'a> {
 
                 self.current_block = success_block;
 
-                Operand::Copy(destination)
+                if self.is_copy_type(&expr.ty) {
+                    Operand::Copy(destination)
+                } else {
+                    Operand::Move(destination)
+                }
             }
 
             HIRExprKind::IntrinsicCall { callee, kind, args, type_args } => {
@@ -496,7 +500,11 @@ impl<'a> MIRBuilder<'a> {
                     span: expr.span,
                 });
 
-                Operand::Copy(target_place)
+                if self.is_copy_type(&expr.ty) {
+                    Operand::Copy(target_place)
+                } else {
+                    Operand::Move(target_place)
+                }
             }
 
             HIRExprKind::If { cond, then_block, else_block } => {
@@ -694,7 +702,11 @@ impl<'a> MIRBuilder<'a> {
                     span: expr.span
                 });
 
-                Operand::Copy(target_place)
+                if self.is_copy_type(&expr.ty) {
+                    Operand::Copy(target_place)
+                } else {
+                    Operand::Move(target_place)
+                }
             }
 
             HIRExprKind::SliceInit { elements } => {
@@ -1016,7 +1028,11 @@ impl<'a> MIRBuilder<'a> {
                     span: expr.span
                 });
 
-                Operand::Copy(target_place)
+                if self.is_copy_type(&expr.ty) {
+                    Operand::Copy(target_place)
+                } else {
+                    Operand::Move(target_place)
+                }
             }
 
             HIRExprKind::FieldAccess { object, field_index } => {
