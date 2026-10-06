@@ -7,6 +7,8 @@ include core::ptr;
 include core::ptr::NonNull;
 
 include core::ops::Drop;
+include core::ops::Deref;
+include core::ops::DerefMut;
 
 pub struct Box<T> {
     ptr: NonNull<T>;
@@ -21,6 +23,18 @@ extension<T> Drop on Box<T> {
         mem::drop(value);
 
         Allocator::dealloc(pointer as *mut u8, layout);
+    }
+}
+
+extension<T> Deref<T> on Box<T> {
+    fn deref(&self) -> &T {
+        return &*self.ptr::as_const_ptr();
+    }
+}
+
+extension<T> DerefMut<T> on Box<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        return &mut *self.ptr::as_ptr();
     }
 }
 

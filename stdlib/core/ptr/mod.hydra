@@ -4,7 +4,9 @@ include core::ptr::raw::{
     offset,
     null,
     null_mut,
-    is_null
+    is_null,
+    slice_from_raw_parts,
+    slice_from_raw_parts_mut
 };
 
 include core::ptr::non_null::NonNull;

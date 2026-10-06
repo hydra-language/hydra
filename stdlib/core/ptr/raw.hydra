@@ -1,5 +1,7 @@
 include core::intrinsics;
 
+include core::mem::Uninit;
+
 #[inline]
 pub fn read<T>(src: *const T) -> T {
     return intrinsics::__ptr_read::<T>(src);
@@ -28,4 +30,42 @@ pub fn null_mut<T>() -> *mut T {
 #[inline]
 pub fn is_null<T>(ptr: *const T) -> bool {
     return intrinsics::__ptr_is_null::<T>(ptr);
+}
+
+#[inline]
+pub fn slice_from_raw_parts<T>(data: *const T, len: usize) -> &[T] {
+    let slice = Uninit::<&[T]>::new();
+
+    const slice_ptr = slice::as_mut_ptr();
+    const data_slot = slice_ptr as *mut *const T;
+    const len_slot = offset::<usize>(
+        data_slot as *mut usize,
+        1
+    );
+
+    write::<*const T>(data_slot, data);
+    write::<usize>(len_slot, len);
+
+    return read::<&[T]>(
+        slice_ptr as *const &[T]
+    );
+}
+
+#[inline]
+pub fn slice_from_raw_parts_mut<T>(data: *mut T, len: usize) -> &mut [T] {
+    let slice = Uninit::<&mut [T]>::new();
+
+    const slice_ptr = slice::as_mut_ptr();
+    const data_slot = slice_ptr as *mut *mut T;
+    const len_slot = offset::<usize>(
+        data_slot as *mut usize,
+        1
+    );
+
+    write::<*mut T>(data_slot, data);
+    write::<usize>(len_slot, len);
+
+    return read::<&mut [T]>(
+        slice_ptr as *const &mut [T]
+    );
 }

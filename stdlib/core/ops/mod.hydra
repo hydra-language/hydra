@@ -1,1 +1,3 @@
 include core::ops::drop::Drop;
+include core::ops::deref::Deref;
+include core::ops::deref::DerefMut;

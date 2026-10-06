@@ -5,6 +5,8 @@ include core::ptr;
 include core::ptr::NonNull;
 
 include core::ops::Drop;
+include core::ops::Deref;
+include core::ops::DerefMut;
 
 include core::mem;
 
@@ -90,6 +92,20 @@ extension<T> Display on Vec<T> where T : Display {
         }
 
         formatter::write("]");
+    }
+}
+
+extension<T> Deref<[T]> on Vec<T> {
+    #[inline]
+    fn deref(&self) -> &[T] {
+        return Vec::slice_from_raw_parts(self.ptr::as_const_ptr(), self.len);
+    }
+}
+
+extension<T> DerefMut<[T]> on Vec<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [T] {
+        return Vec::slice_from_raw_parts_mut(self.ptr::as_const_ptr(), self.len);
     }
 }
 
@@ -281,6 +297,16 @@ extension<T> Vec<T> {
         );
 
         return &*element_ptr;
+    }
+
+    #[inline]
+    pub fn slice_from_raw_parts(p: *const T, len: usize) -> &[T] {
+        return ptr::slice_from_raw_parts::<T>(p, len);
+    }
+
+    #[inline]
+    pub fn slice_from_raw_parts_mut(p: *const T, len: usize) -> &mut [T] {
+        return ptr::slice_from_raw_parts_mut::<T>(p, len);
     }
 
     #[inline]
