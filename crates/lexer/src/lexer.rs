@@ -265,7 +265,7 @@ impl Lexer {
             match self.peek() {
                 'x' | 'X' => {
                     self.advance(); // consume 'x'
-                    
+
                     while self.peek().is_ascii_hexdigit() || self.peek() == '_' {
                         self.advance();
                     }
@@ -280,12 +280,13 @@ impl Lexer {
 
                 'b' => {
                     self.advance(); // consume 'b'
-                   
+
                     while self.peek() == '0' || self.peek() == '1' || self.peek() == '_' {
                         self.advance();
                     }
 
                     let lexeme = &self.input[self.start_offset()..self.current_offset()];
+
                     let value = u64::from_str_radix(&lexeme[2..].replace('_', ""), 2)
                         .map_err(|_| self.error("L003", format!("invalid binary literal: '{}'", lexeme)))? as i64;
 
@@ -296,28 +297,54 @@ impl Lexer {
             }
         }
 
-        // --- Decimal / Float path ---
+        // Decimal / float path
         while self.peek().is_ascii_digit() || self.peek() == '_' {
             self.advance();
         }
 
-        // After consuming the whole number part, check if it's a float
-        if self.peek() == '.' && self.peek_next().is_ascii_digit() {
-            self.advance(); // Consume the '.'
+        let mut is_float = false;
 
-            while self.peek().is_ascii_digit() {
+        // Fractional component
+        if self.peek() == '.' && self.peek_next().is_ascii_digit() {
+            is_float = true;
+            self.advance(); // consume '.'
+
+            while self.peek().is_ascii_digit() || self.peek() == '_' {
+                self.advance();
+            }
+        }
+
+        // Exponent component
+        if self.peek() == 'e' || self.peek() == 'E' {
+            is_float = true;
+            self.advance(); // consume 'e' / 'E'
+
+            if self.peek() == '+' || self.peek() == '-' {
                 self.advance();
             }
 
-            let lexeme = &self.input[self.start_offset()..self.current_offset()];
-            let value: f64 = lexeme.replace('_', "").parse()
+            if !self.peek().is_ascii_digit() {
+                let lexeme = &self.input[self.start_offset()..self.current_offset()];
+
+                return Err(self.error("L004", format!("invalid float literal: '{}'", lexeme)));
+            }
+
+            while self.peek().is_ascii_digit() || self.peek() == '_' {
+                self.advance();
+            }
+        }
+
+        let lexeme = &self.input[self.start_offset()..self.current_offset()];
+
+        if is_float {
+            let value: f64 = lexeme.replace('_', "")
+                .parse()
                 .map_err(|_| self.error("L004", format!("invalid float literal: '{}'", lexeme)))?;
 
             Ok(Some(TokenType::FloatLiteral(value)))
         } else {
-            let lexeme = &self.input[self.start_offset()..self.current_offset()];
-
-            let value = lexeme.replace('_', "").parse::<u64>()
+            let value = lexeme.replace('_', "")
+                .parse::<u64>()
                 .map_err(|_| self.error("L005", format!("invalid integer literal: '{}'", lexeme)))? as i64;
 
             Ok(Some(TokenType::IntLiteral(value)))
