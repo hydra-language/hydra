@@ -244,11 +244,13 @@ impl Parser {
     fn parse_trait(&mut self, is_pub: bool, _annotations: Vec<Annotation>) -> Result<Item, HydraError> {
         let id = self.next_node_id();
         let name = self.consume_identifier("expected trait name")?.clone();
+        let generic_params = self.parse_generic_params()?;
 
         if self.match_token(TokenType::Semicolon) {
             return Ok(Item::Trait(TraitDecl {
                 id,
                 name,
+                generic_params,
                 methods: Vec::new(),
                 is_pub,
             }));
@@ -271,7 +273,13 @@ impl Parser {
 
         self.consume(TokenType::RightBrace, "expected '}' after trait body")?;
 
-        Ok(Item::Trait(TraitDecl { id, name, methods, is_pub }))
+        Ok(Item::Trait(TraitDecl { 
+            id, 
+            name, 
+            generic_params,
+            methods, 
+            is_pub 
+        }))
     }
 
     fn parse_extension(&mut self, _annotations: Vec<Annotation>) -> Result<Item, HydraError> {

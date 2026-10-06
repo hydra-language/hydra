@@ -635,7 +635,15 @@ impl<'a> Monomorphizer<'a> {
 
             let concrete_target = Type::STRUCT(concrete_ref.clone());
 
-            if self.context.get_exact_trait_impl(trait_impl.trait_def_id, &concrete_target).is_some() {
+            let concrete_trait_args = trait_impl.trait_args.iter().map(|arg| {
+                self.resolve_type(
+                    &arg.substitute(&substitutions),
+                    &substitutions,
+                )
+            }).collect::<Vec<_>>();
+
+            if self.context.get_exact_trait_impl_with_args(trait_impl.trait_def_id, &concrete_trait_args, &concrete_target).is_some()
+            {
                 continue;
             }
 
@@ -674,6 +682,7 @@ impl<'a> Monomorphizer<'a> {
 
             self.context.register_trait_impl(TraitImpl {
                 trait_def_id: trait_impl.trait_def_id,
+                trait_args: concrete_trait_args,
                 target_type: concrete_target,
                 bounds: concrete_bounds,
                 methods,

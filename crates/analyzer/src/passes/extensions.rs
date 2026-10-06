@@ -4,7 +4,7 @@ use errors::error::HydraError;
 use ir::{
     context::{DefID, DefKind, TraitBound, TraitImpl}, types::Type as IRType,
 };
-use crate::traits;
+use crate::{traits, utils};
 use parser::{ast::Type as ASTType, ExtensionDecl, Item};
 
 use crate::Analyzer;
@@ -50,8 +50,8 @@ impl<'ctx> Analyzer<'ctx> {
 
                 // trait extensions must NOT enter the inherent-method registry
                 if let Some(target_trait) = &decl.target_trait {
-                    let trait_def_id = match self.resolve_trait_def_id(target_trait) {
-                        Ok(def_id) => def_id,
+                    let (trait_def_id, trait_args) = match self.resolve_trait_application(target_trait) {
+                        Ok(application) => application,
 
                         Err(error) => {
                             self.errors.push(error);
@@ -79,6 +79,7 @@ impl<'ctx> Analyzer<'ctx> {
                     self.populate_trait_impl(
                         decl,
                         trait_def_id,
+                        trait_args,
                         target_ty,
                         bounds,
                     );
@@ -104,7 +105,8 @@ impl<'ctx> Analyzer<'ctx> {
         }
     }
 
-    fn populate_trait_impl(&mut self, decl: &ExtensionDecl, trait_def_id: DefID, target_ty: IRType, bounds: Vec<TraitBound>) {
+    fn populate_trait_impl(&mut self, decl: &ExtensionDecl, trait_def_id: DefID, trait_args: Vec<IRType>, target_ty: IRType, bounds: Vec<TraitBound>) 
+    {
         let trait_info = self.context.get_def(trait_def_id).cloned().unwrap();
 
         let trait_name = if trait_info.absolute_path.is_empty() {
@@ -113,25 +115,33 @@ impl<'ctx> Analyzer<'ctx> {
             trait_info.absolute_path.join("::")
         };
 
-        if self.context.get_exact_trait_impl(trait_def_id, &target_ty).is_some() {
+        if self.context.get_exact_trait_impl_with_args(trait_def_id, &trait_args, &target_ty).is_some() {
             self.errors.push(self.error(
                 "S023",
-                format!("duplicate implementation of trait `{trait_name}` for `{target_ty}`"),
-                crate::utils::get_type_span(&decl.target_type),
+                format!("duplicate implementation of trait `{trait_name}` for `{target_ty}`"), 
+                utils::get_type_span(&decl.target_type)
             ));
 
             return;
         }
 
-        let DefKind::Trait { methods: trait_method_ids, } = trait_info.kind else {
+        let DefKind::Trait { methods: trait_method_ids, generic_params: trait_generic_params, } = trait_info.kind else {
             return;
         };
+
+        let trait_generic_substitutions: HashMap<String, IRType> = trait_generic_params.iter()
+            .cloned()
+            .zip(trait_args.iter().cloned())
+            .collect();
 
         let mut implementation_methods = HashMap::new();
 
         for method in &decl.methods {
             if let Some(def_id) = self.name_resolver.get_resolution(method.id) {
-                implementation_methods.insert(method.name.lexeme.clone(), def_id);
+                implementation_methods.insert(
+                    method.name.lexeme.clone(),
+                    def_id,
+                );
             }
         }
 
@@ -144,23 +154,30 @@ impl<'ctx> Analyzer<'ctx> {
             };
 
             let Some(&impl_method_id) = implementation_methods.get(&trait_method.name) else {
-                self.errors.push(
-                    self.error(
-                        "S021",
-                        format!(
-                            "implementation of trait `{trait_name}` for `{target_ty}` is missing method `{}`",
-                            trait_method.name,
-                        ),
-                        crate::utils::get_type_span(&decl.target_type)
-                    ).with_note(format!("`{}` is required by this trait", trait_method.name), trait_method.span)
-                );
+                self.errors.push(self.error(
+                    "S021",
+                    format!(
+                        "implementation of trait `{trait_name}` for `{target_ty}` is missing method `{}`",
+                        trait_method.name,
+                    ),
+                    utils::get_type_span(&decl.target_type),
+                ).with_note(format!("`{}` is required by this trait", trait_method.name), trait_method.span));
 
                 continue;
             };
 
-            self.validate_trait_method_signature(&trait_name, trait_method_id, impl_method_id, &target_ty);
+            self.validate_trait_method_signature(
+                &trait_name,
+                trait_method_id,
+                impl_method_id,
+                &target_ty,
+                &trait_generic_substitutions,
+            );
 
-            registered_methods.insert(trait_method.name, impl_method_id);
+            registered_methods.insert(
+                trait_method.name,
+                impl_method_id,
+            );
         }
 
         if self.errors.len() != error_count {
@@ -169,78 +186,81 @@ impl<'ctx> Analyzer<'ctx> {
 
         self.context.register_trait_impl(TraitImpl {
             trait_def_id,
+            trait_args,
             target_type: target_ty,
             bounds,
             methods: registered_methods,
         });
     }
 
-    fn validate_trait_method_signature(&mut self, trait_name: &str, trait_method_id: DefID, impl_method_id: DefID, target_ty: &IRType) 
-    {
+    fn validate_trait_method_signature(
+        &mut self,
+        trait_name: &str,
+        trait_method_id: DefID,
+        impl_method_id: DefID,
+        target_ty: &IRType,
+        trait_generic_substitutions: &HashMap<String, IRType>,
+    ) {
         let trait_method = self.context.get_def(trait_method_id).cloned().unwrap();
         let impl_method = self.context.get_def(impl_method_id).cloned().unwrap();
 
         let DefKind::Function {
             params: trait_params,
             return_type: trait_return,
-            generic_params: trait_generics,
+            generic_params: trait_function_generics,
             owner_generic_count: trait_owner_generic_count,
             ..
-        } = &trait_method.kind
-        else {
+        } = &trait_method.kind else 
+        {
             return;
         };
 
         let DefKind::Function {
             params: impl_params,
             return_type: impl_return,
-            generic_params: impl_generics,
+            generic_params: impl_function_generics,
             owner_generic_count: impl_owner_generic_count,
             ..
-        } = &impl_method.kind
-        else {
+        } = &impl_method.kind else 
+        {
             return;
         };
 
-        let trait_method_generics = &trait_generics[*trait_owner_generic_count..];
-        let impl_method_generics = &impl_generics[*impl_owner_generic_count..];
+        let trait_method_generics = &trait_function_generics[*trait_owner_generic_count..];
+        let impl_method_generics = &impl_function_generics[*impl_owner_generic_count..];
 
         if trait_method_generics.len() != impl_method_generics.len() {
-            self.errors.push(
-                self.error(
-                    "S022",
-                    format!(
-                        "method `{}::{}` has an incompatible generic parameter count",
-                        trait_name,
-                        trait_method.name,
-                    ),
-                    impl_method.span,
-                ).with_note("trait method declared here", trait_method.span)
-            );
+            self.errors.push(self.error(
+                "S022",
+                format!(
+                    "method `{}::{}` has an incompatible generic parameter count",
+                    trait_name,
+                    trait_method.name,
+                ),
+                impl_method.span
+            ).with_note("trait method declared here", trait_method.span));
 
             return;
         }
 
-        let method_generic_substitutions: HashMap<String, String> = trait_method_generics
-            .iter()
+        let method_generic_substitutions: HashMap<String, String> = trait_method_generics.iter()
             .cloned()
             .zip(impl_method_generics.iter().cloned())
             .collect();
 
-        let expected_params: Vec<IRType> = trait_params
-            .iter()
-            .map(|ty| {
-                Self::substitute_trait_contract_type(
-                    ty,
-                    target_ty,
-                    &method_generic_substitutions,
-                )
-            })
-            .collect();
+        let expected_params: Vec<IRType> = trait_params.iter().map(|ty| {
+            Self::substitute_trait_contract_type(
+                ty,
+                target_ty,
+                trait_generic_substitutions,
+                &method_generic_substitutions,
+            )
+        }).collect();
 
         let expected_return = Self::substitute_trait_contract_type(
             trait_return,
             target_ty,
+            trait_generic_substitutions,
             &method_generic_substitutions,
         );
 
@@ -258,16 +278,16 @@ impl<'ctx> Analyzer<'ctx> {
             impl_return,
         );
 
-        self.errors.push(
-            self.error(
-                "S022",
-                format!("method `{}::{}` has an incompatible signature", trait_name,
-                    trait_method.name,
-                ),
-                impl_method.span,
-            ).with_note("trait method declared here", trait_method.span).with_help(
-                format!("expected `{expected_signature}`, found `{found_signature}`"
-            )),
+        self.errors.push(self.error(
+            "S022",
+            format!(
+                "method `{}::{}` has an incompatible signature",
+                trait_name,
+                trait_method.name,
+            ),
+            impl_method.span
+        ).with_note("trait method declared here", trait_method.span)
+            .with_help(format!("expected `{expected_signature}`, found `{found_signature}`"))
         );
     }
 
@@ -465,12 +485,22 @@ impl<'ctx> Analyzer<'ctx> {
         self.context.get_def(trait_def_id).is_some_and(|info| info.absolute_path.join("::") == traits::DROP_TRAIT_PATH )
     }
 
-    fn substitute_trait_contract_type(ty: &IRType, self_ty: &IRType, method_generics: &HashMap<String, String>) -> IRType {
+    fn substitute_trait_contract_type(
+        ty: &IRType,
+        self_ty: &IRType,
+        trait_generics: &HashMap<String, IRType>,
+        method_generics: &HashMap<String, String>,
+    ) -> IRType 
+    {
         match ty {
-            IRType::GENERIC(name) if name == "Self" => self_ty.clone(),
+            IRType::GENERIC(name) if name == "Self" => {
+                self_ty.clone()
+            }
 
             IRType::GENERIC(name) => {
-                if let Some(mapped) = method_generics.get(name) {
+                if let Some(concrete) = trait_generics.get(name) {
+                    concrete.clone()
+                } else if let Some(mapped) = method_generics.get(name) {
                     IRType::GENERIC(mapped.clone())
                 } else {
                     ty.clone()
@@ -481,6 +511,7 @@ impl<'ctx> Analyzer<'ctx> {
                 Box::new(Self::substitute_trait_contract_type(
                     inner,
                     self_ty,
+                    trait_generics,
                     method_generics,
                 )),
                 *len,
@@ -490,6 +521,7 @@ impl<'ctx> Analyzer<'ctx> {
                 Self::substitute_trait_contract_type(
                     inner,
                     self_ty,
+                    trait_generics,
                     method_generics,
                 ),
             )),
@@ -498,6 +530,7 @@ impl<'ctx> Analyzer<'ctx> {
                 Self::substitute_trait_contract_type(
                     inner,
                     self_ty,
+                    trait_generics,
                     method_generics,
                 ),
             )),
@@ -506,6 +539,7 @@ impl<'ctx> Analyzer<'ctx> {
                 Self::substitute_trait_contract_type(
                     inner,
                     self_ty,
+                    trait_generics,
                     method_generics,
                 ),
             )),
@@ -514,6 +548,7 @@ impl<'ctx> Analyzer<'ctx> {
                 Self::substitute_trait_contract_type(
                     inner,
                     self_ty,
+                    trait_generics,
                     method_generics,
                 ),
             )),
@@ -522,6 +557,7 @@ impl<'ctx> Analyzer<'ctx> {
                 Self::substitute_trait_contract_type(
                     inner,
                     self_ty,
+                    trait_generics,
                     method_generics,
                 ),
             )),
@@ -530,6 +566,16 @@ impl<'ctx> Analyzer<'ctx> {
                 Self::substitute_trait_contract_type(
                     inner,
                     self_ty,
+                    trait_generics,
+                    method_generics,
+                ),
+            )),
+
+            IRType::OPTIONAL(inner) => IRType::OPTIONAL(Box::new(
+                Self::substitute_trait_contract_type(
+                    inner,
+                    self_ty,
+                    trait_generics,
                     method_generics,
                 ),
             )),
@@ -541,6 +587,7 @@ impl<'ctx> Analyzer<'ctx> {
                         Self::substitute_trait_contract_type(
                             arg,
                             self_ty,
+                            trait_generics,
                             method_generics,
                         )
                     })
@@ -564,7 +611,21 @@ impl<'ctx> Analyzer<'ctx> {
     pub(crate) fn resolve_trait_def_id(&self, trait_ty: &ASTType) -> Result<DefID, HydraError> {
         let span = crate::utils::get_type_span(trait_ty);
 
-        let ASTType::Path { id, .. } = trait_ty else {
+        let path = match trait_ty {
+            ASTType::Path { .. } => trait_ty,
+
+            ASTType::Generic { base, .. } => base.as_ref(),
+
+            _ => {
+                return Err(self.error(
+                    "S020",
+                    "expected a trait name after `extension`",
+                    span,
+                ));
+            }
+        };
+
+        let ASTType::Path { id, .. } = path else {
             return Err(self.error(
                 "S020",
                 "expected a trait name after `extension`",
@@ -576,7 +637,7 @@ impl<'ctx> Analyzer<'ctx> {
             return Err(self.error(
                 "S002",
                 "missing definition for trait implementation",
-                span
+                span,
             ));
         };
 
@@ -594,9 +655,52 @@ impl<'ctx> Analyzer<'ctx> {
                 format!("`{}` is not a trait", info.name),
                 span,
             ));
-        };
+        }
 
         Ok(def_id)
+    }
+
+    fn resolve_trait_application(&mut self, trait_ty: &ASTType) -> Result<(DefID, Vec<IRType>), HydraError> {
+        let trait_def_id = self.resolve_trait_def_id(trait_ty)?;
+        let span = crate::utils::get_type_span(trait_ty);
+
+        let generic_args = match trait_ty {
+            ASTType::Path { .. } => Vec::new(),
+
+            ASTType::Generic { args, .. } => {
+                let mut lowered = Vec::with_capacity(args.len());
+
+                for arg in args {
+                    lowered.push(self.lower_type(arg)?);
+                }
+
+                lowered
+            }
+
+            _ => unreachable!(),
+        };
+
+        let trait_info = self.context.get_def(trait_def_id).expect("resolved trait should exist");
+
+        let DefKind::Trait { generic_params, .. } = &trait_info.kind else {
+            unreachable!();
+        };
+
+        if generic_args.len() != generic_params.len() {
+            return Err(self.error(
+                "S020",
+                format!(
+                    "trait `{}` expects {} generic argument{}, found {}",
+                    trait_info.name,
+                    generic_params.len(),
+                    if generic_params.len() == 1 { "" } else { "s" },
+                    generic_args.len(),
+                ),
+                span,
+            ));
+        }
+
+        Ok((trait_def_id, generic_args))
     }
 
     pub(crate) fn extension_parent_path(&self, target_ty: &IRType, target_trait: Option<&ASTType>) -> Result<String, HydraError> {

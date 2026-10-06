@@ -83,6 +83,11 @@ impl<'ctx> Analyzer<'ctx> {
                         // this contract.
                         //
                         let previous_self_type = self.current_self_type.replace(IRType::GENERIC("Self".to_string()));
+
+                        let trait_generic_params: Vec<String> = decl.generic_params
+                            .iter()
+                            .map(|param| param.name.lexeme.clone())
+                            .collect();
                         
                         let mut method_ids = Vec::new();
                         for method in &decl.methods {
@@ -119,7 +124,7 @@ impl<'ctx> Analyzer<'ctx> {
                             let mut method_path = trait_path.clone();
                             method_path.push(method.name.lexeme.clone());
 
-                            self.populate_one_function_signature(method, method_id, method_path, &[], &[]);
+                            self.populate_one_function_signature(method, method_id, method_path, &trait_generic_params, &[]);
 
                             method_ids.push(method_id);
                         }
@@ -131,6 +136,7 @@ impl<'ctx> Analyzer<'ctx> {
                         };
 
                         trait_info.kind = DefKind::Trait {
+                            generic_params: decl.generic_params.iter().map(|param| param.name.lexeme.clone()).collect(),
                             methods: method_ids
                         };
 

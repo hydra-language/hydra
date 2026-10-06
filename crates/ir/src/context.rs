@@ -55,6 +55,7 @@ pub enum DefKind {
     },
 
     Trait {
+        generic_params: Vec<String>,
         methods: Vec<DefID>,
     },
 
@@ -82,6 +83,7 @@ pub struct SymbolInfo {
 #[derive(Debug, Clone)]
 pub struct TraitImpl {
     pub trait_def_id: DefID,
+    pub trait_args: Vec<Type>,
     pub target_type: Type,
     pub bounds: Vec<TraitBound>,
     pub methods: HashMap<String, DefID>,
@@ -174,6 +176,15 @@ impl HIRContext {
             .find(|impl_| impl_.trait_def_id == trait_def_id && &impl_.target_type == target_type)
     }
 
+    pub fn get_exact_trait_impl_with_args(&self, trait_def_id: DefID, trait_args: &[Type], target_type: &Type) -> Option<&TraitImpl> 
+    {
+        self.trait_impls.iter().find(|trait_impl| {
+            trait_impl.trait_def_id == trait_def_id && 
+            trait_impl.trait_args == trait_args && 
+            &trait_impl.target_type == target_type
+        })
+    }
+
     pub fn find_trait_by_path(&self, path: &str) -> Option<DefID> {
         self.definitions.iter().find_map(|(def_id, info)| {
             if info.absolute_path.join("::") == path && matches!(info.kind, DefKind::Trait { .. }) {
@@ -193,7 +204,7 @@ impl HIRContext {
     pub fn get_trait_method(&self, trait_def_id: DefID, method_name: &str) -> Option<DefID> {
         let trait_info = self.get_def(trait_def_id)?;
 
-        let DefKind::Trait { methods } = &trait_info.kind else {
+        let DefKind::Trait { methods, .. } = &trait_info.kind else {
             return None;
         };
 

@@ -147,6 +147,7 @@ impl<'ctx> Resolver<'ctx> {
                             span: decl.name.span,
                             absolute_path: full_path.clone(),
                             kind: DefKind::Trait {
+                                generic_params: decl.generic_params.iter().map(|param| param.name.lexeme.clone()).collect(),
                                 methods: vec![],
                             },
                             is_pub: decl.is_pub
@@ -394,6 +395,21 @@ impl<'ctx> Resolver<'ctx> {
 
                 if let Some(&trait_def_id) = self.global_symbols.get(&full_path) {
                     self.current_scope.define(Namespace::Type, "Self".to_string(), trait_def_id).ok();
+                }
+
+                for param in &decl.generic_params {
+                    let info = SymbolInfo {
+                        name: param.name.lexeme.to_string(),
+                        span: param.name.span,
+                        absolute_path: vec![],
+                        kind: DefKind::GenericParam,
+                        is_pub: false,
+                    };
+
+                    let def_id = self.context.insert_def(info);
+
+                    self.current_scope.define(Namespace::Type, param.name.lexeme.to_string(), def_id).ok();
+                    self.name_resolver.record_resolution(param.id, def_id);
                 }
                 
                 for method in &decl.methods {

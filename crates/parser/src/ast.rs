@@ -248,6 +248,7 @@ pub struct StructDecl {
 pub struct TraitDecl {
     pub id: NodeID,
     pub name: Token,
+    pub generic_params: Vec<GenericParam>,
     pub methods: Vec<FunctionDecl>,
     pub is_pub: bool,
 }
