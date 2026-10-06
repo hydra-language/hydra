@@ -3,6 +3,35 @@ include core::intrinsics;
 include core::fmt::Display;
 include core::fmt::Formatter;
 
+extension<T> Display on [T] where T : Display {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        formatter::write("[");
+
+        for i in 0..self::len() {
+            if i > 0 {
+                formatter::write(", ");
+            }
+
+            const value = &self[i];
+            value::fmt(formatter);
+        }
+
+        formatter::write("]");
+    }
+}
+
+/* extension<T> Display on &[T] {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        formatter::write(*self);
+    }
+}
+
+extension<T> Display on &mut [T] {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        formatter::write(*self);
+    }
+} */
+
 // blanket extension on slice types
 extension<T> [T] {
     
@@ -17,6 +46,11 @@ extension<T> [T] {
             return None;
         }
 
+        return self::first_unchecked();
+    }
+
+    #[inline]
+    pub fn first_unchecked(&self) -> &T {
         return &self[0];
     }
 
@@ -26,17 +60,16 @@ extension<T> [T] {
             return None;
         }
 
+        return self::last_unchecked();
+    }
+
+    #[inline]
+    pub fn last_unchecked(&self) -> &T {
         return &self[self::len() - 1];
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
         return self::len() == 0;
-    }
-}
-
-extension Display on &[u8] {
-    fn fmt(&self, formatter: &mut Formatter) -> void {
-        formatter::write(*self);
     }
 }
