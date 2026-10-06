@@ -113,98 +113,8 @@ impl<'ctx> Analyzer<'ctx> {
             }
 
             ASTExpr::ArrayAccess { array, index, .. } => {
-                let mut arr = self.lower_expr_with_type(array, None)?;
-
-                let idx_expr = self.lower_expr_with_type(
-                    index,
-                    Some(&IRType::USIZE),
-                )?;
-
-                if !self.is_int_type(&idx_expr.ty) {
-                    return Err(self.error(
-                        "S001",
-                        format!("index must be an integer, found {}", idx_expr.ty),
-                        span
-                    ))
-                }
-
-                //
-                // indexing auto-dereferences references:
-                //
-                //     &[T]     -> [T]
-                //     &mut [T] -> [T]
-                //
-                // do this in HIR rather than merely inspecting the inner type,
-                // because MIR needs the Deref projection too.
-                //
-                loop {
-                    let inner = match &arr.ty {
-                        IRType::REF(inner) | IRType::CONST_REF(inner) => {
-                            Some(inner.as_ref().clone())
-                        }
-
-                        _ => None,
-                    };
-
-                    let Some(inner_ty) = inner else {
-                        break;
-                    };
-
-                    arr = HIRExpr {
-                        kind: HIRExprKind::Dereference {
-                            target: Box::new(arr),
-                        },
-                        ty: inner_ty,
-                        span,
-                    };
-                }
-
-                match arr.ty.clone() {
-                    IRType::ARRAY(inner, size) => {
-                        if let HIRExprKind::IntLiteral(idx_val) = &idx_expr.kind {
-                            if *idx_val < 0 || *idx_val >= size as i64 {
-                                return Err(self.error(
-                                    "S008",
-                                    format!(
-                                        "index out of bounds: len is {} but index is {}",
-                                        size,
-                                        idx_val
-                                    ),
-                                    span,
-                                ));
-                            }
-                        }
-
-                        Ok(HIRExpr {
-                            kind: HIRExprKind::ArrayAccess {
-                                array: Box::new(arr),
-                                index: Box::new(idx_expr),
-                            },
-                            ty: *inner,
-                            span,
-                        })
-                    }
-
-                    IRType::INFERRED_ARRAY(inner) | IRType::SLICE(inner) => {
-                        Ok(HIRExpr {
-                            kind: HIRExprKind::ArrayAccess {
-                                array: Box::new(arr),
-                                index: Box::new(idx_expr),
-                            },
-                            ty: *inner,
-                            span,
-                        })
-                    }
-
-                    _ => Err(self.error(
-                        "S003",
-                        format!(
-                            "type '{}' cannot be indexed",
-                            arr.ty
-                        ),
-                        span,
-                    )),
-                }
+                let array = self.lower_expr_with_type(array, None)?;
+                self.lower_array_access_from_base(array, index, span)
             }
 
             ASTExpr::StructInitializer { name, fields, .. } => {
@@ -362,6 +272,93 @@ impl<'ctx> Analyzer<'ctx> {
             }
 
             _ => unreachable!("lower_aggregate_expr() called with non-aggregate expression")
+        }
+    }
+
+    pub(crate) fn lower_array_access_from_base(&mut self, mut array: HIRExpr, index: &ASTExpr, span: Span) -> Result<HIRExpr, HydraError> 
+    {
+        let index_expr = self.lower_expr_with_type(index, Some(&IRType::USIZE))?;
+
+        if !self.is_int_type(&index_expr.ty) {
+            return Err(self.error(
+                "S001",
+                format!(
+                    "index must be an integer, found {}",
+                    index_expr.ty,
+                ),
+                span,
+            ));
+        }
+
+        loop {
+            let inner = match &array.ty {
+                IRType::REF(inner) | IRType::CONST_REF(inner) => {
+                    Some(inner.as_ref().clone())
+                }
+
+                _ => None,
+            };
+
+            let Some(inner_ty) = inner else {
+                break;
+            };
+
+            array = HIRExpr {
+                kind: HIRExprKind::Dereference {
+                    target: Box::new(array),
+                },
+                ty: inner_ty,
+                span,
+            };
+        }
+
+        match array.ty.clone() {
+            IRType::ARRAY(inner, size) => {
+                if let HIRExprKind::IntLiteral(index_value) = &index_expr.kind {
+                    if *index_value < 0 || *index_value >= size as i64 {
+                        return Err(self.error(
+                            "S008",
+                            format!(
+                                "index out of bounds: len is {} but index is {}",
+                                size,
+                                index_value,
+                            ),
+                            span,
+                        ));
+                    }
+                }
+
+                Ok(HIRExpr {
+                    kind: HIRExprKind::ArrayAccess {
+                        array: Box::new(array),
+                        index: Box::new(index_expr),
+                    },
+                    ty: *inner,
+                    span,
+                })
+            }
+
+            IRType::INFERRED_ARRAY(inner) | IRType::SLICE(inner) => {
+                Ok(HIRExpr {
+                    kind: HIRExprKind::ArrayAccess {
+                        array: Box::new(array),
+                        index: Box::new(index_expr),
+                    },
+                    ty: *inner,
+                    span,
+                })
+            }
+
+            _ => {
+                Err(self.error(
+                    "S003",
+                    format!(
+                        "type '{}' cannot be indexed",
+                        array.ty,
+                    ),
+                    span,
+                ))
+            }
         }
     }
 }

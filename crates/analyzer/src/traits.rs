@@ -10,6 +10,8 @@ use crate::Analyzer;
 pub const DROP_TRAIT_PATH: &str = "core::ops::drop::Drop";
 pub const COPY_TRAIT_PATH: &str = "core::marker::copy::Copy";
 pub const DISPLAY_TRAIT_PATH: &str = "core::fmt::display::Display";
+pub const DEREF_TRAIT_PATH: &str = "core::ops::deref::Deref";
+pub const DEREF_MUT_TRAIT_PATH: &str = "core::ops::deref::DerefMut";
 
 impl<'ctx> Analyzer<'ctx> {
 
@@ -43,11 +45,7 @@ impl<'ctx> Analyzer<'ctx> {
         for bound in bounds {
             let target_type = bound.target_type.substitute(substitutions);
 
-            if self.context.type_implements_trait(
-                &target_type,
-                bound.trait_def_id,
-                &self.current_trait_bounds,
-            ) {
+            if self.context.type_implements_trait(&target_type, bound.trait_def_id, &self.current_trait_bounds) {
                 continue;
             }
 
@@ -55,20 +53,14 @@ impl<'ctx> Analyzer<'ctx> {
 
             let mut error = self.error(
                 "S028",
-                format!(
-                    "type `{target_type}` does not implement `{trait_name}`"
-                ),
+                format!("type `{target_type}` does not implement `{trait_name}`"),
                 span,
             );
 
             if target_type.contains_generic() {
-                error = error.with_help(format!(
-                    "add a `where {target_type}: {trait_name}` bound"
-                ));
+                error = error.with_help(format!("add a `where {target_type}: {trait_name}` bound"));
             } else {
-                error = error.with_help(format!(
-                    "implement `{trait_name}` for `{target_type}`"
-                ));
+                error = error.with_help(format!("implement `{trait_name}` for `{target_type}`"));
             }
 
             return Err(error);
