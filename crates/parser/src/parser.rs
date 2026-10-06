@@ -469,16 +469,34 @@ impl Parser {
             self.parse_break_stmt()
         } else if self.match_token(TokenType::CONTINUE) {
             self.parse_continue_stmt()
+        } else if self.match_token(TokenType::IF) {
+            let expr = self.parse_if()?;
+            self.match_token(TokenType::Semicolon);
+
+            Ok(Stmt::Expr(Box::new(expr)))
+        } else if self.match_token(TokenType::WHILE) {
+            let expr = self.parse_while()?;
+            self.match_token(TokenType::Semicolon);
+
+            Ok(Stmt::Expr(Box::new(expr)))
+        } else if self.match_token(TokenType::FOR) {
+            let expr = self.parse_for()?;
+            self.match_token(TokenType::Semicolon);
+
+            Ok(Stmt::Expr(Box::new(expr)))
+        } else if self.match_token(TokenType::FOREACH) {
+            let expr = self.parse_foreach()?;
+            self.match_token(TokenType::Semicolon);
+
+            Ok(Stmt::Expr(Box::new(expr)))
+        } else if self.match_token(TokenType::MATCH) {
+            let expr = self.parse_match()?;
+            self.match_token(TokenType::Semicolon);
+
+            Ok(Stmt::Expr(Box::new(expr)))
         } else {
             let expr = self.parse_expression()?;
-
-            let is_block_expr = matches!(expr, Expr::If { .. } | Expr::While { .. } | Expr::For { .. } | Expr::ForEach { .. } | Expr::Match { .. });
-
-            if is_block_expr {
-                self.match_token(TokenType::Semicolon);
-            } else {
-                self.consume(TokenType::Semicolon, "';' after expression")?;
-            }
+            self.consume(TokenType::Semicolon, "';' after expression")?;
 
             Ok(Stmt::Expr(Box::new(expr)))
         }
