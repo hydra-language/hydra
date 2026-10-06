@@ -30,7 +30,9 @@ impl Optimizer {
         let mut changed = true;
         let mut iterations = 0;
 
-        changed |= Self::inline_functions(program);
+        if level >= OptimizationLevel::O3 {
+            changed |= Self::inline_functions(program);
+        }
 
         while changed && iterations < 20 {
             changed = false;
