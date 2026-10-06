@@ -20,21 +20,12 @@ use parser::module::{
     SourceMap,
 };
 
-use inkwell::{OptimizationLevel, context::Context};
+use inkwell::{OptimizationLevel, context::Context, targets::TargetMachine};
 
 use crate::{
-    emit,
-    error::DriverError,
-    linker,
-    options::{
-        CompileMode,
-        CompilerOptions,
-        EmitKind,
-        OptLevel,
-    },
-    session::Session,
-    sysroot::Sysroot,
-    style::{GREEN, RESET}
+    emit, error::DriverError, linker, options::{
+        CompileMode, CompilerOptions, EmitKind, OptLevel, TargetMode,
+    }, session::Session, style::{GREEN, RESET}, sysroot::Sysroot
 };
 
 pub struct Compiler {
@@ -390,6 +381,10 @@ impl Compiler {
         let module_name = self.session.options.module_name();
         let llvm_context = Context::create();
 
+        let (cpu, features) = llvm_target(
+            self.session.options.target,
+        );
+
         let timer = self.session.timings.start(
             "LLVM codegen"
         );
@@ -398,11 +393,11 @@ impl Compiler {
             &llvm_context,
             &context,
             &module_name,
+            cpu,
+            features
         );
 
-        codegen
-            .generate(&mir_program)
-            .map_err(DriverError::message)?;
+        codegen.generate(&mir_program).map_err(DriverError::message)?;
 
         self.session.timings.finish(timer);
 
@@ -490,9 +485,7 @@ impl Compiler {
             "object emission"
         );
 
-        CodeGen::emit_object(
-            &codegen.module,
-            &codegen.triple,
+        codegen.emit_object(
             optimization_level,
             &object,
         );
@@ -544,6 +537,21 @@ fn llvm_opt_level(level: OptLevel) -> OptimizationLevel {
         OptLevel::O1 => OptimizationLevel::Less,
         OptLevel::O2 => OptimizationLevel::Default,
         OptLevel::O3 => OptimizationLevel::Aggressive,
+    }
+}
+
+fn llvm_target(target: TargetMode) -> (String, String) {
+    match target {
+        TargetMode::Generic => {
+            ("generic".to_string(), String::new())
+        }
+
+        TargetMode::Native => {
+            (
+                TargetMachine::get_host_cpu_name().to_string(),
+                TargetMachine::get_host_cpu_features().to_string(),
+            )
+        }
     }
 }
 

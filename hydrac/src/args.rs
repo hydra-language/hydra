@@ -8,7 +8,26 @@ use driver::{
     CompilerOptions,
     EmitKind,
     OptLevel,
+    options::TargetMode,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TargetArg {
+    #[value(name = "generic")]
+    Generic,
+
+    #[value(name = "native")]
+    Native,
+}
+
+impl From<TargetArg> for TargetMode {
+    fn from(target: TargetArg) -> Self {
+        match target {
+            TargetArg::Generic => Self::Generic,
+            TargetArg::Native => Self::Native,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EmitStage {
@@ -100,6 +119,14 @@ pub struct Cli {
     pub opt_level: Option<u8>,
 
     #[arg(
+        long,
+        value_enum,
+        value_name = "TARGET",
+        help = "select code generation target (generic or native)"
+    )]
+    pub target: Option<TargetArg>,
+
+    #[arg(
         short,
         long,
         value_name = "OUTPUT",
@@ -138,8 +165,10 @@ pub struct Cli {
 
 impl Cli {
 
-    pub fn into_options(self) -> Option<CompilerOptions> {
-        let input = self.input?;
+    pub fn into_options(self) -> Result<Option<CompilerOptions>, String> {
+        let Some(input) = self.input else {
+            return Ok(None);
+        };
 
         let opt_level = if self.release {
             OptLevel::O3
@@ -160,8 +189,9 @@ impl Cli {
         };
 
         let linker = Cli::resolve_linker(self.linker, env::var("HYDRA_LINKER").ok());
+        let target = Cli::resolve_target(self.target, env::var("HYDRA_TARGET").ok())?;
 
-        Some(CompilerOptions {
+        Ok(Some(CompilerOptions {
             input,
             output: self.output,
             sysroot: self.sysroot,
@@ -169,12 +199,32 @@ impl Cli {
             emit: self.emit.into_iter().map(EmitKind::from).collect(),
             mode,
             opt_level,
+            target,
             time_passes: self.time_passes,
             verbosity: self.verbose
-        })
+        }))
     }
 
     pub(crate) fn resolve_linker(cli: Option<String>, environment: Option<String>) -> Option<String> {
         cli.or_else(|| environment.filter(|linker| !linker.is_empty()))
+    }
+
+    fn resolve_target(cli: Option<TargetArg>, environment: Option<String>) -> Result<TargetMode, String> {
+        if let Some(target) = cli {
+            return Ok(target.into());
+        }
+
+        let Some(environment) = environment.filter(|target| !target.is_empty()) else {
+            return Ok(TargetMode::Generic);
+        };
+
+        let target = <TargetArg as ValueEnum>::from_str(&environment, true).map_err(|_| {
+            format!(
+                "invalid HYDRA_TARGET `{}`; expected `generic` or `native`",
+                environment,
+            )
+        })?;
+
+        Ok(target.into())
     }
 }

@@ -12,7 +12,7 @@ use driver::Compiler;
 fn main() {
     let cli = Cli::parse();
 
-    let Some(options) = cli.into_options() else {
+    let Ok(Some(options)) = cli.into_options() else {
         Cli::command().print_help().unwrap();
         println!();
 

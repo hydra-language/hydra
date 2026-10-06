@@ -38,18 +38,25 @@ pub struct CodeGen<'c> {
     
     pub target_data: TargetData,
     pub triple: TargetTriple,
+    pub cpu: String,
+    pub features: String,
 }
 
 impl<'c> CodeGen<'c> {
 
-    pub fn new(context: &'c Context, hir_context: &'c HIRContext, module_name: &str) -> Self {
+    pub fn new(context: &'c Context, hir_context: &'c HIRContext, module_name: &str, cpu: String, features: String) -> Self {
         Target::initialize_native(&InitializationConfig::default()).unwrap();
 
         let triple = TargetMachine::get_default_triple();
         let target = Target::from_triple(&triple).unwrap();
+
         let machine = target.create_target_machine(
-            &triple, "generic", "", OptimizationLevel::None,
-            RelocMode::PIC, CodeModel::Default
+            &triple,
+            &cpu,
+            &features,
+            OptimizationLevel::None,
+            RelocMode::PIC,
+            CodeModel::Default,
         ).unwrap();
 
         let target_data = machine.get_target_data();
@@ -69,7 +76,9 @@ impl<'c> CodeGen<'c> {
             blocks: HashMap::new(),
             locals: HashMap::new(),
             target_data,
-            triple
+            triple,
+            cpu,
+            features,
         }
     }
 
@@ -640,19 +649,18 @@ impl<'c> CodeGen<'c> {
         machine.write_to_file(module, FileType::Assembly, path).unwrap();
     }
 
-    pub fn emit_object(module: &Module, triple: &TargetTriple, opt: OptimizationLevel, path: &Path) {
-        Target::initialize_native(&InitializationConfig::default()).unwrap();
+    pub fn emit_object(&self, opt: OptimizationLevel, path: &Path) {
+        let target = Target::from_triple(&self.triple).unwrap();
 
-        let target = Target::from_triple(triple).unwrap();
         let machine = target.create_target_machine(
-            triple,
-            "generic",
-            "",
+            &self.triple,
+            &self.cpu,
+            &self.features,
             opt,
             RelocMode::PIC,
-            CodeModel::Default
+            CodeModel::Default,
         ).unwrap();
 
-        machine.write_to_file(module, FileType::Object, path).unwrap();
+        machine.write_to_file(&self.module, FileType::Object, path).unwrap();
     }
 }

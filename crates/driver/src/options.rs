@@ -27,6 +27,12 @@ pub enum OptLevel {
     O3,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetMode {
+    Generic,
+    Native,
+}
+
 impl OptLevel {
     pub fn from_u8(level: u8) -> Option<Self> {
         match level {
@@ -56,6 +62,7 @@ pub struct CompilerOptions {
     pub emit: Vec<EmitKind>,
     pub mode: CompileMode,
     pub opt_level: OptLevel,
+    pub target: TargetMode,
     pub time_passes: bool,
     pub verbosity: u8,
 }
