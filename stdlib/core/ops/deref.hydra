@@ -1,0 +1,7 @@
+pub trait Deref<Target> {
+    fn deref(&self) -> &Target;
+}
+
+pub trait DerefMut<Target> {
+    fn deref_mut(&mut self) -> &mut Target;
+}
