@@ -39,6 +39,37 @@ impl<'a> MIRBuilder<'a> {
         }
     }
 
+    fn function_ref(&self, def_id: DefID) -> FunctionRef {
+        let info = self.context.get_def(def_id).unwrap_or_else(|| panic!("ICE: function definition not found for {}", def_id));
+
+        let symbol = self.context.get_symbol_name(def_id).unwrap_or_else(|| panic!(
+                "ICE: backend symbol not found for `{}`",
+                self.context.get_display_name(def_id).unwrap_or(&info.name),
+            )).to_string();
+
+        FunctionRef {
+            def_id,
+            symbol,
+            display_symbol: self.context.get_display_name(def_id).map(str::to_string),
+        }
+    }
+
+    fn intrinsic_ref(&self, def_id: DefID) -> FunctionRef {
+        let info = self.context.get_def(def_id).unwrap_or_else(|| {
+            panic!("ICE: intrinsic definition not found for {}", def_id)
+        });
+
+        let display_symbol = self.context.get_display_name(def_id).map(str::to_string).or_else(|| {
+            (!info.absolute_path.is_empty()).then(|| info.absolute_path.join("::"))
+        });
+
+        FunctionRef {
+            def_id,
+            symbol: info.name.clone(),
+            display_symbol,
+        }
+    }
+
     /// creates a new local variable (temporary or named) and returns its ID
     fn new_local(&mut self, ty: Type, is_mutable: bool, debug_def_id: Option<DefID>) -> LocalID {
         let id = LocalID(self.locals.len());
@@ -430,13 +461,6 @@ impl<'a> MIRBuilder<'a> {
             }
 
             HIRExprKind::Call { callee, args, .. } => {
-                let info = self.context.get_def(*callee).expect("ICE: function definition not found");
-                let symbol = if info.absolute_path.is_empty() {
-                    info.name.clone()
-                } else {
-                    info.absolute_path.join("::")
-                };
-
                 let mut lowered_args = Vec::new();
                 for arg in args {
                     lowered_args.push(self.lower_expr_to_operand(arg));
@@ -445,13 +469,10 @@ impl<'a> MIRBuilder<'a> {
                 let temp_local = self.new_local(expr.ty.clone(), false, None);
                 let destination = Place { local: temp_local, projection: vec![] };
                 let success_block = self.new_block();
+                let callee_ref = self.function_ref(*callee);
 
                 self.terminate_block(Terminator::Call {
-                    callee: FunctionRef {
-                        def_id: *callee,
-                        symbol,
-                        display_symbol: self.context.get_display_name(*callee).map(str::to_string),
-                    },
+                    callee: callee_ref,
                     args: lowered_args,
                     destination: destination.clone(),
                     target: success_block,
@@ -475,23 +496,13 @@ impl<'a> MIRBuilder<'a> {
                     projection: vec![],
                 };
 
-                let symbol = self.context.get_def(*callee).map(|info| {
-                    if info.absolute_path.is_empty() {
-                        info.name.clone()
-                    } else {
-                        info.absolute_path.join("::")
-                    }
-                }).unwrap_or_else(|| format!("{}", callee));
+                let callee_ref = self.intrinsic_ref(*callee);
 
                 self.push_statement(Statement {
                     kind: StatementKind::Assign(
                         target_place.clone(),
                         Rvalue::Intrinsic {
-                            callee: FunctionRef {
-                                def_id: *callee,
-                                symbol,
-                                display_symbol: self.context.get_display_name(*callee).map(str::to_string),
-                            },
+                            callee: callee_ref,
                             kind: *kind,
                             type_args: type_args.clone(),
                             args: lowered_args,

@@ -44,6 +44,7 @@ pub enum DefKind {
         // inherited from the extension owner
         owner_generic_count: usize,
         
+        is_method: bool,
         trait_bounds: Vec<TraitBound>,
         intrinsic: Option<IntrinsicKind>,
     },
@@ -96,6 +97,7 @@ pub struct HIRContext {
     next_def_id: usize,
     pub trait_impls: Vec<TraitImpl>,
     pub display_names: HashMap<DefID, String>,
+    pub symbol_names: HashMap<DefID, String>,
 }
 
 impl HIRContext {
@@ -168,6 +170,14 @@ impl HIRContext {
 
     pub fn get_display_name(&self, def_id: DefID) -> Option<&str> {
         self.display_names.get(&def_id).map(String::as_str)
+    }
+
+    pub fn set_symbol_name(&mut self, def_id: DefID, name: String) {
+        self.symbol_names.insert(def_id, name);
+    }
+
+    pub fn get_symbol_name(&self, def_id: DefID) -> Option<&str> {
+        self.symbol_names.get(&def_id).map(String::as_str)
     }
 
     pub fn get_exact_trait_impl(&self, trait_def_id: DefID, target_type: &Type) -> Option<&TraitImpl> {

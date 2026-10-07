@@ -74,6 +74,112 @@ pub enum Type {
     OPTIONAL(Box<Type>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MangledPathKind {
+    Type,
+    Value,
+    Method,
+}
+
+fn push_path_segment(result: &mut String, namespace: char, name: &str) {
+    result.push(namespace);
+    result.push_str(&name.len().to_string());
+    result.push_str(name);
+}
+
+fn mangle_path(path: &[String], type_args: &[Type], kind: MangledPathKind) -> String {
+    let mut result = String::from("N");
+
+    let trait_start = path.iter().position(|segment| segment.starts_with('<'));
+    let trait_end = path.iter().position(|segment| segment.ends_with('>'));
+    let terminal = path.len().checked_sub(1);
+
+    let owner = match kind {
+        MangledPathKind::Method => trait_start
+            .and_then(|index| index.checked_sub(1))
+            .or_else(|| path.len().checked_sub(2)),
+        _ => None,
+    };
+
+    for (index, segment) in path.iter().enumerate() {
+        let starts_trait = segment.starts_with('<');
+        let ends_trait = segment.ends_with('>');
+
+        if starts_trait {
+            result.push('X');
+        }
+
+        let name = segment.trim_start_matches('<').trim_end_matches('>');
+
+        let inside_trait = match (trait_start, trait_end) {
+            (Some(start), Some(end)) => index >= start && index <= end,
+            _ => false,
+        };
+
+        let namespace = if inside_trait {
+            if Some(index) == trait_end { 
+                't' 
+            } else { 
+                'm' 
+            }
+        } else if Some(index) == terminal {
+            match kind {
+                MangledPathKind::Type => 't',
+                MangledPathKind::Value | MangledPathKind::Method => 'v',
+            }
+        } else if Some(index) == owner {
+            't'
+        } else {
+            'm'
+        };
+
+        push_path_segment(&mut result, namespace, name);
+
+        if ends_trait {
+            result.push('E');
+        }
+    }
+
+    if !type_args.is_empty() {
+        result.push('I');
+
+        for arg in type_args {
+            result.push_str(&arg.mangle());
+        }
+
+        result.push('E');
+    }
+
+    result.push('E');
+    result
+}
+
+pub fn mangle_type_symbol(path: &[String], type_args: &[Type]) -> String {
+    format!("_H{}", mangle_path(path, type_args, MangledPathKind::Type))
+}
+
+pub fn mangle_function_symbol(path: &[String], type_args: &[Type], params: &[Type], return_type: &Type, is_method: bool) -> String 
+{
+    let kind = if is_method {
+        MangledPathKind::Method
+    } else {
+        MangledPathKind::Value
+    };
+
+    let mut result = format!("_H{}", mangle_path(path, type_args, kind));
+
+    result.push('F');
+
+    for param in params {
+        result.push_str(&param.mangle());
+    }
+
+    result.push('E');
+    result.push_str(&return_type.mangle());
+
+    result
+}
+
 impl Type {
 
     pub fn is_numeric(&self) -> bool {
@@ -137,55 +243,49 @@ impl Type {
         }
     }
 
-    /// Generates a safe string for LLVM symbol names (e.g. `Type::I64` -> `"i64"`)
+    /// generates a safe string for LLVM symbol names (e.g. `Type::I64` -> `"i64"`)
     pub fn mangle(&self) -> String {
         match self {
-            Type::I8 => "i8".to_string(),
-            Type::I16 => "i16".to_string(),
-            Type::I32 => "i32".to_string(),
-            Type::I64 => "i64".to_string(),
-            Type::ISIZE => "isize".to_string(),
+            // Standard Itanium Primitive Codes
+            Type::I8 => "a".to_string(), // a => i8
+            Type::U8 => "h".to_string(), // h => u8
+            Type::I16 => "s".to_string(), // s => i16
+            Type::U16 => "t".to_string(), // t => u16
+            Type::I32 => "i".to_string(), // i => i32
+            Type::U32 => "j".to_string(), // j => u32
+            Type::I64 => "x".to_string(), // x => i64
+            Type::U64 => "y".to_string(), // y => u64
+            Type::F32 => "f".to_string(), // f => f32
+            Type::F64 => "d".to_string(), // d => f64
+            Type::BOOL => "b".to_string(), // b => bool
+            Type::CHAR => "c".to_string(), // c => char
+            Type::VOID => "v".to_string(), // v => void
 
-            Type::U8 => "u8".to_string(),
-            Type::U16 => "u16".to_string(),
-            Type::U32 => "u32".to_string(),
-            Type::U64 => "u64".to_string(),
-            Type::USIZE => "usize".to_string(),
+            Type::ISIZE => "5isize".to_string(),
+            Type::USIZE => "5usize".to_string(),
 
-            Type::BOOL => "bool".to_string(),
-            Type::CHAR => "char".to_string(),
+            Type::POINTER(inner) => format!("P{}", inner.mangle()),
+            Type::CONST_POINTER(inner) => format!("PK{}", inner.mangle()),
+            Type::REF(inner) => format!("R{}", inner.mangle()),
+            Type::CONST_REF(inner) => format!("RK{}", inner.mangle()),
 
-            Type::F32 => "f32".to_string(),
-            Type::F64 => "f64".to_string(),
+            Type::ARRAY(inner, len) => format!("A{}_{}", len, inner.mangle()),
+            Type::INFERRED_ARRAY(inner) => format!("A__{}", inner.mangle()), 
 
-            Type::STRUCT(name) => {
-                name.symbol.replace("::", "_")
+            Type::SLICE(inner) => format!("N5sliceI{}EE", inner.mangle()),
+            Type::OPTIONAL(inner) => format!("N8optionalI{}EE", inner.mangle()),
+
+            Type::STRUCT(type_ref) => {
+                let path: Vec<String> = type_ref.symbol.split("::").map(String::from).collect();
+                mangle_path(&path, &[], MangledPathKind::Type)
             }
 
-            Type::POINTER(inner) => format!("ptr_{}", inner.mangle()),
-            Type::CONST_POINTER(inner) => format!("cptr_{}", inner.mangle()),
-
-            Type::REF(inner) => format!("ref_{}", inner.mangle()),
-            Type::CONST_REF(inner) => format!("cref_{}", inner.mangle()),
-
-            Type::ARRAY(inner, size) => format!("arr_{}_{}", inner.mangle(), size),
-            Type::SLICE(inner) => {
-                format!("slice_{}", inner.mangle())
-            }
-            Type::INFERRED_ARRAY(inner) => {
-                format!("array_{}", inner.mangle())
+            Type::GENERIC_INSTANCE(type_ref, args) => {
+                let path: Vec<String> = type_ref.symbol.split("::").map(String::from).collect();
+                mangle_path(&path, args, MangledPathKind::Type)
             }
 
-            Type::GENERIC_INSTANCE(base, args) => {
-                let base = base.symbol.replace("::", "_");
-                let args = args.iter().map(Type::mangle).collect::<Vec<_>>().join("_");
-
-                format!("{}__{}", base, args)
-            }
-
-            Type::OPTIONAL(inner) => format!("opt_{}", inner.mangle()),
-
-            _ => "unknown".to_string(),
+            Type::GENERIC(name) => format!("{}{}", name.len(), name),
         }
     }
 

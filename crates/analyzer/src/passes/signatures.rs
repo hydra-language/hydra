@@ -1,8 +1,13 @@
-use ir::{context::{DefID, DefKind, TraitBound}, intrinsic::IntrinsicKind};
+use ir::{
+    context::{DefID, DefKind, TraitBound},
+    intrinsic::IntrinsicKind,
+    types::{mangle_function_symbol, Type as IRType},
+};
+
 use parser::{FunctionDecl, Item};
-use ir::types::Type as IRType;
 
 use crate::Analyzer;
+
 
 impl<'ctx> Analyzer<'ctx> {
 
@@ -387,12 +392,29 @@ impl<'ctx> Analyzer<'ctx> {
             }
         }
 
-        // critical for associated functions/methods:
-        //
-        // Math::new
-        // Math::multiply
-        //
-        // need canonical paths before any call body is analyzed.
+        let is_method = match &info.kind {
+            DefKind::Function { is_method, .. } => *is_method,
+            _ => false,
+        };
+
+        let is_global_main = !is_method && decl.name.lexeme == "main";
+
+        let symbol_name = if is_global_main {
+            "main".to_string()
+        } else if decl.is_extern {
+            decl.name.lexeme.clone()
+        } else {
+            mangle_function_symbol(
+                &absolute_path,
+                &[],
+                &param_types,
+                &return_type,
+                is_method,
+            )
+        };
+
+        let display_name = absolute_path.join("::");
+
         info.absolute_path = absolute_path;
 
         info.kind = DefKind::Function {
@@ -400,14 +422,14 @@ impl<'ctx> Analyzer<'ctx> {
             return_type,
             generic_params,
             owner_generic_count: inherited_generics.len(),
+            is_method,
             trait_bounds,
             annotations: decl.annotations.clone(),
             intrinsic,
         };
 
-        self.context.update_def(
-            fn_def_id,
-            info,
-        );
+        self.context.update_def(fn_def_id, info);
+        self.context.set_symbol_name(fn_def_id, symbol_name);
+        self.context.set_display_name(fn_def_id, display_name);
     }
 }

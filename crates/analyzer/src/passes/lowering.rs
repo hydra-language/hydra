@@ -7,7 +7,7 @@ impl<'ctx> Analyzer<'ctx> {
 
     pub(crate) fn lower_function(&mut self, decl: &FunctionDecl, parent_path: Option<String>, inherited_generics: &[String]) -> Option<HIRFunction> 
     {
-        let (def_id, full_path) = if let Some(parent_path) = parent_path {
+        let (def_id, full_path) = if let Some(ref parent_path) = parent_path {
             // extension/associated function.
             //
             // parent_path is the impl-registry key, e.g.
@@ -118,7 +118,7 @@ impl<'ctx> Analyzer<'ctx> {
             _ => Vec::new(),
         };
 
-        self.context.update_def(def_id, info);
+        self.context.update_def(def_id, info.clone());
 
         let is_inline = decl.annotations.iter().any(|a| a.name == "inline");
 
@@ -148,7 +148,9 @@ impl<'ctx> Analyzer<'ctx> {
         self.current_trait_bounds = previous_trait_bounds;
         self.current_return_type = None;
 
-        let fn_name = full_path.join("::");
+        let fn_name = self.context.get_symbol_name(def_id).unwrap_or_else(|| {
+            panic!("ICE: backend symbol not registered for `{}`", full_path.join("::"))
+        }).to_string();
 
         let mut generic_params = inherited_generics.to_vec();
 

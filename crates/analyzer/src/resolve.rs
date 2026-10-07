@@ -174,6 +174,7 @@ impl<'ctx> Resolver<'ctx> {
                                 generic_params: vec![],
                                 trait_bounds: vec![],
                                 owner_generic_count: 0,
+                                is_method: false,
                                 intrinsic: None
                             },
                             is_pub: decl.is_pub,
@@ -424,6 +425,7 @@ impl<'ctx> Resolver<'ctx> {
                             owner_generic_count: 0,
                             generic_params: vec![],
                             trait_bounds: vec![],
+                            is_method: true,
                             intrinsic: None
                         },
                         is_pub: method.is_pub,
@@ -569,6 +571,7 @@ impl<'ctx> Resolver<'ctx> {
                             owner_generic_count: 0,
                             generic_params: vec![],
                             trait_bounds: vec![],
+                            is_method: true,
                             intrinsic: None
                         },
                         is_pub: method.is_pub,

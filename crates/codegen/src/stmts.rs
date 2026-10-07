@@ -35,11 +35,7 @@ impl<'c> CodeGen<'c> {
                     format!("ICE: missing Drop::drop definition for `{ty}`")
                 })?;
 
-                let drop_name = if drop_info.absolute_path.is_empty() {
-                    drop_info.name.clone()
-                } else {
-                    drop_info.absolute_path.join("::")
-                };
+                let drop_name = drop_info.name.clone();
 
                 let drop_fn = self.module.get_function(&drop_name).ok_or_else(|| {
                     format!("ICE: LLVM drop function `{drop_name}` not found")

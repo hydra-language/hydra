@@ -401,8 +401,57 @@ impl<'a> Monomorphizer<'a> {
         }
 
         let generic_info = self.context.get_def(generic_def_id).unwrap().clone();
-        let type_suffixes: Vec<String> = instance.type_args.iter().map(|t| t.mangle()).collect();
-        let mangled_name = format!("{}__{}", generic_info.name, type_suffixes.join("_"));
+
+        let (generic_params, params, return_type, annotations, trait_bounds, is_method) = match &generic_info.kind {
+            DefKind::Function { generic_params, params, return_type, annotations, trait_bounds, is_method, .. } => { 
+                (
+                    generic_params.clone(),
+                    params.clone(),
+                    return_type.clone(),
+                    annotations.clone(),
+                    trait_bounds.clone(),
+                    *is_method,
+                )
+            },
+
+            _ => panic!("expected function"),
+        };
+
+        let subs: HashMap<String, Type> = generic_params.into_iter().zip(instance.type_args.clone()).collect();
+
+        //
+        // Keep the source-level concrete signature for mangling
+        //
+        // Vec<T> with T = i32 remains Vec<i32> here rather than being
+        // collapsed into the monomorphized struct's backend identity.
+        //
+        let mangled_params: Vec<Type> = params.iter().map(|ty| ty.substitute(&subs)).collect();
+        let mangled_return_type = return_type.substitute(&subs);
+
+        let mangled_name = ir::types::mangle_function_symbol(
+            &generic_info.absolute_path,
+            &instance.type_args,
+            &mangled_params,
+            &mangled_return_type,
+            is_method,
+        );
+
+        let specialized_params: Vec<Type> = mangled_params.iter().map(|ty| self.resolve_type(ty, &subs)).collect();
+
+        let specialized_return_type = self.resolve_type(
+            &mangled_return_type,
+            &subs,
+        );
+
+        let specialized_trait_bounds = trait_bounds.into_iter()
+            .map(|bound| TraitBound {
+                target_type: self.resolve_type(
+                    &bound.target_type.substitute(&subs),
+                    &subs,
+                ),
+                trait_def_id: bound.trait_def_id,
+            })
+            .collect();
 
         let mut specialized_path = generic_info.absolute_path.clone();
 
@@ -415,47 +464,34 @@ impl<'a> Monomorphizer<'a> {
         let mut specialized_info = generic_info.clone();
 
         specialized_info.name = mangled_name.clone();
-        specialized_info.absolute_path = specialized_path.clone();
-
-        let subs: HashMap<String, Type> = match &generic_info.kind {
-            DefKind::Function { generic_params, .. } => {
-                generic_params.iter().cloned().zip(instance.type_args.clone()).collect()
-            }
-
-            _ => HashMap::new(),
+        specialized_info.absolute_path = specialized_path;
+        specialized_info.kind = DefKind::Function {
+            params: specialized_params.clone(),
+            return_type: specialized_return_type.clone(),
+            generic_params: vec![],
+            owner_generic_count: 0,
+            is_method,
+            trait_bounds: specialized_trait_bounds,
+            intrinsic: None,
+            annotations,
         };
 
-        if let DefKind::Function { ref params, ref return_type, ref annotations, ref trait_bounds, .. } = generic_info.kind {
-            specialized_info.kind = DefKind::Function {
-                params: params.iter().map(|ty| {
-                    self.resolve_type(
-                        &ty.substitute(&subs),
-                        &subs,
-                    )
-                }).collect(),
-
-                return_type: self.resolve_type( &return_type.substitute(&subs), &subs),
-                generic_params: vec![],
-
-                trait_bounds: trait_bounds.iter().map(|bound| TraitBound {
-                    target_type: self.resolve_type(
-                        &bound.target_type.substitute(&subs),
-                        &subs,
-                    ),
-
-                    trait_def_id: bound.trait_def_id,
-                }).collect(),
-
-                owner_generic_count: 0,
-                intrinsic: None,
-                annotations: annotations.to_vec(),
-            };
-        }
-
         let specialized_def_id = self.context.insert_def(specialized_info);
-        let display_name = Self::specialized_function_display_name(&generic_info, &instance.type_args);
 
-        self.context.set_display_name(specialized_def_id, display_name);
+        self.context.set_symbol_name(
+            specialized_def_id,
+            mangled_name.clone(),
+        );
+
+        let display_name = Self::specialized_function_display_name(
+            &generic_info,
+            &instance.type_args,
+        );
+
+        self.context.set_display_name(
+            specialized_def_id,
+            display_name,
+        );
 
         self.instantiation_cache.insert(
             instance.clone(),
@@ -464,18 +500,19 @@ impl<'a> Monomorphizer<'a> {
 
         let mut new_func = self.original_functions.get(&generic_def_id).unwrap().clone();
 
-        new_func.name = specialized_path.join("::");
+        new_func.name = mangled_name;
         new_func.def_id = specialized_def_id;
         new_func.generic_params.clear();
 
         new_func.params = new_func.params.into_iter()
-            .map(|(id, ty)| (id, self.resolve_type(&ty.substitute(&subs), &subs)))
+            .zip(specialized_params)
+            .map(|((def_id, _), ty)| (def_id, ty))
             .collect();
 
-        new_func.return_type = self.resolve_type(&new_func.return_type.substitute(&subs), &subs);
-        new_func.body = HIRBlock { 
-            stmts: vec![], 
-            span: new_func.body.span 
+        new_func.return_type = specialized_return_type;
+        new_func.body = HIRBlock {
+            stmts: vec![],
+            span: new_func.body.span,
         };
 
         self.specialized_functions.push(new_func);
@@ -493,8 +530,7 @@ impl<'a> Monomorphizer<'a> {
         }
 
         let generic_info = self.context.get_def(generic_def_id).unwrap().clone();
-        let type_suffixes: Vec<String> = type_args.iter().map(|t| t.mangle()).collect();
-        let mangled_name = format!("{}__{}", generic_info.name, type_suffixes.join("_"));
+        let mangled_name = ir::types::mangle_type_symbol(&generic_info.absolute_path, &type_args);
 
         let subs: HashMap<String, Type> = match &generic_info.kind {
             DefKind::Struct { generic_params, .. } => generic_params.iter().cloned()
