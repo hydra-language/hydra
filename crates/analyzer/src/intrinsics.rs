@@ -629,6 +629,56 @@ impl<'ctx> Analyzer<'ctx> {
                 }
             }
 
+            IntrinsicKind::StringLen | IntrinsicKind::StringPtr => {
+                let name = if kind == IntrinsicKind::StringLen {
+                    "string_len"
+                } else {
+                    "string_ptr"
+                };
+
+                if !generic_params.is_empty() {
+                    return Err(self.error(
+                        "S017",
+                        format!("{name} accepts no type parameters"),
+                        span,
+                    ));
+                }
+
+                let string_ref = IRType::CONST_REF(Box::new(IRType::STRING));
+
+                if params.len() != 1 || params[0] != string_ref {
+                    return Err(self.error(
+                        "S017",
+                        format!("{name} expects `&string`"),
+                        span,
+                    ));
+                }
+
+                match kind {
+                    IntrinsicKind::StringLen if *return_type != IRType::USIZE => {
+                        return Err(self.error(
+                            "S017",
+                            "string_len must return `usize`",
+                            span,
+                        ));
+                    }
+
+                    IntrinsicKind::StringPtr => {
+                        let expected = IRType::CONST_POINTER(Box::new(IRType::U8));
+
+                        if *return_type != expected {
+                            return Err(self.error(
+                                "S017",
+                                "string_ptr must return `*const u8`",
+                                span,
+                            ));
+                        }
+                    }
+
+                    _ => {}
+                }
+            }
+
             IntrinsicKind::WriteStdout | IntrinsicKind::WriteStderr => {
                 let name = if kind == IntrinsicKind::WriteStdout {
                     "write_stdout"

@@ -70,9 +70,7 @@ impl<'c> CodeGen<'c> {
                 Constant::Char(_) => Type::CHAR,
 
                 Constant::String(_) => {
-                    Type::CONST_REF(Box::new(
-                        Type::SLICE(Box::new(Type::U8))
-                    ))
+                    Type::CONST_REF(Box::new(Type::STRING))
                 }
             },
 

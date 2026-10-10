@@ -1090,7 +1090,7 @@ impl<'a> MIRBuilder<'a> {
                 self.context.get_exact_trait_impl(copy_trait_def_id, ty).is_some()
             }
 
-            Type::INFERRED_ARRAY(_) | Type::SLICE(_) | Type::GENERIC(_) => false,
+            Type::INFERRED_ARRAY(_) | Type::SLICE(_) | Type::GENERIC(_) | Type::STRING => false,
         }
     }
 

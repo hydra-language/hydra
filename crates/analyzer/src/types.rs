@@ -33,6 +33,7 @@ impl<'ctx> Analyzer<'ctx> {
                     "f32" => return Ok(IRType::F32), 
                     "f64" => return Ok(IRType::F64),
                     "char" => return Ok(IRType::CHAR), 
+                    "string" => return Ok(IRType::STRING),
                     "bool" => return Ok(IRType::BOOL), 
                     "void" => return Ok(IRType::VOID),
                     _ => {}

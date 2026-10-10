@@ -13,6 +13,8 @@ pub enum IntrinsicKind {
     Dealloc,
     SliceLen,
     SlicePtr,
+    StringLen,
+    StringPtr,
     WriteStdout,
     WriteStderr,
     Uninit,
@@ -104,6 +106,18 @@ impl IntrinsicKind {
             }
 
             [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__string_len" =>
+            {
+                Some(Self::StringLen)
+            }
+
+            [core, intrinsics, name]
+                if core == "core" && intrinsics == "intrinsics" && name == "__string_ptr" =>
+            {
+                Some(Self::StringPtr)
+            }
+
+            [core, intrinsics, name]
                 if core == "core" && intrinsics == "intrinsics" && name == "__write_stdout" =>
             {
                 Some(Self::WriteStdout)
@@ -155,6 +169,7 @@ impl IntrinsicKind {
             IntrinsicKind::PtrNull | IntrinsicKind::PtrNullMut |
             IntrinsicKind::PtrIsNull | IntrinsicKind::PtrFromAddr |
             IntrinsicKind::SliceLen | IntrinsicKind::SlicePtr | 
+            IntrinsicKind::StringLen | IntrinsicKind::StringPtr |
             IntrinsicKind::Uninit => false,
         }
     }

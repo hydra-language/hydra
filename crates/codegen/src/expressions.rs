@@ -430,30 +430,34 @@ impl<'c> CodeGen<'c> {
         let len_ty = self.context.ptr_sized_int_type(&self.target_data, None);
 
         //
-        // a Hydra string literal is &[u8], so its
-        // length is its UTF-8 byte length.
+        // a Hydra string literal is &string.
+        //
+        // string stores UTF-8, so the metadata length is the UTF-8
+        // byte length rather than the number of Unicode scalar values.
         //
         let len = value.len();
         let len_value = len_ty.const_int(len as u64, false);
-        let slice_ty = self.context.struct_type(&[byte_ptr_ty.into(), len_ty.into()], false);
+        let string_ty = self.context.struct_type(
+            &[byte_ptr_ty.into(), len_ty.into()],
+            false,
+        );
 
-        let mut slice = slice_ty.get_undef();
+        let mut string = string_ty.get_undef();
 
-        slice = self.builder.build_insert_value(
-            slice,
+        string = self.builder.build_insert_value(
+            string,
             data_ptr,
             0,
             "str_ptr",
         ).unwrap().into_struct_value();
 
-        slice = self.builder.build_insert_value(
-            slice,
+        string = self.builder.build_insert_value(
+            string,
             len_value,
             1,
             "str_len",
         ).unwrap().into_struct_value();
 
-        Ok(slice.into())
-
+        Ok(string.into())
     }
 }

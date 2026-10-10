@@ -363,26 +363,24 @@ impl<'c> CodeGen<'c> {
                 Ok(self.context.i8_type().const_zero().into())
             }
 
-            IntrinsicKind::SliceLen => {
-                let slice = args.first().ok_or("slice_len requires one argument")?;
-                let slice_value = self.compile_operand(slice, mir_fn)?.into_struct_value();
+            IntrinsicKind::SliceLen | IntrinsicKind::StringLen => {
+                let value = args.first().ok_or("fat reference length requires one argument")?;
+                let value = self.compile_operand(value, mir_fn)?.into_struct_value();
 
-                let len = self.builder.build_extract_value(slice_value, 1,"slice_len")
-                    .ok_or("ICE: slice value has no length field")?
+                let len = self.builder.build_extract_value(value, 1, "fat_ref_len")
+                    .ok_or("ICE: fat reference has no length field")?
                     .into_int_value();
 
                 Ok(len.into())
             }
 
-            IntrinsicKind::SlicePtr => {
-                let slice = args.first().ok_or("slice_ptr requires one argument")?;
-                let slice_value = self.compile_operand(slice, mir_fn)?.into_struct_value();
+            IntrinsicKind::SlicePtr | IntrinsicKind::StringPtr => {
+                let value = args.first().ok_or("fat reference pointer requires one argument")?;
+                let value = self.compile_operand(value, mir_fn)?.into_struct_value();
 
-                let ptr = self.builder.build_extract_value(
-                    slice_value,
-                    0,
-                    "slice_ptr",
-                ).ok_or("ICE: slice value has no pointer field")?.into_pointer_value();
+                let ptr = self.builder.build_extract_value(value, 0, "fat_ref_ptr")
+                    .ok_or("ICE: fat reference has no pointer field")?
+                    .into_pointer_value();
 
                 Ok(ptr.into())
             }

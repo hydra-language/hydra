@@ -925,10 +925,10 @@ impl<'ctx> Resolver<'ctx> {
 
                 if segments.len() == 1 && matches!(
                     name,
-                    "i8" | "i16" | "i32" | "i64" | "isize"
-                    | "u8" | "u16" | "u32" | "u64" | "usize"
-                    | "f32" | "f64"
-                    | "char" | "bool" | "void"
+                    "i8" | "i16" | "i32" | "i64" | "isize" | 
+                    "u8" | "u16" | "u32" | "u64" | "usize" | 
+                    "f32" | "f64" | "char" | "string" | "bool" | 
+                    "void"
                 )
                 {
                     return;

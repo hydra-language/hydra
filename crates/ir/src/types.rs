@@ -57,6 +57,7 @@ pub enum Type {
 
     BOOL,
     CHAR,
+    STRING,
 
     ARRAY(Box<Type>, usize),
     INFERRED_ARRAY(Box<Type>),
@@ -259,6 +260,7 @@ impl Type {
             Type::F64 => "d".to_string(), // d => f64
             Type::BOOL => "b".to_string(), // b => bool
             Type::CHAR => "c".to_string(), // c => char
+            Type::STRING => "u6string".to_string(),
             Type::VOID => "v".to_string(), // v => void
 
             Type::ISIZE => "5isize".to_string(),
@@ -332,6 +334,7 @@ impl fmt::Display for Type {
             Type::F64 => write!(f, "f64"),
             Type::BOOL => write!(f, "bool"),
             Type::CHAR => write!(f, "char"),
+            Type::STRING => write!(f, "string"),
 
             Type::STRUCT(name) => write!(f, "{}", name),
             Type::REF(inner) => write!(f, "&mut {}", inner),

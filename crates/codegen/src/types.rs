@@ -57,6 +57,23 @@ pub fn compile_type<'c>(context: &'c Context, target_data: &TargetData, ty: &Typ
                     context.struct_type(&[data_ptr.into(), len_type.into()], false).as_basic_type_enum()
                 }
 
+                //
+                // &string / &mut string
+                //
+                // string is an unsized UTF-8 byte sequence, so a reference to
+                // one carries the byte pointer and byte length.
+                //
+                // physical representation:
+                //
+                //     { u8*, usize }
+                //
+                Type::STRING => {
+                    let data_ptr = context.i8_type().ptr_type(AddressSpace::default());
+                    let len_type = context.ptr_sized_int_type(target_data, None);
+
+                    context.struct_type(&[data_ptr.into(), len_type.into()], false).as_basic_type_enum()
+                }
+
                 _ => {
                     let llvm_inner = compile_type(context, target_data, inner);
                     llvm_inner.ptr_type(AddressSpace::default()).into()

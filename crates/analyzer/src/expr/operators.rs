@@ -81,22 +81,35 @@ impl<'ctx> Analyzer<'ctx> {
                 let expr = self.lower_expr_with_type(value, None)?;
                 let target_type = self.lower_type(target)?;
 
+                let is_string_ref = |ty: &IRType| {
+                    matches!(ty, IRType::REF(inner) | IRType::CONST_REF(inner) if inner.as_ref() == &IRType::STRING)
+                };
+
+                if is_string_ref(&target_type) && expr.ty != target_type {
+                    return Err(self.error(
+                        "S003",
+                        format!("cannot cast `{}` to `{}`", expr.ty, target_type),
+                        span,
+                    ).with_help("converting arbitrary bytes to text requires UTF-8 validation"));
+                }
+
+                if is_string_ref(&expr.ty) && expr.ty != target_type {
+                    return Err(self.error(
+                        "S003",
+                        format!("cannot cast `{}` to `{}`", expr.ty, target_type),
+                        span,
+                    ).with_help("use an explicit string conversion API instead"));
+                }
+
                 let source_is_pointer_like = matches!(
                     &expr.ty,
-                    IRType::REF(_)
-                    | IRType::CONST_REF(_)
-                    | IRType::POINTER(_)
-                    | IRType::CONST_POINTER(_)
+                    IRType::REF(_) | IRType::CONST_REF(_)
+                    | IRType::POINTER(_) | IRType::CONST_POINTER(_)
                 );
 
-                let target_is_raw_pointer = matches!(
-                    &target_type,
-                    IRType::POINTER(_)
-                    | IRType::CONST_POINTER(_)
-                );
+                let target_is_raw_pointer = matches!(&target_type, IRType::POINTER(_) | IRType::CONST_POINTER(_));
 
-                let cast_kind =
-                if source_is_pointer_like && target_is_raw_pointer {
+                let cast_kind = if source_is_pointer_like && target_is_raw_pointer {
                     CastKind::Pointer
                 } else {
                     CastKind::Numeric

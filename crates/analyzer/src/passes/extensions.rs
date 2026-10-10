@@ -430,6 +430,7 @@ impl<'ctx> Analyzer<'ctx> {
             }
 
             IRType::GENERIC(_) | IRType::INFERRED_ARRAY(_) | IRType::SLICE(_) => false,
+            IRType::STRING => false,
         }
     }
 
@@ -756,6 +757,7 @@ impl<'ctx> Analyzer<'ctx> {
 
             IRType::BOOL => "bool".to_string(),
             IRType::CHAR => "char".to_string(),
+            IRType::STRING => "string".to_string(),
 
             //
             // these must remain distinct from both each other
