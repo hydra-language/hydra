@@ -89,12 +89,33 @@ impl<'ctx> Analyzer<'ctx> {
 
         let self_arg = match (expected_self_ty, &lhs_expr.ty) {
             //
+            // &&T -> &T
+            // &mut &T -> &T
+            //
+            // method lookup may find a method on T through a reference to
+            // an existing &T receiver. In that case we need to remove the
+            // extra receiver reference, not add another one.
+            //
+            (IRType::CONST_REF(_), IRType::CONST_REF(actual_inner) | IRType::REF(actual_inner))
+            if self.receiver_type_matches(expected_self_ty, actual_inner.as_ref()) =>
+            {
+                let ty = actual_inner.as_ref().clone();
+
+                HIRExpr {
+                    kind: HIRExprKind::Dereference {
+                        target: Box::new(lhs_expr),
+                    },
+                    ty,
+                    span,
+                }
+            }
+
+            //
             // &mut T -> &T
             //
-            // shared reborrow from a mutable reference.
-            //
-            (IRType::CONST_REF(expected_inner), IRType::REF(actual_inner)) 
-            if self.receiver_type_matches(expected_inner, actual_inner) => {
+            (IRType::CONST_REF(expected_inner), IRType::REF(actual_inner))
+            if self.receiver_type_matches(expected_inner, actual_inner) =>
+            {
                 let pointee_ty = actual_inner.as_ref().clone();
 
                 let deref = HIRExpr {
@@ -115,14 +136,8 @@ impl<'ctx> Analyzer<'ctx> {
                 }
             }
 
-            //
-            // already exactly compatible.
-            //
             _ if self.receiver_type_matches(expected_self_ty, &lhs_expr.ty) => lhs_expr,
 
-            //
-            // T -> &mut T
-            //
             (IRType::REF(_), _) => {
                 let actual = lhs_expr.ty.clone();
 
@@ -136,9 +151,6 @@ impl<'ctx> Analyzer<'ctx> {
                 }
             }
 
-            //
-            // T -> &T
-            //
             (IRType::CONST_REF(_), _) => {
                 let actual = lhs_expr.ty.clone();
 
