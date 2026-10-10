@@ -137,10 +137,40 @@ impl<'ctx> Analyzer<'ctx> {
             },
 
             ASTExpr::For { id, variable, start, end, is_inclusive, body } => {
-                let start_expr = self.lower_expr(start)?;
-                let mut end_expr = self.lower_expr_with_type(end, Some(&start_expr.ty))?;
+                let mut start_expr = self.lower_expr(start)?;
+                let mut end_expr = self.lower_expr(end)?;
 
-                end_expr = self.coerce_primitive(end_expr, &start_expr.ty);
+                if !self.is_int_type(&start_expr.ty) || !self.is_int_type(&end_expr.ty) {
+                    return Err(self.error(
+                        "S001",
+                        "for range bounds must be integers",
+                        span,
+                    ));
+                }
+
+                if start_expr.ty != end_expr.ty {
+                    let end_ty = end_expr.ty.clone();
+                    let coerced_start = self.coerce_primitive(start_expr.clone(), &end_ty);
+
+                    if coerced_start.ty == end_ty {
+                        start_expr = coerced_start;
+                    } else {
+                        let start_ty = start_expr.ty.clone();
+                        end_expr = self.coerce_primitive(end_expr, &start_ty);
+                    }
+                }
+
+                if start_expr.ty != end_expr.ty {
+                    return Err(self.error(
+                        "S001",
+                        format!(
+                            "for range bounds have incompatible types `{}` and `{}`",
+                            start_expr.ty,
+                            end_expr.ty,
+                        ),
+                        span,
+                    ));
+                }
 
                 let loop_ty = start_expr.ty.clone();
 
@@ -162,6 +192,7 @@ impl<'ctx> Analyzer<'ctx> {
                     span: variable.span 
  
                 };
+
                 //
                 // const _for_end = end;
                 //
