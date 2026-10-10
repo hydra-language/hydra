@@ -4,12 +4,12 @@ use errors::error::{
     HydraError,
     Span,
 };
-use ir::context::DefKind;
+use ir::context::{DefID, DefKind};
 use ir::hir::{
     HIRExpr,
     HIRExprKind,
 };
-use ir::types::Type as IRType;
+use ir::types::{Type as IRType, TypeRef};
 use parser::ast::Expr as ASTExpr;
 
 use std::collections::HashMap;
@@ -118,22 +118,44 @@ impl<'ctx> Analyzer<'ctx> {
                     }
                 }
 
+                let mut prelowered_args = None;
+
                 let actual_def_id = if let DefKind::Struct { .. } = info.kind {
                     if let ASTExpr::Path { segments, .. } = &**callee {
                         let method_name = &segments.last().unwrap().lexeme;
                         let struct_name = info.absolute_path.join("::");
 
-                        if let Some(type_methods) = self.impl_registry.get(&struct_name) {
-                            if let Some(&m_def_id) = type_methods.get(method_name) {
-                                m_def_id
-                            } else {
-                                return Err(self.error("S005", format!("struct `{}` has no associated function `{}`", struct_name, method_name), span));
-                            }
+                        if let Some(m_def_id) = self.impl_registry.get(&struct_name).and_then(|methods| methods.get(method_name)).copied()
+                        {
+                            m_def_id
                         } else {
-                            return Err(self.error("S005", format!("struct `{}` has no associated function `{}`", struct_name, method_name), span));
+                            let mut args = Vec::with_capacity(arguments.len());
+
+                            for argument in arguments {
+                                args.push(self.lower_expr_with_type(argument, None)?);
+                            }
+
+                            let owner_ty = IRType::STRUCT(TypeRef::new(
+                                def_id,
+                                struct_name.clone(),
+                            ));
+
+                            let method_def_id = self.resolve_trait_associated_function(
+                                &owner_ty,
+                                method_name,
+                                &args,
+                                span,
+                            )?;
+
+                            prelowered_args = Some(args);
+                            method_def_id
                         }
                     } else {
-                        return Err(self.error("S003", "target is a struct, not a function", span));
+                        return Err(self.error(
+                            "S003",
+                            "target is a struct, not a function",
+                            span,
+                        ));
                     }
                 } else {
                     def_id
@@ -275,17 +297,19 @@ impl<'ctx> Analyzer<'ctx> {
                 //     T = i32
                 //
                 let mut args = Vec::new();
+                let mut prelowered_args = prelowered_args.map(Vec::into_iter);
 
                 for (i, node) in arguments.iter().enumerate() {
                     let declared_param = param_types.get(i);
+                    let substituted_param = declared_param.map(|ty| ty.substitute(&substitutions));
+                    let argument_expected = substituted_param.as_ref().filter(|ty| !ty.contains_generic());
 
-                    let substituted_param = declared_param.map(
-                        |ty| ty.substitute(&substitutions)
-                    );
+                    let mut arg = if let Some(prelowered) = prelowered_args.as_mut() {
+                        prelowered.next().unwrap()
+                    } else {
+                        self.lower_expr_with_type(node, argument_expected)?
+                    };
 
-                    let argument_expected = substituted_param.as_ref().filter(|&ty| !ty.contains_generic());
-
-                    let mut arg = self.lower_expr_with_type(node, argument_expected)?;
                     if let Some(target) = argument_expected {
                         arg = self.coerce_primitive(arg, target);
                     }
@@ -414,6 +438,87 @@ impl<'ctx> Analyzer<'ctx> {
             }
 
             _ => {}
+        }
+    }
+
+    fn resolve_trait_associated_function(&self, owner_ty: &IRType, method_name: &str, args: &[HIRExpr], span: Span,) -> Result<DefID, HydraError> 
+    {
+        let mut candidates = Vec::new();
+
+        for trait_impl in &self.context.trait_impls {
+            if !self.context.trait_impl_is_applicable(trait_impl, owner_ty, &self.current_trait_bounds) {
+                continue;
+            }
+
+            let Some(method_def_id) = trait_impl.methods.get(method_name).copied() else {
+                continue;
+            };
+
+            let Some(method_info) = self.context.get_def(method_def_id) else {
+                continue;
+            };
+
+            let DefKind::Function { params, .. } = &method_info.kind else {
+                continue;
+            };
+
+            if params.len() != args.len() {
+                continue;
+            }
+
+            let mut substitutions = HashMap::new();
+
+            for (param, arg) in params.iter().zip(args) {
+                Self::infer_generic_bindings(param, &arg.ty, &mut substitutions);
+            }
+
+            let matches = params.iter().zip(args).all(|(param, arg)| {
+                let param = param.substitute(&substitutions);
+                self.check_type_compatibility(&param, &arg.ty)
+            });
+
+            if matches {
+                candidates.push((method_def_id, trait_impl.trait_def_id));
+            }
+        }
+
+        match candidates.as_slice() {
+            [(method_def_id, _)] => Ok(*method_def_id),
+
+            [] => Err(self.error(
+                "S005",
+                format!(
+                    "type `{owner_ty}` has no associated function `{method_name}`",
+                ),
+                span,
+            )),
+
+            _ => {
+                let mut error = self.error(
+                    "S024",
+                    format!(
+                        "associated function `{method_name}` is ambiguous for type `{owner_ty}`",
+                    ),
+                    span,
+                );
+
+                for (_, trait_def_id) in candidates {
+                    if let Some(info) = self.context.get_def(trait_def_id) {
+                        let name = if info.absolute_path.is_empty() {
+                            info.name.clone()
+                        } else {
+                            info.absolute_path.join("::")
+                        };
+
+                        error = error.with_note(
+                            format!("candidate provided by trait `{name}`"),
+                            info.span,
+                        );
+                    }
+                }
+
+                Err(error)
+            }
         }
     }
 
