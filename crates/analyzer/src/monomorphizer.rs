@@ -341,7 +341,7 @@ impl<'a> Monomorphizer<'a> {
 
                 let callee_info = self.context.get_def(*callee).unwrap().clone();
 
-                if let DefKind::Function { generic_params, params, .. } = &callee_info.kind {
+                if let DefKind::Function { generic_params, params, return_type, .. } = &callee_info.kind {
                     if !generic_params.is_empty() {
                         let mut concrete_args: Vec<Type> = generic_args.iter().map(|generic| generic.substitute(subs)).collect();
 
@@ -371,7 +371,9 @@ impl<'a> Monomorphizer<'a> {
 
                             *callee = specialized_callee;
 
-                            expr.ty = self.resolve_type(&original_type.substitute(&local_subs), &local_subs);
+                            let substituted_return = return_type.substitute(&local_subs);
+
+                            expr.ty = self.resolve_type(&substituted_return, &local_subs);
                         }
                     }
                 }
