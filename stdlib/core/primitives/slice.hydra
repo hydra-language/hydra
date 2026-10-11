@@ -20,21 +20,26 @@ extension<T> Display on [T] where T : Display {
     }
 }
 
-/* extension<T> Display on &[T] {
+extension<T> Display on &[T] where T : Display {
     fn fmt(&self, formatter: &mut Formatter) -> void {
-        formatter::write(*self);
+        formatter::write("[");
+        
+        for i in 0..self::len() {
+            if i > 0 {
+                formatter::write(", ");
+            }
+
+            const value = &self[i];
+            value::fmt(formatter);
+        }
+
+        formatter::write("]");
     }
 }
 
-extension<T> Display on &mut [T] {
-    fn fmt(&self, formatter: &mut Formatter) -> void {
-        formatter::write(*self);
-    }
-} */
-
 // blanket extension on slice types
 extension<T> [T] {
-    
+
     #[inline]
     pub fn len(&self) -> usize {
         return intrinsics::__slice_len(self);
