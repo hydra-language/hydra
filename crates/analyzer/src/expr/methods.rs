@@ -284,18 +284,54 @@ impl<'ctx> Analyzer<'ctx> {
             vec![receiver_ty, stripped_receiver]
         };
 
+        let solver = self.trait_solver();
+
         let matching_impls: Vec<_> = self.context.trait_impls.iter().filter(|trait_impl| {
             lookup_types.iter().any(|dispatch_ty| {
-                self.context.trait_impl_is_applicable(trait_impl, dispatch_ty, &self.current_trait_bounds)
+                solver.trait_impl_is_applicable(
+                    trait_impl,
+                    dispatch_ty,
+                    &self.current_trait_bounds,
+                )
             })
         }).collect();
 
         let mut candidates = Vec::new();
 
+        // Explicit bounds win while analyzing generic code.
+        //
+        // T: Clone means calls through T should remain deferred until
+        // monomorphization determines the concrete Clone implementation.
+        for bound in &self.current_trait_bounds {
+            if !lookup_types.iter().any(|dispatch_ty| {
+                &bound.target_type == *dispatch_ty
+            }) {
+                continue;
+            }
+
+            let Some(method_def_id) = self.context.get_trait_method(
+                bound.trait_def_id,
+                method_name,
+            ) else {
+                continue;
+            };
+
+            if candidates.iter().any(|candidate: &ResolvedMethod| {
+                candidate.trait_def_id == Some(bound.trait_def_id)
+            }) {
+                continue;
+            }
+
+            candidates.push(ResolvedMethod {
+                method_def_id,
+                trait_def_id: Some(bound.trait_def_id),
+                deferred_trait_dispatch: true,
+            });
+        }
+
+        // Concrete/blanket implementations come second.
         for trait_impl in &matching_impls {
-            let Some(method_def_id) =
-            trait_impl.methods.get(method_name).copied()
-            else {
+            let Some(method_def_id) = trait_impl.methods.get(method_name).copied() else {
                 continue;
             };
 
