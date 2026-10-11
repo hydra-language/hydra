@@ -4,6 +4,7 @@ include core::alloc::Layout;
 include core::ptr;
 include core::ptr::NonNull;
 
+include core::ops::Clone;
 include core::ops::Drop;
 include core::ops::Deref;
 include core::ops::DerefMut;
@@ -30,6 +31,28 @@ pub struct Vec<T> {
     } else {
         1;
     };
+}
+
+extension<T> Clone on Vec<T> where T : Clone {
+    fn clone(&self) -> Vec<T> {
+        let clone = Vec::with_capacity(self.len);
+
+        let i: usize = 0;
+        while i < self.len {
+            const element_ptr = ptr::offset::<T>(
+                self.ptr::as_ptr(),
+                i as isize
+            );
+
+            const value = &*element_ptr;
+
+            clone::push(value::clone());
+
+            i += 1;
+        }
+
+        return clone;
+    }
 }
 
 extension<T> Drop on Vec<T> {

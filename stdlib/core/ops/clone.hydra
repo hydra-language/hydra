@@ -1,0 +1,12 @@
+include core::marker::Copy;
+
+pub trait Clone {
+    fn clone(&self) -> Self;
+}
+
+extension<T> Clone on T where T : Copy {
+    #[inline]
+    fn clone(&self) -> Self {
+        return *self;
+    }
+}
