@@ -16,6 +16,9 @@ fn options() -> CompilerOptions {
         mode: CompileMode::Build,
         opt_level: OptLevel::O0,
         time_passes: false,
+        linker: Some("mold".to_string()),
+        target: driver::options::TargetMode::Generic,
+        verbosity: 0
     }
 }
 

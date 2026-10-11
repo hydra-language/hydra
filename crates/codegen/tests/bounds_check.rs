@@ -1,135 +1,95 @@
 use codegen::CodeGen;
 use errors::error::Span;
 use inkwell::context::Context;
-use ir::{
-    Constant,
-    context::{DefID, HIRContext},
-    types::Type,
-};
+use ir::{Constant, context::DefID, types::Type};
 use mir::{
-    BasicBlock,
-    LocalDecl,
-    LocalID,
-    MIRFunction,
-    MIRProgram,
-    Operand,
-    Place,
-    ProjectionElem,
-    Rvalue,
-    Statement,
-    StatementKind,
-    Terminator,
+    BasicBlock, LocalDecl, LocalID, MIRFunction, MIRProgram, Operand,
+    Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator,
 };
+
+fn local(ty: Type) -> LocalDecl {
+    LocalDecl {
+        ty, is_mutable: false, debug_def_id: None,
+        debug_name: None, debug_span: None,
+    }
+}
+
+fn place(id: usize) -> Place {
+    Place { local: LocalID(id), projection: vec![] }
+}
+
+fn assign(destination: Place, value: Rvalue) -> Statement {
+    Statement {
+        kind: StatementKind::Assign(destination, value),
+        span: Span::default(),
+    }
+}
 
 #[test]
 fn indexed_slice_emits_runtime_bounds_check() {
     let context = Context::create();
-    let hir_context = HIRContext::default();
-
     let mut codegen = CodeGen::new(
-        &context,
-        &hir_context,
-        "bounds_checks",
+        &context, "bounds_checks", "generic".into(), String::new(),
     );
 
-    let slice_ty = Type::CONST_REF(Box::new(
-        Type::SLICE(Box::new(Type::I32))
-    ));
+    let slice_ty = Type::CONST_REF(Box::new(Type::SLICE(Box::new(Type::I32))));
 
     let function = MIRFunction {
-        name: "main".to_string(),
+        name: "main".into(),
         def_id: DefID(0),
+        display_name: None,
         return_type: Type::VOID,
         arg_count: 0,
         locals: vec![
-            LocalDecl {
-                ty: Type::VOID,
-                is_mutable: true,
-                debug_def_id: None,
-            },
-            LocalDecl {
-                ty: slice_ty,
-                is_mutable: false,
-                debug_def_id: None,
-            },
-            LocalDecl {
-                ty: Type::USIZE,
-                is_mutable: false,
-                debug_def_id: None,
-            },
-            LocalDecl {
-                ty: Type::I32,
-                is_mutable: false,
-                debug_def_id: None,
-            },
+            local(Type::VOID),
+            local(slice_ty),
+            local(Type::USIZE),
+            local(Type::I32),
         ],
-        basic_blocks: vec![
-            BasicBlock {
-                statements: vec![
-                    Statement {
-                        kind: StatementKind::Assign(
-                            Place {
-                                local: LocalID(2),
-                                projection: vec![],
-                            },
-                            Rvalue::Use(
-                                Operand::Const(
-                                    Constant::Int(1, Type::USIZE)
-                                )
-                            ),
-                        ),
-                        span: Span::default(),
-                    },
-                    Statement {
-                        kind: StatementKind::Assign(
-                            Place {
-                                local: LocalID(3),
-                                projection: vec![],
-                            },
-                            Rvalue::Use(
-                                Operand::Copy(Place {
-                                    local: LocalID(1),
-                                    projection: vec![
-                                        ProjectionElem::Deref,
-                                        ProjectionElem::Index(LocalID(2)),
-                                    ],
-                                })
-                            ),
-                        ),
-                        span: Span::default(),
-                    },
-                ],
-                terminator: Terminator::Return,
-            },
-        ],
-        display_name: None,
+        basic_blocks: vec![BasicBlock {
+            statements: vec![
+                assign(
+                    place(2),
+                    Rvalue::Use(Operand::Const(Constant::Int(1, Type::USIZE))),
+                ),
+                assign(
+                    place(3),
+                    Rvalue::Use(Operand::Copy(Place {
+                        local: LocalID(1),
+                        projection: vec![
+                            ProjectionElem::Deref,
+                            ProjectionElem::Index(LocalID(2)),
+                        ],
+                    })),
+                ),
+            ],
+            terminator: Terminator::Return,
+        }],
         is_inline: false,
     };
 
-    let program = MIRProgram {
+    codegen.generate(&MIRProgram {
         functions: vec![function],
-    };
+        structs: vec![],
+    }).expect("indexed slice should compile with a bounds check");
 
-    codegen.generate(&program)
-        .expect("indexed slice should compile with a bounds check");
+    codegen.module.verify()
+        .expect("LLVM IR with runtime bounds checks should verify");
 
-    let llvm = codegen.module.print_to_string().to_string();
+    let llvm = codegen.ir_to_string();
 
     assert!(
         llvm.contains("icmp ult"),
-        "slice indexing should compare index against length:\n{}",
-        llvm
+        "slice indexing should compare index against length:\n{llvm}",
     );
 
     assert!(
         llvm.contains("@hydra_bounds_check_fail"),
-        "slice indexing should call the runtime bounds failure path:\n{}",
-        llvm
+        "slice indexing should call the runtime bounds failure path:\n{llvm}",
     );
 
     assert!(
         llvm.contains("unreachable"),
-        "bounds failure path must not continue execution:\n{}",
-        llvm
+        "bounds failure path must not continue execution:\n{llvm}",
     );
 }
