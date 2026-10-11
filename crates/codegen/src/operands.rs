@@ -29,32 +29,7 @@ impl<'c> CodeGen<'c> {
                     }
                 }
 
-                ProjectionElem::Field(index) => {
-                    let mut base_ty = ty;
-
-                    while let Type::REF(inner) | Type::CONST_REF(inner) |
-                    Type::POINTER(inner) | Type::CONST_POINTER(inner) = base_ty
-                    {
-                        base_ty = *inner;
-                    }
-
-                    match base_ty {
-                        Type::OPTIONAL(inner) => {
-                            match *index {
-                                0 => Type::BOOL,
-                                1 => *inner,
-                                _ => Type::VOID,
-                            }
-                        }
-
-                        Type::STRUCT(type_ref) => {
-                            let fields = self.hir_context.get_struct_fields_ref(type_ref.def_id);
-                            fields[*index].1.clone()
-                        }
-
-                        other => other,
-                    }
-                }
+                ProjectionElem::Field { ty: field_ty, .. } => field_ty.clone(),
             };
         }
 

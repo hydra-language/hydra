@@ -6,12 +6,17 @@ use crate::{
 use crate::Operand;
 
 use errors::error::Span;
-use ir::hir::{HIRBinOp, HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRStmt};
+
+use ir::hir::{
+    HIRBinOp, HIRBlock, HIRExpr, HIRExprKind, HIRFunction,
+    HIRFunctionRef, HIRLocal, HIRStmt, HIRTypeInfo,
+};
+
 use ir::types::Type;
-use ir::context::{DefKind, DefID, HIRContext};
+use ir::context::DefID;
 use ir::Constant;
 
-use analyzer::{fold, traits};
+use analyzer::fold;
 
 const UNINIT_TYPE_PATH: &str = "core::mem::Uninit";
 
@@ -21,66 +26,42 @@ pub struct MIRBuilder<'a> {
     current_block: BasicBlockID,
     var_map: HashMap<DefID, LocalID>, // we need to map HIR variables (DefID) to MIR locals (LocalID)
     loop_context: Vec<(BasicBlockID, BasicBlockID)>,
-    context: &'a HIRContext,
+    type_info: &'a HIRTypeInfo,
     drop_cache: &'a mut HashMap<Type, bool>,
 }
 
 impl<'a> MIRBuilder<'a> {
 
-    pub fn new(context: &'a HIRContext, drop_cache: &'a mut HashMap<Type, bool>) -> Self {
+    pub fn new(type_info: &'a HIRTypeInfo, drop_cache: &'a mut HashMap<Type, bool>) -> Self {
         Self {
             locals: Vec::new(),
             basic_blocks: Vec::new(),
             current_block: BasicBlockID(0),
             var_map: HashMap::new(),
             loop_context: Vec::new(),
-            context,
+            type_info,
             drop_cache,
         }
     }
 
-    fn function_ref(&self, def_id: DefID) -> FunctionRef {
-        let info = self.context.get_def(def_id).unwrap_or_else(|| panic!("ICE: function definition not found for {}", def_id));
-
-        let symbol = self.context.get_symbol_name(def_id).unwrap_or_else(|| panic!(
-                "ICE: backend symbol not found for `{}`",
-                self.context.get_display_name(def_id).unwrap_or(&info.name),
-            )).to_string();
-
-        FunctionRef {
-            def_id,
-            symbol,
-            display_symbol: self.context.get_display_name(def_id).map(str::to_string),
-        }
-    }
-
-    fn intrinsic_ref(&self, def_id: DefID) -> FunctionRef {
-        let info = self.context.get_def(def_id).unwrap_or_else(|| {
-            panic!("ICE: intrinsic definition not found for {}", def_id)
-        });
-
-        let display_symbol = self.context.get_display_name(def_id).map(str::to_string).or_else(|| {
-            (!info.absolute_path.is_empty()).then(|| info.absolute_path.join("::"))
-        });
-
-        FunctionRef {
-            def_id,
-            symbol: info.name.clone(),
-            display_symbol,
-        }
-    }
-
     /// creates a new local variable (temporary or named) and returns its ID
-    fn new_local(&mut self, ty: Type, is_mutable: bool, debug_def_id: Option<DefID>) -> LocalID {
+    fn new_local(&mut self, ty: Type, is_mutable: bool, debug: Option<&HIRLocal>) -> LocalID {
         let id = LocalID(self.locals.len());
 
-        let debug_name = debug_def_id.and_then(|def_id| self.context.get_def(def_id)).map(|info| info.name.clone());
+        let (debug_def_id, debug_name, debug_span) = debug
+            .map(|local| (
+                Some(local.def_id),
+                Some(local.name.clone()),
+                Some(local.span),
+            ))
+            .unwrap_or((None, None, None));
 
         self.locals.push(LocalDecl {
             ty,
             is_mutable,
             debug_def_id,
             debug_name,
+            debug_span,
         });
 
         id
@@ -115,9 +96,14 @@ impl<'a> MIRBuilder<'a> {
         self.new_local(hir_fn.return_type.clone(), true, None);
 
         // 2. _1 to _N are the function parameters
-        for (def_id, ty) in &hir_fn.params {
-            let local_id = self.new_local(ty.clone(), false, Some(*def_id));
-            self.var_map.insert(*def_id, local_id);
+        for param in &hir_fn.params {
+            let local_id = self.new_local(
+                param.ty.clone(),
+                param.is_mutable,
+                Some(param),
+            );
+
+            self.var_map.insert(param.def_id, local_id);
         }
 
         // 3. Create the entry block (bb0)
@@ -132,11 +118,9 @@ impl<'a> MIRBuilder<'a> {
             self.terminate_block(Terminator::Return);
         }
 
-        let display_name = self.context.get_display_name(hir_fn.def_id).map(str::to_string);
-
         MIRFunction {
             name: hir_fn.name,
-            display_name,
+            display_name: hir_fn.display_name,
             def_id: hir_fn.def_id,
             return_type: hir_fn.return_type,
             arg_count: hir_fn.params.len(),
@@ -149,6 +133,14 @@ impl<'a> MIRBuilder<'a> {
     // ========================================================================
     // LOWERING LOGIC
     // ========================================================================
+
+    fn lower_function_ref(callee: &HIRFunctionRef) -> FunctionRef {
+        FunctionRef {
+            def_id: callee.def_id,
+            symbol: callee.symbol.clone(),
+            display_symbol: callee.display_symbol.clone(),
+        }
+    }
 
     fn lower_block(&mut self, block: &HIRBlock) {
         for stmt in &block.stmts {
@@ -193,19 +185,17 @@ impl<'a> MIRBuilder<'a> {
 
     fn lower_stmt(&mut self, stmt: &HIRStmt) {
         match stmt {
-            HIRStmt::VarDecl { def_id, ty, init, span: decl_span, .. } => {
-                let is_mutable = match self.context.get_def(*def_id).map(|info| &info.kind) {
-                    Some(DefKind::Variable { is_mutable, .. }) => *is_mutable,
-                    Some(DefKind::Constant { .. }) => false,
-                    _ => false,
-                };
+            HIRStmt::VarDecl { local, init, .. } => {
+                let local_id = self.new_local(
+                    local.ty.clone(),
+                    local.is_mutable,
+                    Some(local),
+                );
 
-                let local_id = self.new_local(ty.clone(), is_mutable, Some(*def_id));
-
-                self.var_map.insert(*def_id, local_id);
+                self.var_map.insert(local.def_id, local_id);
 
                 if let Some(expr) = init {
-                    let operand = if let Some(value) = fold::const_fold_hir(expr, self.context) {
+                    let operand = if let Some(value) = fold::const_fold_hir(expr) {
                         Operand::Const(value)
                     } else {
                         self.lower_expr_to_operand(expr)
@@ -213,10 +203,13 @@ impl<'a> MIRBuilder<'a> {
 
                     self.push_statement(Statement {
                         kind: StatementKind::Assign(
-                            Place { local: local_id, projection: vec![] },
+                            Place {
+                                local: local_id,
+                                projection: vec![],
+                            },
                             Rvalue::Use(operand),
                         ),
-                        span: *decl_span
+                        span: local.span,
                     });
                 }
             }
@@ -307,28 +300,27 @@ impl<'a> MIRBuilder<'a> {
                 }
             }
             
+            HIRExprKind::ConstRef { value, .. } => {
+                Operand::Const(value.clone())
+            }
+
             HIRExprKind::VarRef(def_id) => {
-                if let Some(&local) = self.var_map.get(def_id) {
-                    let place = Place {
-                        local,
-                        projection: vec![],
-                    };
+                let &local = self.var_map.get(def_id).unwrap_or_else(|| {
+                    panic!(
+                        "ICE: HIR variable {} has no MIR local",
+                        def_id,
+                    )
+                });
 
-                    if self.is_copy_type(&expr.ty) {
-                        Operand::Copy(place)
-                    } else {
-                        Operand::Move(place)
-                    }
+                let place = Place {
+                    local,
+                    projection: vec![],
+                };
+
+                if self.is_copy_type(&expr.ty) {
+                    Operand::Copy(place)
                 } else {
-                    let info = self.context.get_def(*def_id).expect("variable or constant not found");
-
-                    match &info.kind {
-                        DefKind::Constant { value, .. } => {
-                            Operand::Const(value.clone())
-                        }
-
-                        _ => panic!("variable `{}` has no MIR local variable nor is a constant", info.name)
-                    }
+                    Operand::Move(place)
                 }
             }
 
@@ -469,7 +461,7 @@ impl<'a> MIRBuilder<'a> {
                 let temp_local = self.new_local(expr.ty.clone(), false, None);
                 let destination = Place { local: temp_local, projection: vec![] };
                 let success_block = self.new_block();
-                let callee_ref = self.function_ref(*callee);
+                let callee_ref = Self::lower_function_ref(callee);
 
                 self.terminate_block(Terminator::Call {
                     callee: callee_ref,
@@ -496,7 +488,7 @@ impl<'a> MIRBuilder<'a> {
                     projection: vec![],
                 };
 
-                let callee_ref = self.intrinsic_ref(*callee);
+                let callee_ref = Self::lower_function_ref(callee);
 
                 self.push_statement(Statement {
                     kind: StatementKind::Assign(
@@ -936,10 +928,20 @@ impl<'a> MIRBuilder<'a> {
                 };
 
                 let mut discriminant_place = optional_place.clone();
-                discriminant_place.projection.push(ProjectionElem::Field(0));
+                discriminant_place.projection.push(
+                    ProjectionElem::Field {
+                        index: 0,
+                        ty: Type::BOOL,
+                    },
+                );
 
                 let mut payload_place = optional_place;
-                payload_place.projection.push(ProjectionElem::Field(1));
+                payload_place.projection.push(
+                    ProjectionElem::Field {
+                        index: 1,
+                        ty: expr.ty.clone(),
+                    },
+                );
 
                 let present_bb = self.new_block();
                 let fallback_bb = self.new_block();
@@ -1018,7 +1020,7 @@ impl<'a> MIRBuilder<'a> {
                 }
             }
 
-            HIRExprKind::StructInit { def_id, values } => {
+            HIRExprKind::StructInit { values, .. } => {
                 let mut field_operands = Vec::new();
 
                 for field_expr in values {
@@ -1030,13 +1032,23 @@ impl<'a> MIRBuilder<'a> {
                 let temp_local = self.new_local(expr.ty.clone(), false, None);
                 let target_place = Place { local: temp_local, projection: vec![] };
 
+                let Type::STRUCT(type_ref) = &expr.ty else {
+                    panic!(
+                        "ICE: StructInit has non-struct type `{}`",
+                        expr.ty,
+                    );
+                };
+
                 // emit the Aggregate instruction
                 self.push_statement(Statement {
                     kind: StatementKind::Assign(
                         target_place.clone(),
-                        Rvalue::Aggregate(AggregateKind::Struct(*def_id), field_operands)
+                        Rvalue::Aggregate(
+                            AggregateKind::Struct(type_ref.clone()),
+                            field_operands,
+                        ),
                     ),
-                    span: expr.span
+                    span: expr.span,
                 });
 
                 if self.is_copy_type(&expr.ty) {
@@ -1057,7 +1069,12 @@ impl<'a> MIRBuilder<'a> {
                 };
 
                 // 3. append the field access to the projection list.
-                place.projection.push(ProjectionElem::Field(*field_index));
+                place.projection.push(
+                    ProjectionElem::Field {
+                        index: *field_index,
+                        ty: expr.ty.clone(),
+                    },
+                );
 
                 // 4. return as a copy or move depending on the field's type
                 if self.is_copy_type(&expr.ty) {
@@ -1071,23 +1088,19 @@ impl<'a> MIRBuilder<'a> {
 
     fn is_copy_type(&self, ty: &Type) -> bool {
         match ty {
-            // primitives are trivially copied
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::ISIZE |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::USIZE |
             Type::F32 | Type::F64 | Type::CHAR | Type::BOOL | Type::VOID => true,
 
-            Type::ARRAY(inner, _) | Type::OPTIONAL(inner) => self.is_copy_type(inner),
-            
-            // pointers and references are just memory addresses.
-            // copying an address is safe (the underlying data is NOT copied).
-            Type::POINTER(_) | Type::CONST_POINTER(_) | Type::REF(_) | Type::CONST_REF(_) => true,
-            
-            Type::STRUCT(_) | Type::GENERIC_INSTANCE(_, _) => {
-                let Some(copy_trait_def_id) = self.context.find_trait_by_path(traits::COPY_TRAIT_PATH) else {
-                    return false;
-                };
+            Type::ARRAY(inner, _) | Type::OPTIONAL(inner) => {
+                self.is_copy_type(inner)
+            }
 
-                self.context.get_exact_trait_impl(copy_trait_def_id, ty).is_some()
+            Type::POINTER(_) | Type::CONST_POINTER(_) |
+            Type::REF(_) | Type::CONST_REF(_) => true,
+
+            Type::STRUCT(_) | Type::GENERIC_INSTANCE(_, _) => {
+                self.type_info.copy_types.contains(ty)
             }
 
             Type::INFERRED_ARRAY(_) | Type::SLICE(_) | Type::GENERIC(_) | Type::STRING => false,
@@ -1095,11 +1108,7 @@ impl<'a> MIRBuilder<'a> {
     }
 
     fn type_has_explicit_drop(&self, ty: &Type) -> bool {
-        let Some(drop_trait_def_id) = self.context.find_trait_by_path(traits::DROP_TRAIT_PATH)else {
-            return false;
-        };
-
-        self.context.get_exact_trait_impl(drop_trait_def_id, ty).is_some()
+        self.type_info.drop_functions.contains_key(ty)
     }
 
     fn type_needs_drop(&mut self, ty: &Type) -> bool {
@@ -1113,11 +1122,16 @@ impl<'a> MIRBuilder<'a> {
             false
         } else {
             match ty {
-                Type::STRUCT(type_ref) => self
-                    .context
-                    .get_struct_fields_ref(type_ref.def_id)
-                    .iter()
-                    .any(|(_, field_ty, _)| self.type_needs_drop(field_ty)),
+                Type::STRUCT(type_ref) => {
+                    let fields = self.type_info.structs.get(&type_ref.def_id).map(|info| &info.fields).unwrap_or_else(|| {
+                        panic!(
+                            "ICE: missing concrete field layout for `{}`",
+                            type_ref,
+                        )
+                    }).clone();
+
+                    fields.iter().any(|field_ty| self.type_needs_drop(field_ty))
+                }
 
                 _ => false,
             }
@@ -1131,9 +1145,12 @@ impl<'a> MIRBuilder<'a> {
         //
         // user-defined Drop runs before compiler-generated field destruction
         //
-        if self.type_has_explicit_drop(ty) {
+        if let Some(drop_fn) = self.type_info.drop_functions.get(ty) {
             self.push_statement(Statement {
-                kind: StatementKind::Drop(place.clone()),
+                kind: StatementKind::Drop {
+                    place: place.clone(),
+                    callee: Self::lower_function_ref(drop_fn),
+                },
                 span,
             });
         }
@@ -1155,16 +1172,29 @@ impl<'a> MIRBuilder<'a> {
             return;
         };
 
-        let fields = self.context.get_struct_fields_ref(type_ref.def_id);
-        for (field_index, (_, field_ty, _)) in fields.iter().enumerate() {
+        let struct_info = self.type_info.structs.get(&type_ref.def_id).unwrap_or_else(|| {
+            panic!("ICE: missing concrete field layout for `{}`", type_ref)
+        }).clone();
+
+        for (field_index, field_ty) in struct_info.fields.iter().enumerate() {
             if !self.type_needs_drop(field_ty) {
                 continue;
             }
 
             let mut field_place = place.clone();
-            field_place.projection.push(ProjectionElem::Field(field_index));
 
-            self.emit_drop_glue(field_place, field_ty, span);
+            field_place.projection.push(
+                ProjectionElem::Field {
+                    index: field_index,
+                    ty: field_ty.clone(),
+                },
+            );
+
+            self.emit_drop_glue(
+                field_place,
+                field_ty,
+                span,
+            );
         }
     }
 
@@ -1231,7 +1261,7 @@ impl<'a> MIRBuilder<'a> {
                         }
                     }
 
-                    StatementKind::Drop(place) => {
+                    StatementKind::Drop { place, .. } => {
                         if place.local == local {
                             return true;
                         }
@@ -1254,25 +1284,14 @@ impl<'a> MIRBuilder<'a> {
     }
 
     fn is_uninit_type(&self, ty: &Type) -> bool {
-        match ty {
-            Type::GENERIC_INSTANCE(type_ref, _) => {
-                type_ref.symbol == UNINIT_TYPE_PATH
-            }
+        let type_ref = match ty {
+            Type::GENERIC_INSTANCE(type_ref, _) |
+            Type::STRUCT(type_ref) => type_ref,
 
-            Type::STRUCT(type_ref) => {
-                if type_ref.symbol == UNINIT_TYPE_PATH {
-                    return true;
-                }
+            _ => return false,
+        };
 
-                self.context
-                    .get_display_name(type_ref.def_id)
-                    .is_some_and(|name| {
-                        name.starts_with("core::mem::Uninit<")
-                    })
-            }
-
-            _ => false,
-        }
+        type_ref.symbol == UNINIT_TYPE_PATH || type_ref.display_symbol.as_deref().is_some_and(|name| name.starts_with("core::mem::Uninit<"))
     }
 
     fn lower_short_circuit_bool(&mut self, op: HIRBinOp, lhs: &HIRExpr, rhs: &HIRExpr, span: Span) -> Operand {

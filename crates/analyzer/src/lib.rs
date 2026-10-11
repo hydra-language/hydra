@@ -8,11 +8,12 @@ pub mod fold;
 pub mod monomorphizer;
 pub mod resolve;
 pub mod traits;
+pub mod solver;
 pub mod reachability;
 
 mod intrinsics;
 mod passes;
 
-pub use analyzer::Analyzer;
+pub use analyzer::{AnalyzedProgram, Analyzer};
 pub use resolve::Resolver;
 pub use scope::{NameResolver, Namespace, Scope};

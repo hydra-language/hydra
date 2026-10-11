@@ -238,7 +238,7 @@ impl<'ctx> Analyzer<'ctx> {
 
         Ok(HIRExpr {
             kind: HIRExprKind::Call {
-                callee: method_def_id,
+                callee: self.hir_function_ref(method_def_id),
                 args,
                 generic_args:
                 resolved_generic_args,

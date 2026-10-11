@@ -14,9 +14,6 @@ impl std::fmt::Display for DefID {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TypeID(pub usize);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraitBound {
     pub target_type: Type,
@@ -91,16 +88,15 @@ pub struct TraitImpl {
 }
 
 #[derive(Default, Debug)]
-pub struct HIRContext {
+pub struct SemanticContext {
     pub definitions: HashMap<DefID, SymbolInfo>,
-    pub types: HashMap<TypeID, Type>,
     next_def_id: usize,
     pub trait_impls: Vec<TraitImpl>,
     pub display_names: HashMap<DefID, String>,
     pub symbol_names: HashMap<DefID, String>,
 }
 
-impl HIRContext {
+impl SemanticContext {
 
     pub fn new() -> Self {
         Self::default()

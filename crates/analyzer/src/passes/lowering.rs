@@ -97,10 +97,7 @@ impl<'ctx> Analyzer<'ctx> {
                 p_info,
             );
 
-            ir_params.push((
-                param_def_id,
-                p_ty,
-            ));
+            ir_params.push(self.hir_local(param_def_id, p_ty));
         }
 
         if let DefKind::Function {
@@ -110,7 +107,7 @@ impl<'ctx> Analyzer<'ctx> {
         } = info.kind
         {
             *return_type = ret_type.clone();
-            *params = ir_params.iter().map(|(_, ty)| ty.clone()).collect();
+            *params = ir_params.iter().map(|param| param.ty.clone()).collect();
         }
 
         let function_trait_bounds = match &info.kind {
@@ -162,9 +159,13 @@ impl<'ctx> Analyzer<'ctx> {
             }
         }
 
+        let display_name = self.context.get_display_name(def_id).map(str::to_string);
+
         Some(HIRFunction {
-            name: fn_name,
+            name: fn_name.clone(),
             def_id,
+            symbol: fn_name,
+            display_name,
             params: ir_params,
             return_type: ret_type,
             body: HIRBlock {

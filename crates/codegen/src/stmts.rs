@@ -2,7 +2,6 @@ use crate::CodeGen;
 use ir::types::Type;
 use mir::{LocalID, MIRFunction, Place, ProjectionElem, Statement, StatementKind, Terminator};
 use inkwell::{IntPredicate, values::{IntValue, PointerValue}};
-use analyzer::traits;
 
 impl<'c> CodeGen<'c> {
 
@@ -20,25 +19,12 @@ impl<'c> CodeGen<'c> {
                 // If it IS void, we do nothing (no memory to store into!)
             }
 
-            StatementKind::Drop(place) => {
-                let ty = self.get_place_type(place, mir_fn);
-
-                let drop_trait_def_id = self.hir_context.find_trait_by_path(traits::DROP_TRAIT_PATH).ok_or_else(|| {
-                    "ICE: MIR contains Drop statement but `core::ops::Drop` is not defined".to_string()
-                })?;
-
-                let drop_def_id = self.hir_context.get_exact_trait_method(drop_trait_def_id, &ty, "drop").ok_or_else(|| {
-                    format!("ICE: MIR contains Drop statement for `{ty}`, but it has no `core::ops::Drop` implementation")
-                })?;
-
-                let drop_info = self.hir_context.get_def(drop_def_id).ok_or_else(|| {
-                    format!("ICE: missing Drop::drop definition for `{ty}`")
-                })?;
-
-                let drop_name = drop_info.name.clone();
-
-                let drop_fn = self.module.get_function(&drop_name).ok_or_else(|| {
-                    format!("ICE: LLVM drop function `{drop_name}` not found")
+            StatementKind::Drop { place, callee } => {
+                let drop_fn = self.module.get_function(&callee.symbol).ok_or_else(|| {
+                    format!(
+                        "ICE: LLVM drop function `{}` not found",
+                        callee.display_symbol.as_deref().unwrap_or(&callee.symbol),
+                    )
                 })?;
 
                 let self_ptr = self.compile_place(place, mir_fn)?;
@@ -218,7 +204,7 @@ impl<'c> CodeGen<'c> {
                     slice_len = None;
                 }
 
-                ProjectionElem::Field(idx) => {
+                ProjectionElem::Field { index: idx, ty: field_ty } => {
                     while let Type::REF(inner) | Type::CONST_REF(inner) |
                     Type::POINTER(inner) | Type::CONST_POINTER(inner) = &current_ty
                     {
@@ -227,52 +213,35 @@ impl<'c> CodeGen<'c> {
                     }
 
                     match &current_ty {
-                        Type::OPTIONAL(inner) => {
+                        Type::OPTIONAL(_) => {
                             if *idx > 1 {
                                 return Err(format!("ICE: optional field index {} is invalid", idx));
                             }
 
                             ptr = self.builder.build_struct_gep(ptr, *idx as u32, "optional_field_ptr").map_err(|_| {
-                                format!(
-                                    "ICE: optional GEP failed for field {}",
-                                    idx,
-                                )
+                                format!("ICE: optional GEP failed for field {}", idx)
                             })?;
-
-                            current_ty = if *idx == 0 {
-                                Type::BOOL
-                            } else {
-                                *inner.clone()
-                            };
                         }
 
                         Type::STRUCT(type_ref) => {
                             let struct_ty = self.module.get_struct_type(&type_ref.symbol).ok_or_else(|| {
-                                format!(
-                                    "ICE: struct type '{}' not found in module",
-                                    type_ref,
-                                )
+                                format!("ICE: struct type '{}' not found in module", type_ref)
                             })?;
 
                             let _ = struct_ty;
 
                             ptr = self.builder.build_struct_gep(ptr, *idx as u32, "field_ptr").map_err(|_| {
-                                format!(
-                                    "GEP failed: invalid field index {} on '{}'",
-                                    idx,
-                                    type_ref,
-                                )
+                                format!("GEP failed: invalid field index {} on '{}'", idx, type_ref)
                             })?;
-
-                            current_ty = self.hir_context.get_struct_fields_ref(type_ref.def_id)[*idx].1 .clone();
                         }
 
                         _ => return Err(format!(
                             "ICE: field access on non-aggregate type {:?}",
                             current_ty,
-                        ))
+                        )),
                     }
 
+                    current_ty = field_ty.clone();
                     slice_len = None;
                 }
             }

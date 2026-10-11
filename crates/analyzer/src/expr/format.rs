@@ -124,7 +124,7 @@ impl<'ctx> Analyzer<'ctx> {
             let argument = self.lower_expr(argument_node)?;
             let argument_ty = argument.ty.clone();
 
-            if !self.context.type_implements_trait(&argument_ty, display_trait_def_id, &self.current_trait_bounds) 
+            if !self.trait_solver().type_implements_trait(&argument_ty, display_trait_def_id, &self.current_trait_bounds)
             {
                 return Err(self.error(
                     "S028",
@@ -154,8 +154,7 @@ impl<'ctx> Analyzer<'ctx> {
             );
 
             stmts.push(HIRStmt::VarDecl {
-                def_id: temp_def_id,
-                ty: reference_ty.clone(),
+                local: self.hir_local(temp_def_id, reference_ty.clone()),
                 init: Some(HIRExpr {
                     kind: HIRExprKind::Borrow {
                         is_mut: false,
@@ -165,7 +164,6 @@ impl<'ctx> Analyzer<'ctx> {
                     span,
                 }),
                 has_type_annotation: false,
-                span,
             });
 
             formatting_args.push((
@@ -268,7 +266,7 @@ impl<'ctx> Analyzer<'ctx> {
 
         Ok(HIRExpr {
             kind: HIRExprKind::Call {
-                callee: write_def_id,
+                callee: self.hir_function_ref(write_def_id),
                 args: vec![
                     formatter_arg,
                     text,
@@ -290,7 +288,7 @@ impl<'ctx> Analyzer<'ctx> {
                 return None;
             }
 
-            if !self.context.trait_impl_is_applicable(trait_impl, value_ty, &self.current_trait_bounds) 
+            if !self.trait_solver().trait_impl_is_applicable(trait_impl, value_ty, &self.current_trait_bounds) 
             {
                 return None;
             }
@@ -327,7 +325,7 @@ impl<'ctx> Analyzer<'ctx> {
 
         Ok(HIRExpr {
             kind: HIRExprKind::Call {
-                callee,
+                callee: self.hir_function_ref(callee),
                 args: vec![
                     self_arg,
                     formatter_arg,
@@ -437,7 +435,7 @@ impl<'ctx> Analyzer<'ctx> {
 
         let initializer = HIRExpr {
             kind: HIRExprKind::Call {
-                callee: new_def_id,
+                callee: self.hir_function_ref(new_def_id),
                 args: vec![],
                 generic_args: vec![],
                 trait_dispatch: None,
@@ -465,11 +463,9 @@ impl<'ctx> Analyzer<'ctx> {
             kind: HIRExprKind::Block(HIRBlock {
                 stmts: vec![
                     HIRStmt::VarDecl {
-                        def_id: formatter_temp,
-                        ty: formatter_ty,
+                        local: self.hir_local(formatter_temp, formatter_ty),
                         init: Some(initializer),
                         has_type_annotation: false,
-                        span,
                     },
 
                     HIRStmt::Expr(output),

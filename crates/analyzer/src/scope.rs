@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use ir::context::{DefID, DefKind, HIRContext};
+use ir::context::{DefID, DefKind, SemanticContext};
 use parser::ast::NodeID;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -80,7 +80,7 @@ impl Scope {
         self.symbols.insert((namespace, name), id);
     }
 
-    pub fn resolve(&self, namespace: Namespace, name: &str, context: &HIRContext) -> Option<DefID> {
+    pub fn resolve(&self, namespace: Namespace, name: &str, context: &SemanticContext) -> Option<DefID> {
         let key = (namespace, name.to_string());
         
         if let Some(&id) = self.symbols.get(&key) {
@@ -93,12 +93,12 @@ impl Scope {
         self.parent.as_ref().and_then(|p| p.resolve(namespace, name, context))
     }
 
-    pub fn resolve_absolute(&self, namespace: Namespace, path: &[String], context: &HIRContext) -> Option<DefID> {
+    pub fn resolve_absolute(&self, namespace: Namespace, path: &[String], context: &SemanticContext) -> Option<DefID> {
         if path.is_empty() { return None; }
         self.resolve(namespace, &path[0], context)
     }
 
-    pub fn resolve_path(&self, partial_path: &[String], context: &HIRContext) -> Vec<String> {
+    pub fn resolve_path(&self, partial_path: &[String], context: &SemanticContext) -> Vec<String> {
         if partial_path.is_empty() { return vec![]; }
         let first = &partial_path[0];
         

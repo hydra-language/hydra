@@ -361,13 +361,11 @@ impl<'ctx> Analyzer<'ctx> {
                 if let Some(kind) = intrinsic {
                     return Ok(HIRExpr {
                         kind: HIRExprKind::IntrinsicCall {
-                            callee: actual_def_id,
+                            callee: self.hir_intrinsic_ref(actual_def_id),
                             kind,
                             args,
-                            type_args:
-                            resolved_generic_args,
+                            type_args: resolved_generic_args,
                         },
-
                         ty: resolved_return_type,
                         span,
                     });
@@ -375,13 +373,11 @@ impl<'ctx> Analyzer<'ctx> {
 
                 Ok(HIRExpr {
                     kind: HIRExprKind::Call {
-                        callee: actual_def_id,
+                        callee: self.hir_function_ref(actual_def_id),
                         args,
-                        generic_args:
-                        resolved_generic_args,
+                        generic_args: resolved_generic_args,
                         trait_dispatch: None,
                     },
-
                     ty: resolved_return_type,
                     span,
                 })
@@ -446,7 +442,7 @@ impl<'ctx> Analyzer<'ctx> {
         let mut candidates = Vec::new();
 
         for trait_impl in &self.context.trait_impls {
-            if !self.context.trait_impl_is_applicable(trait_impl, owner_ty, &self.current_trait_bounds) {
+            if !self.trait_solver().trait_impl_is_applicable(trait_impl, owner_ty, &self.current_trait_bounds) {
                 continue;
             }
 

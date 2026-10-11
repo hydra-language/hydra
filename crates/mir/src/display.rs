@@ -51,7 +51,14 @@ impl fmt::Display for Statement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             StatementKind::Assign(place, rval) => write!(f, "{} = {}", place, rval),
-            StatementKind::Drop(place) => write!(f, "drop({})", place),
+            StatementKind::Drop { place, callee } => {
+                write!(
+                    f,
+                    "drop {}({})",
+                    callee.display_symbol.as_deref().unwrap_or(&callee.symbol),
+                    place,
+                )
+            }
         }
     }
 }
@@ -67,7 +74,7 @@ impl fmt::Display for Place {
         for proj in &self.projection {
             match proj {
                 ProjectionElem::Deref => {}
-                ProjectionElem::Field(idx) => write!(f, ".{}", idx)?,
+                ProjectionElem::Field { index, .. } => write!(f, ".{}", index)?,
                 ProjectionElem::Index(local) => write!(f, "[_{}]", local.0)?,
             }
         }
@@ -80,7 +87,7 @@ impl fmt::Display for ProjectionElem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ProjectionElem::Deref => write!(f, "*"),
-            ProjectionElem::Field(idx) => write!(f, ".{}", idx),
+            ProjectionElem::Field { index, .. } => write!(f, ".{}", index),
             ProjectionElem::Index(local) => write!(f, "[_{}]", local.0),
         }
     }

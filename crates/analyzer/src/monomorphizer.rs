@@ -1,24 +1,120 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use ir::context::{DefID, DefKind, HIRContext, SymbolInfo, TraitBound, TraitImpl};
-use ir::hir::{HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRProgram, HIRStmt};
+use ir::context::{DefID, DefKind, SemanticContext, SymbolInfo, TraitBound, TraitImpl};
+
 use ir::types::{Type, TypeRef};
 use ir::instance::Instance;
 
-pub struct Monomorphizer<'a> {
-    pub context: &'a mut HIRContext,
+use ir::hir::{
+    HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRFunctionRef, HIRLocal, HIRProgram, HIRStmt, HIRStructInfo, HIRTypeInfo, MonomorphizedProgram,
+};
 
+use crate::AnalyzedProgram;
+use crate::solver::TraitSolver;
+
+#[derive(Debug)]
+struct MonomorphizationContext {
+    definitions: HashMap<DefID, SymbolInfo>,
+    trait_impls: Vec<TraitImpl>,
+    display_names: HashMap<DefID, String>,
+    symbol_names: HashMap<DefID, String>,
+    next_def_id: usize,
+}
+
+impl MonomorphizationContext {
+
+    fn from_semantic_context(context: SemanticContext) -> Self {
+        let next_def_id = context.definitions.keys().map(|def_id| def_id.0).max().map_or(0, |id| id + 1);
+
+        Self {
+            definitions: context.definitions,
+            trait_impls: context.trait_impls,
+            display_names: context.display_names,
+            symbol_names: context.symbol_names,
+            next_def_id,
+        }
+    }
+
+    fn insert_def(&mut self, info: SymbolInfo) -> DefID {
+        let id = DefID(self.next_def_id);
+
+        self.next_def_id += 1;
+        self.definitions.insert(id, info);
+
+        id
+    }
+
+    fn get_def(&self, id: DefID) -> Option<&SymbolInfo> {
+        self.definitions.get(&id)
+    }
+
+    fn update_def(&mut self, id: DefID, info: SymbolInfo) {
+        self.definitions.insert(id, info);
+    }
+
+    fn find_struct_by_name(&self, name: &str) -> Option<DefID> {
+        self.definitions.iter().find_map(|(id, info)| {
+            let path = info.absolute_path.join("::");
+
+            if (path == name || info.name == name || info.absolute_path.last().is_some_and(|part| part == name))
+                && matches!(info.kind, DefKind::Struct { .. })
+            {
+                Some(*id)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn register_trait_impl(&mut self, trait_impl: TraitImpl) {
+        self.trait_impls.push(trait_impl);
+    }
+
+    fn set_display_name(&mut self, def_id: DefID, name: String) {
+        self.display_names.insert(def_id, name);
+    }
+
+    fn get_display_name(&self, def_id: DefID) -> Option<&str> {
+        self.display_names.get(&def_id).map(String::as_str)
+    }
+
+    fn set_symbol_name(&mut self, def_id: DefID, name: String) {
+        self.symbol_names.insert(def_id, name);
+    }
+
+    fn get_symbol_name(&self, def_id: DefID) -> Option<&str> {
+        self.symbol_names.get(&def_id).map(String::as_str)
+    }
+
+    fn find_trait_by_path(&self, path: &str) -> Option<DefID> {
+        self.definitions.iter().find_map(|(def_id, info)| {
+            if info.absolute_path.join("::") == path && matches!(info.kind, DefKind::Trait { .. }) {
+                Some(*def_id)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn get_exact_trait_impl_with_args(&self, trait_def_id: DefID, trait_args: &[Type],target_type: &Type) -> Option<&TraitImpl> {
+        self.trait_impls.iter().find(|trait_impl| {
+            trait_impl.trait_def_id == trait_def_id && trait_impl.trait_args == trait_args && &trait_impl.target_type == target_type
+        })
+    }
+}
+
+pub struct Monomorphizer {
+    context: MonomorphizationContext,
     original_functions: HashMap<DefID, HIRFunction>,
     instantiation_cache: HashMap<Instance, DefID>,
     worklist: Vec<(Instance, DefID)>,
     specialized_functions: Vec<HIRFunction>,
-
     instantiated_structs: HashMap<(DefID, Vec<Type>), TypeRef>,
 }
 
-impl<'a> Monomorphizer<'a> {
+impl Monomorphizer {
 
-    fn is_function_generic(func: &HIRFunction, context: &HIRContext) -> bool {
+    fn is_function_generic(func: &HIRFunction, context: &MonomorphizationContext) -> bool {
         if !func.generic_params.is_empty() { return true; }
 
         let parts: Vec<&str> = func.name.split("::").collect();
@@ -37,17 +133,18 @@ impl<'a> Monomorphizer<'a> {
         false
     }
 
-    pub fn new(context: &'a mut HIRContext, program: HIRProgram) -> Self {
+    pub fn new(analyzed: AnalyzedProgram) -> Self {
+        let AnalyzedProgram { hir: program, context } = analyzed;
+
+        let context = MonomorphizationContext::from_semantic_context(context);
+
         let mut original_functions = HashMap::new();
         let mut specialized_functions = Vec::new();
         let mut worklist = Vec::new();
 
         for func in program.functions {
-            if !Self::is_function_generic(&func, context) {
-                worklist.push(
-                    (Instance::monomorphic(func.def_id), func.def_id)
-                );
-
+            if !Self::is_function_generic(&func, &context) {
+                worklist.push((Instance::monomorphic(func.def_id), func.def_id));
                 specialized_functions.push(func.clone());
             }
 
@@ -64,7 +161,7 @@ impl<'a> Monomorphizer<'a> {
         }
     }
 
-    pub fn run(mut self) -> HIRProgram {
+    pub fn run(mut self) -> MonomorphizedProgram {
         self.resolve_concrete_struct_fields();
 
         while let Some((instance, specialized_def_id)) = self.worklist.pop() {
@@ -77,9 +174,17 @@ impl<'a> Monomorphizer<'a> {
             globals: vec![],
         };
 
-        crate::reachability::retain_reachable_functions(&mut program, self.context);
+        let type_info = self.build_type_info();
 
-        program
+        crate::reachability::retain_reachable_functions(
+            &mut program,
+            &type_info,
+        );
+
+        MonomorphizedProgram {
+            functions: program.functions,
+            type_info,
+        }
     }
 
     fn process_function(&mut self, instance: Instance, specialized_def_id: DefID) {
@@ -91,30 +196,26 @@ impl<'a> Monomorphizer<'a> {
             substitutions.insert(param_name.clone(), concrete_type.clone());
         }
 
-        let specialized_params: Vec<(DefID, Type)> = generic_func
-            .params
-            .iter()
-            .map(|(def_id, ty)| {
-                let substituted = ty.substitute(&substitutions);
-                (*def_id, self.resolve_type(&substituted, &substitutions))
+        let specialized_params: Vec<HIRLocal> = generic_func.params.iter()
+            .map(|param| {
+                let mut param = param.clone();
+                let substituted = param.ty.substitute(&substitutions);
+                param.ty = self.resolve_type(&substituted, &substitutions);
+                param
             })
             .collect();
 
         let substituted_return_type = generic_func.return_type.substitute(&substitutions);
         let specialized_return_type = self.resolve_type(&substituted_return_type, &substitutions);
 
-        let mut local_types: HashMap<DefID, Type> = specialized_params.iter().cloned().collect();
-
+        let mut local_types: HashMap<DefID, Type> = specialized_params.iter().map(|param| (param.def_id, param.ty.clone())).collect();
         let mut specialized_body = generic_func.body.clone();
 
         for stmt in &mut specialized_body.stmts {
             self.substitute_stmt(stmt, &substitutions, &mut local_types);
         }
 
-        if let Some(function) = self
-            .specialized_functions
-            .iter_mut()
-            .find(|function| function.def_id == specialized_def_id)
+        if let Some(function) = self.specialized_functions.iter_mut().find(|function| function.def_id == specialized_def_id)
         {
             function.params = specialized_params;
             function.return_type = specialized_return_type;
@@ -129,7 +230,7 @@ impl<'a> Monomorphizer<'a> {
                 self.substitute_expr(expr, subs, local_types);
             }
 
-            HIRStmt::VarDecl { def_id, ty, init, has_type_annotation, .. } => {
+            HIRStmt::VarDecl { local, init, has_type_annotation } => {
                 let resolved_type = if let Some(init_expr) = init.as_mut() {
                     self.substitute_expr(init_expr, subs, local_types);
 
@@ -139,18 +240,18 @@ impl<'a> Monomorphizer<'a> {
                 };
 
                 if *has_type_annotation {
-                    let substituted = ty.substitute(subs);
+                    let substituted = local.ty.substitute(subs);
 
-                    *ty = self.resolve_type(&substituted, subs);
+                    local.ty = self.resolve_type(&substituted, subs);
                 } else if let Some(init_ty) = resolved_type {
-                    *ty = init_ty;
+                    local.ty = init_ty;
                 } else {
-                    let substituted = ty.substitute(subs);
+                    let substituted = local.ty.substitute(subs);
 
-                    *ty = self.resolve_type(&substituted, subs);
+                    local.ty = self.resolve_type(&substituted, subs);
                 }
 
-                local_types.insert(*def_id, ty.clone());
+                local_types.insert(local.def_id, local.ty.clone());
             }
         }
     }
@@ -317,13 +418,16 @@ impl<'a> Monomorphizer<'a> {
                         "ICE: deferred trait call has no receiver"
                     );
 
-                    let method_name = self.context.get_def(*callee).map(|info| info.name.clone()).expect(
-                        "ICE: deferred trait method definition is missing"
+                    let method_name = self.context.get_def(callee.def_id).map(|info| info.name.clone())
+                        .expect("ICE: deferred trait method definition is missing");
+
+                    let solver = TraitSolver::new(
+                        &self.context.trait_impls, 
+                        self.context.find_trait_by_path(crate::traits::COPY_TRAIT_PATH)
                     );
 
                     let impl_method = self.context.trait_impls.iter().find_map(|trait_impl| {
-                        if trait_impl.trait_def_id != trait_def_id || 
-                        !self.context.trait_impl_is_applicable(trait_impl, receiver_ty, &[])
+                        if trait_impl.trait_def_id != trait_def_id || !solver.trait_impl_is_applicable(trait_impl, receiver_ty, &[])
                         {
                             return None;
                         }
@@ -335,11 +439,11 @@ impl<'a> Monomorphizer<'a> {
                         receiver_ty,
                     ));
 
-                    *callee = impl_method;
+                    *callee = self.function_ref(impl_method);
                     *trait_dispatch = None;
                 }
 
-                let callee_info = self.context.get_def(*callee).unwrap().clone();
+                let callee_info = self.context.get_def(callee.def_id).unwrap().clone();
 
                 if let DefKind::Function { generic_params, params, return_type, .. } = &callee_info.kind {
                     if !generic_params.is_empty() {
@@ -365,11 +469,11 @@ impl<'a> Monomorphizer<'a> {
                             let local_subs: HashMap<String, Type> = generic_params.iter().cloned().zip(concrete_args.iter().cloned()).collect();
 
                             let specialized_callee = self.get_or_create_specialization(
-                                *callee,
+                                callee.def_id,
                                 concrete_args,
                             );
 
-                            *callee = specialized_callee;
+                            *callee = self.function_ref(specialized_callee);
 
                             let substituted_return = return_type.substitute(&local_subs);
 
@@ -492,7 +596,7 @@ impl<'a> Monomorphizer<'a> {
 
         self.context.set_display_name(
             specialized_def_id,
-            display_name,
+            display_name.clone(),
         );
 
         self.instantiation_cache.insert(
@@ -500,15 +604,23 @@ impl<'a> Monomorphizer<'a> {
             specialized_def_id,
         );
 
-        let mut new_func = self.original_functions.get(&generic_def_id).unwrap().clone();
+        let mut new_func = self.original_functions
+            .get(&generic_def_id)
+            .unwrap()
+            .clone();
 
-        new_func.name = mangled_name;
+        new_func.name = mangled_name.clone();
+        new_func.symbol = mangled_name;
+        new_func.display_name = Some(display_name);
         new_func.def_id = specialized_def_id;
         new_func.generic_params.clear();
 
         new_func.params = new_func.params.into_iter()
             .zip(specialized_params)
-            .map(|((def_id, _), ty)| (def_id, ty))
+            .map(|(mut param, ty)| {
+                param.ty = ty;
+                param
+            })
             .collect();
 
         new_func.return_type = specialized_return_type;
@@ -660,14 +772,19 @@ impl<'a> Monomorphizer<'a> {
 
         let trait_impls = self.context.trait_impls.clone();
 
-        for trait_impl in trait_impls {
+        let solver = TraitSolver::new(
+            &trait_impls,
+            self.context.find_trait_by_path(crate::traits::COPY_TRAIT_PATH),
+        );
+
+        for trait_impl in &trait_impls {
             let mut substitutions = HashMap::new();
 
             if !Self::trait_impl_target_matches(&trait_impl.target_type, &generic_instance, &mut substitutions) {
                 continue;
             }
 
-            if !self.context.trait_impl_is_applicable(&trait_impl, &generic_instance, &[]) {
+            if !solver.trait_impl_is_applicable(&trait_impl, &generic_instance, &[]) {
                 continue;
             }
 
@@ -695,8 +812,8 @@ impl<'a> Monomorphizer<'a> {
                 trait_def_id: bound.trait_def_id,
             }).collect::<Vec<_>>();
 
-            for (name, method_def_id) in trait_impl.methods {
-                let method_info = self.context.get_def(method_def_id).unwrap().clone();
+            for (name, method_def_id) in &trait_impl.methods {
+                let method_info = self.context.get_def(*method_def_id).unwrap().clone();
 
                 let DefKind::Function { generic_params, .. } = &method_info.kind else {
                     continue;
@@ -707,15 +824,15 @@ impl<'a> Monomorphizer<'a> {
                 let specialized_def_id = match concrete_args {
                     Some(args) if !args.is_empty() => {
                         self.get_or_create_specialization(
-                            method_def_id,
+                            *method_def_id,
                             args,
                         )
                     }
 
-                    _ => method_def_id,
+                    _ => *method_def_id,
                 };
 
-                methods.insert(name, specialized_def_id);
+                methods.insert(name.to_string(), specialized_def_id);
             }
 
             self.context.register_trait_impl(TraitImpl {
@@ -982,6 +1099,90 @@ impl<'a> Monomorphizer<'a> {
             };
 
             self.context.update_def(def_id, info);
+        }
+    }
+
+    fn build_type_info(&self) -> HIRTypeInfo {
+        let mut structs = HashMap::new();
+
+        for (def_id, info) in &self.context.definitions {
+            let DefKind::Struct { fields, generic_params } = &info.kind else {
+                continue;
+            };
+
+            // generic definitions aren't layouts MIR can instantiate directly
+            if !generic_params.is_empty() {
+                continue;
+            }
+
+            let symbol = if info.absolute_path.is_empty() {
+                info.name.clone()
+            } else {
+                info.absolute_path.join("::")
+            };
+
+            let mut type_ref = TypeRef::new(*def_id, symbol);
+
+            if let Some(display_name) = self.context.get_display_name(*def_id) {
+                type_ref = type_ref.with_display_symbol(display_name.to_string());
+            }
+
+            structs.insert(*def_id, HIRStructInfo {
+                type_ref,
+                fields: fields.iter().map(|(_, ty, _)| ty.clone()).collect(),
+            });
+        }
+
+        let copy_trait = self.context.find_trait_by_path(
+            crate::traits::COPY_TRAIT_PATH,
+        );
+
+        let drop_trait = self.context.find_trait_by_path(
+            crate::traits::DROP_TRAIT_PATH,
+        );
+
+        let mut copy_types = HashSet::new();
+        let mut drop_functions = HashMap::new();
+
+        for trait_impl in &self.context.trait_impls {
+            if Some(trait_impl.trait_def_id) == copy_trait {
+                copy_types.insert(trait_impl.target_type.clone());
+            }
+
+            if Some(trait_impl.trait_def_id) == drop_trait {
+                let drop_def_id = trait_impl.methods.get("drop").copied().unwrap_or_else(|| {
+                    panic!(
+                        "ICE: Drop implementation for `{}` has no `drop` method",
+                        trait_impl.target_type,
+                    )
+                });
+
+                drop_functions.insert(
+                    trait_impl.target_type.clone(),
+                    self.function_ref(drop_def_id),
+                );
+            }
+        }
+
+        HIRTypeInfo {
+            structs,
+            copy_types,
+            drop_functions,
+        }
+    }
+
+    fn function_ref(&self, def_id: DefID) -> HIRFunctionRef {
+        let info = self.context.get_def(def_id).unwrap_or_else(|| {
+            panic!("ICE: missing function definition for {}", def_id)
+        });
+
+        HIRFunctionRef {
+            def_id,
+            symbol: self.context.get_symbol_name(def_id).unwrap_or_else(|| {
+                panic!("ICE: missing backend symbol for {}", def_id)
+            }).to_string(),
+            display_symbol: self.context.get_display_name(def_id).map(str::to_string)
+                .or_else(|| (!info.absolute_path.is_empty()).then(|| info.absolute_path.join("::"))),
         }
     }
 

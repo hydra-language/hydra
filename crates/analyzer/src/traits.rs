@@ -6,6 +6,7 @@ use ir::types::Type;
 use parser::WhereClause;
 
 use crate::Analyzer;
+use crate::solver::TraitSolver;
 
 pub const DROP_TRAIT_PATH: &str = "core::ops::drop::Drop";
 pub const COPY_TRAIT_PATH: &str = "core::marker::copy::Copy";
@@ -14,6 +15,13 @@ pub const DEREF_TRAIT_PATH: &str = "core::ops::deref::Deref";
 pub const DEREF_MUT_TRAIT_PATH: &str = "core::ops::deref::DerefMut";
 
 impl<'ctx> Analyzer<'ctx> {
+
+    pub(crate) fn trait_solver(&self) -> TraitSolver<'_> {
+        TraitSolver::new(
+            &self.context.trait_impls,
+            self.context.find_trait_by_path(COPY_TRAIT_PATH),
+        )
+    }
 
     pub(crate) fn lower_where_clause_bounds(&mut self, where_clause: Option<&WhereClause>) -> Result<Vec<TraitBound>, HydraError> 
     {
@@ -45,7 +53,7 @@ impl<'ctx> Analyzer<'ctx> {
         for bound in bounds {
             let target_type = bound.target_type.substitute(substitutions);
 
-            if self.context.type_implements_trait(&target_type, bound.trait_def_id, &self.current_trait_bounds) {
+            if self.trait_solver().type_implements_trait(&target_type, bound.trait_def_id, &self.current_trait_bounds) {
                 continue;
             }
 

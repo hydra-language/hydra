@@ -1,7 +1,9 @@
 use std::fmt;
 
 use crate::{
-    Constant, Function, Program, context::{DefID, DefKind, HIRContext}, hir::{
+    Constant, Function, Program,
+    context::DefID,
+    hir::{
         HIRBinOp,
         HIRBlock,
         HIRExpr,
@@ -10,116 +12,46 @@ use crate::{
         HIRProgram,
         HIRStmt,
         HIRUnaryOp,
-    }, types::Type,
+    },
+    types::Type,
 };
 
 pub struct HIRProgramDisplay<'a> {
     program: &'a HIRProgram,
-    context: &'a HIRContext,
 }
 
 pub struct HIRFunctionDisplay<'a> {
     function: &'a HIRFunction,
-    context: &'a HIRContext,
 }
 
 impl HIRProgram {
 
-    pub fn display<'a>(&'a self, context: &'a HIRContext) -> HIRProgramDisplay<'a> {
+    pub fn display(&self) -> HIRProgramDisplay<'_> {
         HIRProgramDisplay {
             program: self,
-            context,
         }
     }
 }
 
 impl HIRFunction {
 
-    pub fn display<'a>(&'a self, context: &'a HIRContext) -> HIRFunctionDisplay<'a> {
+    pub fn display(&self) -> HIRFunctionDisplay<'_> {
         HIRFunctionDisplay {
             function: self,
-            context,
         }
     }
 }
 
-struct HIRPrinter<'a> {
-    context: Option<&'a HIRContext>,
-}
+struct HIRPrinter;
 
-impl<'a> HIRPrinter<'a> {
+impl HIRPrinter {
 
-    fn function_name(&self, function: &HIRFunction) -> String {
-        self.context.and_then(|context| context.get_display_name(function.def_id))
-            .unwrap_or(&function.name)
-            .to_string()
-    }
-
-    fn symbol_name(&self, def_id: DefID) -> String {
-        let Some(context) = self.context else {
-            return def_id.to_string();
-        };
-
-        if let Some(name) = context.get_display_name(def_id) {
-            return name.to_string();
-        }
-
-        let Some(info) = context.get_def(def_id) else {
-            return def_id.to_string();
-        };
-
-        if info.absolute_path.is_empty() {
-            info.name.clone()
-        } else {
-            info.absolute_path.join("::")
-        }
+    fn function_name<'a>(&self, function: &'a HIRFunction) -> &'a str {
+        function.display_name.as_deref().unwrap_or(&function.name)
     }
 
     fn local_name(&self, def_id: DefID) -> String {
-        self.context.and_then(|context| context.get_def(def_id))
-            .map(|info| info.name.clone())
-            .unwrap_or_else(|| def_id.to_string())
-    }
-
-    fn declaration_keyword(&self, def_id: DefID) -> &'static str {
-        let Some(context) = self.context else {
-            return "let";
-        };
-
-        match context.get_def(def_id).map(|info| &info.kind) {
-            Some(DefKind::Constant { .. }) => "const",
-            _ => "let",
-        }
-    }
-
-    fn field_name_for_def(&self, def_id: DefID, field_index: usize) -> Option<String> {
-        let context = self.context?;
-        let info = context.get_def(def_id)?;
-
-        let DefKind::Struct { fields, .. } = &info.kind else {
-            return None;
-        };
-
-        fields.get(field_index).map(|(name, _, _)| name.clone())
-    }
-
-    fn field_name_for_type(&self, ty: &Type, field_index: usize) -> Option<String> {
-        let mut ty = ty;
-
-        loop {
-            match ty {
-                Type::REF(inner) | Type::CONST_REF(inner) | Type::POINTER(inner) | Type::CONST_POINTER(inner) => 
-                {
-                    ty = inner;
-                }
-
-                Type::STRUCT(type_ref) | Type::GENERIC_INSTANCE(type_ref, _) => {
-                    return self.field_name_for_def(type_ref.def_id, field_index);
-                }
-
-                _ => return None,
-            }
-        }
+        def_id.to_string()
     }
 
     fn write_indent(&self, out: &mut fmt::Formatter<'_>, indent: usize) -> fmt::Result {
@@ -133,12 +65,12 @@ impl<'a> HIRPrinter<'a> {
     fn fmt_function(&self, out: &mut fmt::Formatter<'_>, function: &HIRFunction) -> fmt::Result {
         write!(out, "fn {}(", self.function_name(function))?;
 
-        for (index, (def_id, ty)) in function.params.iter().enumerate() {
+        for (index, param) in function.params.iter().enumerate() {
             if index > 0 {
                 write!(out, ", ")?;
             }
 
-            write!(out, "{}: {}", self.local_name(*def_id), ty)?;
+            write!(out, "{}: {}", param.name, param.ty)?;
         }
 
         write!(out, ") -> {} ", function.return_type)?;
@@ -160,14 +92,8 @@ impl<'a> HIRPrinter<'a> {
 
     fn fmt_stmt(&self, out: &mut fmt::Formatter<'_>, stmt: &HIRStmt, indent: usize) -> fmt::Result {
         match stmt {
-            HIRStmt::VarDecl { def_id, ty, init, .. } => {
-                write!(
-                    out,
-                    "{} {}: {}",
-                    self.declaration_keyword(*def_id),
-                    self.local_name(*def_id),
-                    ty,
-                )?;
+            HIRStmt::VarDecl { local, init, .. } => {
+                write!(out, "let {}: {}", local.name, local.ty)?;
 
                 if let Some(init) = init {
                     write!(out, " = ")?;
@@ -187,8 +113,7 @@ impl<'a> HIRPrinter<'a> {
     fn fmt_expr(&self, out: &mut fmt::Formatter<'_>, expr: &HIRExpr, indent: usize, include_type: bool) -> fmt::Result {
         self.fmt_expr_kind(out, &expr.kind, Some(&expr.ty), indent)?;
 
-        if include_type && !matches!(&expr.ty, Type::VOID) && !matches!(&expr.kind, HIRExprKind::Cast { .. }) 
-        {
+        if include_type && !matches!(&expr.ty, Type::VOID) && !matches!(&expr.kind, HIRExprKind::Cast { .. }) {
             write!(out, ": {}", expr.ty)?;
         }
 
@@ -198,6 +123,10 @@ impl<'a> HIRPrinter<'a> {
     fn fmt_expr_kind(&self, out: &mut fmt::Formatter<'_>, kind: &HIRExprKind, parent_ty: Option<&Type>, indent: usize) -> fmt::Result {
         match kind {
             HIRExprKind::VarRef(def_id) => {
+                write!(out, "{}", self.local_name(*def_id))
+            }
+
+            HIRExprKind::ConstRef { def_id, .. } => {
                 write!(out, "{}", self.local_name(*def_id))
             }
 
@@ -222,8 +151,19 @@ impl<'a> HIRPrinter<'a> {
                 write!(out, ")")
             }
 
-            HIRExprKind::StructInit { def_id, values } => {
-                write!(out, "{} {{", self.symbol_name(*def_id))?;
+            HIRExprKind::StructInit { values, .. } => {
+                let name = match parent_ty {
+                    Some(Type::STRUCT(type_ref))
+                    | Some(Type::GENERIC_INSTANCE(type_ref, _)) => {
+                        type_ref.display_symbol
+                            .as_deref()
+                            .unwrap_or(&type_ref.symbol)
+                    }
+
+                    _ => "<struct>",
+                };
+
+                write!(out, "{} {{", name)?;
 
                 if !values.is_empty() {
                     write!(out, " ")?;
@@ -233,10 +173,7 @@ impl<'a> HIRPrinter<'a> {
                             write!(out, ", ")?;
                         }
 
-                        if let Some(field_name) = self.field_name_for_def(*def_id, index) {
-                            write!(out, ".{} = ", field_name)?;
-                        }
-
+                        write!(out, ".{} = ", index)?;
                         self.fmt_expr(out, value, indent, true)?;
                     }
 
@@ -283,16 +220,13 @@ impl<'a> HIRPrinter<'a> {
 
             HIRExprKind::FieldAccess { object, field_index } => {
                 self.fmt_expr(out, object, indent, false)?;
-
-                if let Some(field_name) = self.field_name_for_type(&object.ty, *field_index) {
-                    write!(out, ".{}", field_name)
-                } else {
-                    write!(out, ".{}", field_index)
-                }
+                write!(out, ".{}", field_index)
             }
 
             HIRExprKind::Call { callee, args, .. } => {
-                write!(out, "call {}(", self.symbol_name(*callee))?;
+                let name = callee.display_symbol.as_deref().unwrap_or(&callee.symbol);
+
+                write!(out, "call {}(", name)?;
 
                 for (index, arg) in args.iter().enumerate() {
                     if index > 0 {
@@ -382,7 +316,11 @@ impl<'a> HIRPrinter<'a> {
                 self.fmt_expr(out, target, indent, false)
             }
 
-            HIRExprKind::If { cond, then_block, else_block } => {
+            HIRExprKind::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
                 write!(out, "if ")?;
                 self.fmt_expr(out, cond, indent, true)?;
                 write!(out, " ")?;
@@ -419,11 +357,8 @@ impl<'a> HIRPrinter<'a> {
 }
 
 impl fmt::Display for HIRProgramDisplay<'_> {
-
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let printer = HIRPrinter {
-            context: Some(self.context),
-        };
+        let printer = HIRPrinter;
 
         for (index, function) in self.program.functions.iter().enumerate() {
             if index > 0 {
@@ -438,40 +373,38 @@ impl fmt::Display for HIRProgramDisplay<'_> {
 }
 
 impl fmt::Display for HIRFunctionDisplay<'_> {
-
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        HIRPrinter { context: Some(self.context) }.fmt_function(out, self.function)
+        HIRPrinter.fmt_function(out, self.function)
     }
 }
 
 impl fmt::Display for HIRFunction {
-
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        HIRPrinter { context: None }.fmt_function(out, self)
+        HIRPrinter.fmt_function(out, self)
     }
 }
 
 impl fmt::Display for HIRBlock {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        HIRPrinter { context: None }.fmt_block(out, self, 0)
+        HIRPrinter.fmt_block(out, self, 0)
     }
 }
 
 impl fmt::Display for HIRStmt {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        HIRPrinter { context: None }.fmt_stmt(out, self, 0)
+        HIRPrinter.fmt_stmt(out, self, 0)
     }
 }
 
 impl fmt::Display for HIRExpr {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        HIRPrinter { context: None }.fmt_expr(out, self, 0, true)
+        HIRPrinter.fmt_expr(out, self, 0, true)
     }
 }
 
 impl fmt::Display for HIRExprKind {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        HIRPrinter { context: None }.fmt_expr_kind(out, self, None, 0)
+        HIRPrinter.fmt_expr_kind(out, self, None, 0)
     }
 }
 
@@ -512,12 +445,16 @@ impl fmt::Display for HIRUnaryOp {
 
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let params_str = self.params.iter()
-            .map(|(n, t)| format!("{}: {}", n, t))
-            .collect::<Vec<_>>()
-            .join(", ");
-            
-        write!(f, "fn {}({}) -> {} {}", self.name, params_str, self.return_type, self.body)
+        let params_str = self.params.iter().map(|(n, t)| format!("{}: {}", n, t)).collect::<Vec<_>>().join(", ");
+
+        write!(
+            f,
+            "fn {}({}) -> {} {}",
+            self.name,
+            params_str,
+            self.return_type,
+            self.body,
+        )
     }
 }
 
@@ -526,12 +463,13 @@ impl fmt::Display for Program {
         for func in &self.functions {
             writeln!(f, "{}", func)?;
         }
+
         Ok(())
     }
 }
 
-impl std::fmt::Display for Constant {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Constant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Constant::Int(v, _) => write!(f, "{}", v),
             Constant::Float(v, _) => write!(f, "{}", v),

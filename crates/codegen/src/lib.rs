@@ -18,14 +18,12 @@ use inkwell::values::{ BasicValueEnum, FunctionValue, PointerValue };
 use inkwell::AddressSpace;
 use inkwell::types::{BasicType, BasicTypeEnum};
 
-use ir::context::{DefKind, HIRContext};
 use ir::intrinsic::IntrinsicKind;
 use ir::types::Type;
 use mir::{BasicBlockID, LocalID, MIRFunction, MIRProgram, Operand};
 
 pub struct CodeGen<'c> {
     pub context: &'c Context,
-    pub hir_context: &'c HIRContext,
     pub module: Module<'c>,
     pub builder: Builder<'c>,
     pub string_constants: HashMap<String, PointerValue<'c>>, // utf8 byte strings used internally
@@ -44,7 +42,7 @@ pub struct CodeGen<'c> {
 
 impl<'c> CodeGen<'c> {
 
-    pub fn new(context: &'c Context, hir_context: &'c HIRContext, module_name: &str, cpu: String, features: String) -> Self {
+    pub fn new(context: &'c Context, module_name: &str, cpu: String, features: String) -> Self {
         Target::initialize_native(&InitializationConfig::default()).unwrap();
 
         let triple = TargetMachine::get_default_triple();
@@ -67,7 +65,6 @@ impl<'c> CodeGen<'c> {
 
         Self {
             context,
-            hir_context,
             module,
             builder: context.create_builder(),
             string_constants: HashMap::new(),
@@ -83,72 +80,30 @@ impl<'c> CodeGen<'c> {
     }
 
     pub fn generate(&mut self, program: &MIRProgram) -> Result<(), String> {
-        let mut struct_defs = Vec::new();
-
-        for (def_id, info) in &self.hir_context.definitions {
-            if let DefKind::Struct { fields, .. } = &info.kind {
-                // use the same canonical name Type::STRUCT carries.
-                let canonical_name = if info.absolute_path.is_empty() {
-                    info.name.clone()
-                } else {
-                    info.absolute_path.join("::")
-                };
-
-                struct_defs.push((
-                    canonical_name,
-                    *def_id,
-                    fields.clone(),
-                ));
-            }
-        }
-
-        // PASS 1:
-        // declare every concrete struct as opaque first.
-        //
-        // this matters not only for qualified names, but also for:
-        //
-        //     struct A { b: B }
-        //     struct B { ... }
-        //
-        // HashMap iteration order must not decide whether B exists
-        // when compiling A's field types.
-        for (name, _def_id, fields) in &struct_defs {
-            if fields.iter().any(|(_, ty, _)| ty.contains_generic()) {
-                continue;
-            }
+        // PASS 1: declare every concrete struct as opaque.
+        for struct_info in &program.structs {
+            let name = &struct_info.type_ref.symbol;
 
             if self.context.get_struct_type(name).is_none() {
                 self.context.opaque_struct_type(name);
             }
         }
 
-        // PASS 2:
-        // now that every struct name exists, populate the fields.
-        for (name, _def_id, fields) in &struct_defs {
-            if fields.iter().any(|(_, ty, _)| ty.contains_generic()) {
-                continue;
-            }
+        // PASS 2: populate fields after all struct names exist.
+        for struct_info in &program.structs {
+            let name = &struct_info.type_ref.symbol;
 
-            let struct_ty = self
-                .context
-                .get_struct_type(name)
-                .ok_or_else(|| {
-                    format!(
-                        "ICE: LLVM struct type '{}' was not registered",
-                        name
-                    )
-                })?;
+            let struct_ty = self.context.get_struct_type(name).ok_or_else(|| {
+                format!("ICE: LLVM struct type '{}' was not registered", name)
+            })?;
 
-            let field_types: Vec<BasicTypeEnum> = fields
-                .iter()
-                .map(|(_, ty, _)| {
-                    crate::types::compile_type(
-                        self.context,
-                        &self.target_data,
-                        ty,
-                    )
-                })
-                .collect();
+            let field_types: Vec<BasicTypeEnum> = struct_info.fields.iter().map(|ty| {
+                crate::types::compile_type(
+                    self.context,
+                    &self.target_data,
+                    ty,
+                )
+            }).collect();
 
             struct_ty.set_body(&field_types, false);
         }

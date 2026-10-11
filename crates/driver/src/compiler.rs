@@ -6,13 +6,10 @@ use borrowcheck::borrowcheck::BorrowChecker;
 
 use codegen::CodeGen;
 
-use ir::context::HIRContext;
+use ir::context::SemanticContext;
 
 use mir::{
-    MIRProgram,
-    bounds::BoundsChecker,
-    builder::MIRBuilder,
-    optimizer::{OptimizationLevel as MirOptimizationLevel, Optimizer},
+    MIRProgram, MIRStruct, bounds::BoundsChecker, builder::MIRBuilder, optimizer::{OptimizationLevel as MirOptimizationLevel, Optimizer},
 };
 
 use parser::module::{
@@ -35,13 +32,9 @@ pub struct Compiler {
 impl Compiler {
 
     pub fn new(options: CompilerOptions) -> Result<Self, DriverError> {
-        options
-            .validate()
-            .map_err(DriverError::message)?;
+        options.validate().map_err(DriverError::message)?;
 
-        let sysroot = Sysroot::discover(
-            options.sysroot.clone()
-        ).map_err(DriverError::message)?;
+        let sysroot = Sysroot::discover(options.sysroot.clone()).map_err(DriverError::message)?;
 
         Ok(Self {
             session: Session::new(
@@ -62,14 +55,9 @@ impl Compiler {
     fn compile_inner(&mut self) -> Result<(), DriverError> {
         let input = self.session.options.input.clone();
 
-        let contents = fs::read_to_string(&input)
-            .map_err(|error| {
-                DriverError::io(
-                    "failed while reading",
-                    &input,
-                    error,
-                )
-            })?;
+        let contents = fs::read_to_string(&input).map_err(|error| {
+            DriverError::io("failed while reading", &input, error)
+        })?;
 
         let mut source_map = SourceMap::new();
 
@@ -77,37 +65,17 @@ impl Compiler {
             "parse + imports"
         );
 
-        let mut program = ModuleTree::build(
-            &input,
-            self.session.sysroot.stdlib(),
-            &mut source_map,
-        ).map_err(|errors| {
-            DriverError::diagnostics(
-                errors,
-                contents.clone(),
-                input.clone(),
-            )
+        let mut program = ModuleTree::build(&input, self.session.sysroot.stdlib(), &mut source_map).map_err(|errors| {
+            DriverError::diagnostics(errors, contents.clone(), input.clone())
         })?;
 
-        program
-            .resolve_imports(&mut source_map)
-            .map_err(|errors| {
-                DriverError::diagnostics(
-                    errors,
-                    contents.clone(),
-                    input.clone(),
-                )
-            })?;
+        program.resolve_imports(&mut source_map).map_err(|errors| {
+            DriverError::diagnostics(errors, contents.clone(), input.clone())
+        })?;
 
-        program
-            .parse_bodies(&source_map)
-            .map_err(|errors| {
-                DriverError::diagnostics(
-                    errors,
-                    contents.clone(),
-                    input.clone(),
-                )
-            })?;
+        program.parse_bodies(&source_map).map_err(|errors| {
+            DriverError::diagnostics(errors, contents.clone(), input.clone())
+        })?;
 
         self.session.timings.finish(timer);
 
@@ -136,7 +104,7 @@ impl Compiler {
             )?;
         }
 
-        let mut context = HIRContext::default();
+        let mut context = SemanticContext::default();
 
         let timer = self.session.timings.start(
             "name resolution"
@@ -148,14 +116,9 @@ impl Compiler {
             &source_map,
         );
 
-        let (name_resolver, global_symbols) =
-            resolver.resolve().map_err(|errors| {
-                DriverError::diagnostics(
-                    errors,
-                    contents.clone(),
-                    input.clone(),
-                )
-            })?;
+        let (name_resolver, global_symbols) = resolver.resolve().map_err(|errors| {
+            DriverError::diagnostics(errors, contents.clone(), input.clone())
+        })?;
 
         self.session.timings.finish(timer);
 
@@ -165,13 +128,13 @@ impl Compiler {
 
         let analyzer = Analyzer::new(
             &program,
-            &mut context,
+            context,
             &source_map,
             name_resolver,
             global_symbols,
         );
 
-        let hir = analyzer.analyze().map_err(|errors| {
+        let analyzed = analyzer.analyze().map_err(|errors| {
             DriverError::diagnostics(
                 errors,
                 contents.clone(),
@@ -185,12 +148,13 @@ impl Compiler {
             emit::info(
                 format!(
                     "{} HIR functions",
-                    hir.functions.len(),
+                    analyzed.hir.functions.len(),
                 )
             );
         }
+
         if self.session.options.emits(EmitKind::Hir) {
-            let hir_text = format!("{}", hir.display(&context));
+            let hir_text = format!("{}", analyzed.hir.display());
 
             emit::write_text(
                 &input.with_extension("hir"),
@@ -203,11 +167,7 @@ impl Compiler {
             "monomorphization"
         );
 
-        let monomorphizer = Monomorphizer::new(
-            &mut context,
-            hir,
-        );
-
+        let monomorphizer = Monomorphizer::new(analyzed);
         let specialized_program = monomorphizer.run();
 
         self.session.timings.finish(timer);
@@ -234,13 +194,14 @@ impl Compiler {
         for hir_fn in &specialized_program.functions {
             let function_start = Instant::now();
 
-            let builder = MIRBuilder::new(&context, &mut drop_cache);
+            let builder = MIRBuilder::new(
+                &specialized_program.type_info,
+                &mut drop_cache,
+            );
+
             mir_functions.push(builder.build_function(hir_fn.clone()));
 
-            let function_name = context
-                .get_display_name(hir_fn.def_id)
-                .unwrap_or(&hir_fn.name)
-                .to_string();
+            let function_name = hir_fn.display_name.as_deref().unwrap_or(&hir_fn.name).to_string();
 
             self.session.timings.record_item(
                 "MIR lowering",
@@ -249,8 +210,16 @@ impl Compiler {
             );
         }
 
+        let mir_structs = specialized_program.type_info.structs.values()
+            .map(|info| MIRStruct {
+                type_ref: info.type_ref.clone(),
+                fields: info.fields.clone(),
+            })
+            .collect();
+
         let mut mir_program = MIRProgram {
             functions: mir_functions,
+            structs: mir_structs,
         };
 
         self.session.timings.finish(timer);
@@ -280,20 +249,12 @@ impl Compiler {
 
         for mir_fn in &mir_program.functions {
             let function_start = Instant::now();
-
-            let checker = BoundsChecker::new(
-                mir_fn,
-                &context,
-            );
-
+            let checker = BoundsChecker::new(mir_fn);
             let result = checker.check();
 
             self.session.timings.record_item(
                 "bounds checking",
-                mir_fn
-                    .display_name
-                    .as_deref()
-                    .unwrap_or(&mir_fn.name),
+                mir_fn.display_name.as_deref().unwrap_or(&mir_fn.name),
                 function_start.elapsed(),
             );
 
@@ -322,20 +283,12 @@ impl Compiler {
 
         for mir_fn in &mir_program.functions {
             let function_start = Instant::now();
-
-            let mut checker = BorrowChecker::new(
-                mir_fn,
-                &context,
-            );
-
+            let mut checker = BorrowChecker::new(mir_fn);
             let result = checker.check();
 
             self.session.timings.record_item(
                 "borrow checking",
-                mir_fn
-                    .display_name
-                    .as_deref()
-                    .unwrap_or(&mir_fn.name),
+                mir_fn.display_name.as_deref().unwrap_or(&mir_fn.name),
                 function_start.elapsed(),
             );
 
@@ -391,10 +344,9 @@ impl Compiler {
 
         let mut codegen = CodeGen::new(
             &llvm_context,
-            &context,
             &module_name,
             cpu,
-            features
+            features,
         );
 
         codegen.generate(&mir_program).map_err(DriverError::message)?;

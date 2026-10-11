@@ -184,13 +184,10 @@ impl<'ctx> Analyzer<'ctx> {
                 //
                 // let i = start;
                 //
-                let init_stmt = HIRStmt::VarDecl { 
-                    def_id: var_def_id, 
-                    ty: loop_ty.clone(),
-                    init: Some(start_expr.clone()), 
+                let init_stmt = HIRStmt::VarDecl {
+                    local: self.hir_local(var_def_id, loop_ty.clone()),
+                    init: Some(start_expr.clone()),
                     has_type_annotation: false,
-                    span: variable.span 
- 
                 };
 
                 //
@@ -212,11 +209,9 @@ impl<'ctx> Analyzer<'ctx> {
                 });
 
                 let init_end = HIRStmt::VarDecl {
-                    def_id: end_def,
-                    ty: loop_ty.clone(),
+                    local: self.hir_local(end_def, loop_ty.clone()),
                     init: Some(end_expr),
                     has_type_annotation: false,
-                    span: variable.span,
                 };
 
                 //
@@ -238,35 +233,25 @@ impl<'ctx> Analyzer<'ctx> {
                 });
 
                 let init_descending = HIRStmt::VarDecl {
-                    def_id: descending_def,
+                    local: self.hir_local(descending_def, IRType::BOOL),
                     init: Some(HIRExpr {
                         kind: HIRExprKind::Binary {
                             op: HIRBinOp::Gt,
-
                             lhs: Box::new(HIRExpr {
-                                kind: HIRExprKind::VarRef(
-                                    var_def_id,
-                                ),
+                                kind: HIRExprKind::VarRef(var_def_id),
                                 ty: loop_ty.clone(),
                                 span: variable.span,
                             }),
-
                             rhs: Box::new(HIRExpr {
-                                kind: HIRExprKind::VarRef(
-                                    end_def,
-                                ),
+                                kind: HIRExprKind::VarRef(end_def),
                                 ty: loop_ty.clone(),
                                 span: variable.span,
                             }),
                         },
-
                         ty: IRType::BOOL,
                         span: variable.span,
                     }),
-                    ty: IRType::BOOL,
-
                     has_type_annotation: false,
-                    span: variable.span,
                 };
 
                 //
@@ -600,12 +585,10 @@ impl<'ctx> Analyzer<'ctx> {
                 };
 
                 let arr_def = self.context.insert_def(arr_info);
-                let init_arr = HIRStmt::VarDecl { 
-                    def_id: arr_def, 
-                    ty: iter_expr.ty.clone(),
-                    init: Some(iter_expr.clone()), 
+                let init_arr = HIRStmt::VarDecl {
+                    local: self.hir_local(arr_def, iter_expr.ty.clone()),
+                    init: Some(iter_expr.clone()),
                     has_type_annotation: false,
-                    span: item.span 
                 };
 
                 // Create index def
@@ -623,16 +606,14 @@ impl<'ctx> Analyzer<'ctx> {
                 };
 
                 let idx_def = self.context.insert_def(idx_info);
-                let init_idx = HIRStmt::VarDecl { 
-                    def_id: idx_def, 
-                    ty: IRType::I32,
-                    init: Some(HIRExpr { 
-                        kind: HIRExprKind::IntLiteral(0), 
-                        ty: IRType::I32, 
-                        span: item.span 
-                    }), 
+                let init_idx = HIRStmt::VarDecl {
+                    local: self.hir_local(idx_def, IRType::I32),
+                    init: Some(HIRExpr {
+                        kind: HIRExprKind::IntLiteral(0),
+                        ty: IRType::I32,
+                        span: item.span,
+                    }),
                     has_type_annotation: false,
-                    span: item.span 
                 };
 
                 let mut loop_stmts = Vec::new();
@@ -672,19 +653,26 @@ impl<'ctx> Analyzer<'ctx> {
                 self.context.update_def(item_def, item_info);
 
                 let init_item = HIRStmt::VarDecl {
-                    def_id: item_def,
-                    ty: inner_ty.clone(),
+                    local: self.hir_local(item_def, inner_ty.clone()),
                     init: Some(HIRExpr {
                         kind: HIRExprKind::ArrayAccess {
-                            array: Box::new(HIRExpr { kind: HIRExprKind::VarRef(arr_def), ty: iter_expr.ty, span: item.span }),
-                            index: Box::new(HIRExpr { kind: HIRExprKind::VarRef(idx_def), ty: IRType::I32, span: item.span })
+                            array: Box::new(HIRExpr {
+                                kind: HIRExprKind::VarRef(arr_def),
+                                ty: iter_expr.ty.clone(),
+                                span: item.span,
+                            }),
+                            index: Box::new(HIRExpr {
+                                kind: HIRExprKind::VarRef(idx_def),
+                                ty: IRType::I32,
+                                span: item.span,
+                            }),
                         },
                         ty: inner_ty.clone(),
-                        span: item.span
+                        span: item.span,
                     }),
                     has_type_annotation: false,
-                    span: item.span
                 };
+
                 loop_stmts.push(init_item);
 
                 loop_stmts.extend(self.lower_block(body)?.stmts);
@@ -861,11 +849,9 @@ impl<'ctx> Analyzer<'ctx> {
         });
 
         let subject_decl = HIRStmt::VarDecl {
-            def_id: subject_def,
-            ty: subject_ty.clone(),
+            local: self.hir_local(subject_def, subject_ty.clone()),
             init: Some(subject),
             has_type_annotation: false,
-            span,
         };
 
         let none_handled = arms.iter().any(|arm| Self::is_none_match_pattern(&arm.pattern));
@@ -1337,11 +1323,9 @@ impl<'ctx> Analyzer<'ctx> {
         );
 
         Ok(Some(HIRStmt::VarDecl {
-            def_id,
-            ty,
+            local: self.hir_local(def_id, ty),
             init: Some(value),
             has_type_annotation: false,
-            span: name.span,
         }))
     }
 

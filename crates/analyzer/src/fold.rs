@@ -1,6 +1,5 @@
 use ir::hir::{CastKind, HIRBinOp, HIRExpr, HIRExprKind};
 use ir::Constant;
-use ir::context::{HIRContext, DefKind};
 use ir::types::Type;
 
 pub fn fold_cast(kind: CastKind, value: Constant, target: &Type) -> Option<Constant> {
@@ -66,7 +65,7 @@ pub fn fold_cast(kind: CastKind, value: Constant, target: &Type) -> Option<Const
     }
 }
 
-pub fn const_fold_hir(expr: &HIRExpr, context: &HIRContext) -> Option<Constant> {
+pub fn const_fold_hir(expr: &HIRExpr) -> Option<Constant> {
     match &expr.kind {
         HIRExprKind::IntLiteral(v)    => Some(Constant::Int(*v, expr.ty.clone())),
         HIRExprKind::FloatLiteral(v)  => Some(Constant::Float(*v, expr.ty.clone())),
@@ -74,18 +73,16 @@ pub fn const_fold_hir(expr: &HIRExpr, context: &HIRContext) -> Option<Constant> 
         HIRExprKind::CharLiteral(v)   => Some(Constant::Char(*v)),
         HIRExprKind::StringLiteral(v) => Some(Constant::String(v.clone())),
 
-        HIRExprKind::VarRef(def_id) => {
-            if let Some(info) = context.get_def(*def_id) {
-                if let DefKind::Constant { value, .. } = &info.kind {
-                    return Some(value.clone());
-                }
-            }
-            None
+        HIRExprKind::ConstRef { value, .. } => {
+            Some(value.clone())
         }
 
+        HIRExprKind::VarRef(_) => None,
+
         HIRExprKind::Binary { op, lhs, rhs } => {
-            let l = const_fold_hir(lhs, context)?;
-            let r = const_fold_hir(rhs, context)?;
+            let l = const_fold_hir(lhs)?;
+            let r = const_fold_hir(rhs)?;
+
             match (l, r) {
                 (Constant::Float(lv, ty), Constant::Float(rv, _)) => {
                     let result = match op {
@@ -112,7 +109,7 @@ pub fn const_fold_hir(expr: &HIRExpr, context: &HIRContext) -> Option<Constant> 
         }
 
         HIRExprKind::Cast { expr: inner, kind } => {
-            fold_cast(*kind, const_fold_hir(inner, context)?, &expr.ty)
+            fold_cast(*kind, const_fold_hir(inner)?, &expr.ty)
         }
 
         _ => None,

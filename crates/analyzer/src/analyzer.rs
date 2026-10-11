@@ -2,21 +2,30 @@ use std::collections::HashMap;
 
 use parser::ast::*;
 use parser::module::{ModuleTree, SourceMap};
+
 use ir::types::Type as IRType;
-use ir::context::{HIRContext, DefID, DefKind, SymbolInfo, TraitBound};
-use ir::hir::HIRProgram;
+use ir::context::{
+    DefID, DefKind, SemanticContext, SymbolInfo, TraitBound,
+};
+use ir::hir::{HIRFunctionRef, HIRLocal, HIRProgram};
+
 use errors::error::{HydraError, Span};
 
 use crate::scope::NameResolver;
 
+pub struct AnalyzedProgram {
+    pub hir: HIRProgram,
+    pub context: SemanticContext,
+}
+
 pub struct Analyzer<'ctx> {
     pub program: &'ctx ModuleTree,
-    pub context: &'ctx mut HIRContext,
+    pub context: SemanticContext,
     pub source_map: &'ctx SourceMap,
     pub name_resolver: NameResolver,
     pub global_symbols: HashMap<Vec<String>, DefID>,
     pub impl_registry: HashMap<String, HashMap<String, DefID>>,
-    
+
     pub current_return_type: Option<IRType>,
     pub current_self_type: Option<IRType>,
     pub current_filepath: String,
@@ -30,11 +39,11 @@ pub struct Analyzer<'ctx> {
 impl<'ctx> Analyzer<'ctx> {
     
     pub fn new(
-        program: &'ctx ModuleTree, 
-        context: &'ctx mut HIRContext,
+        program: &'ctx ModuleTree,
+        context: SemanticContext,
         source_map: &'ctx SourceMap,
         name_resolver: NameResolver,
-        global_symbols: HashMap<Vec<String>, DefID>
+        global_symbols: HashMap<Vec<String>, DefID>,
     ) -> Self 
     {
         Self {
@@ -65,7 +74,7 @@ impl<'ctx> Analyzer<'ctx> {
             .with_file(filename, self.current_source.clone())
     }
 
-    pub fn analyze(mut self) -> Result<HIRProgram, Vec<HydraError>> {
+    pub fn analyze(mut self) -> Result<AnalyzedProgram, Vec<HydraError>> {
         let mut functions = Vec::new();
         let structs = Vec::new();
         let globals = Vec::new(); 
@@ -178,9 +187,64 @@ impl<'ctx> Analyzer<'ctx> {
         }
 
         if self.errors.is_empty() {
-            Ok(HIRProgram { functions, structs, globals })
+            Ok(AnalyzedProgram {
+                hir: HIRProgram { 
+                    functions, 
+                    structs, 
+                    globals
+                },
+                context: self.context,
+            })
         } else {
             Err(self.errors)
+        }
+    }
+
+    pub(crate) fn hir_local(&self, def_id: DefID, ty: IRType) -> HIRLocal {
+        let info = self.context.get_def(def_id).unwrap_or_else(|| {
+            panic!("ICE: missing definition for HIR local {}", def_id)
+        });
+
+        let is_mutable = match &info.kind {
+            DefKind::Variable { is_mutable, .. } => *is_mutable,
+            DefKind::Constant { .. } => false,
+            _ => false,
+        };
+
+        HIRLocal {
+            def_id,
+            name: info.name.clone(),
+            ty,
+            is_mutable,
+            span: info.span,
+        }
+    }
+
+    pub(crate) fn hir_function_ref(&self, def_id: DefID) -> HIRFunctionRef {
+        let symbol = self.context.get_symbol_name(def_id).unwrap_or_else(|| {
+            panic!("ICE: missing backend symbol for {}", def_id)
+        });
+
+        HIRFunctionRef {
+            def_id,
+            symbol: symbol.to_string(),
+            display_symbol: self.context.get_display_name(def_id).map(str::to_string),
+        }
+    }
+
+    pub(crate) fn hir_intrinsic_ref(&self, def_id: DefID) -> HIRFunctionRef {
+        let info = self.context.get_def(def_id).unwrap_or_else(|| {
+            panic!("ICE: missing intrinsic definition for {}", def_id)
+        });
+
+        let display_symbol = self.context.get_display_name(def_id).map(str::to_string).or_else(|| {
+            (!info.absolute_path.is_empty()).then(|| info.absolute_path.join("::"))
+        });
+
+        HIRFunctionRef {
+            def_id,
+            symbol: info.name.clone(),
+            display_symbol,
         }
     }
 

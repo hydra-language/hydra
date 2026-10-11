@@ -143,7 +143,7 @@ impl<'ctx> Analyzer<'ctx> {
 
         let matching_impls = self.context.trait_impls.iter().filter(|trait_impl| {
             trait_impl.trait_def_id == trait_def_id &&
-            self.context.trait_impl_is_applicable(
+            self.trait_solver().trait_impl_is_applicable(
                 trait_impl,
                 &target_expr.ty,
                 &self.current_trait_bounds,
@@ -288,7 +288,7 @@ impl<'ctx> Analyzer<'ctx> {
 
         let deref_call = HIRExpr {
             kind: HIRExprKind::Call {
-                callee: method_def_id,
+                callee: self.hir_function_ref(method_def_id),
                 args: vec![self_arg],
                 generic_args: resolved_generic_args,
                 trait_dispatch: None,

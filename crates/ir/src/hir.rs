@@ -1,7 +1,27 @@
 use errors::error::Span;
+
+use crate::{Constant, types::TypeRef};
+use crate::context::DefID;
 use crate::intrinsic::IntrinsicKind;
 use crate::types::Type;
-use crate::context::DefID;
+
+use std::collections::{HashMap, HashSet};
+
+#[derive(Debug, Clone)]
+pub struct HIRLocal {
+    pub def_id: DefID,
+    pub name: String,
+    pub ty: Type,
+    pub is_mutable: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HIRFunctionRef {
+    pub def_id: DefID,
+    pub symbol: String,
+    pub display_symbol: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct HIRProgram {
@@ -11,10 +31,31 @@ pub struct HIRProgram {
 }
 
 #[derive(Debug, Clone)]
+pub struct HIRStructInfo {
+    pub type_ref: TypeRef,
+    pub fields: Vec<Type>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HIRTypeInfo {
+    pub structs: HashMap<DefID, HIRStructInfo>,
+    pub copy_types: HashSet<Type>,
+    pub drop_functions: HashMap<Type, HIRFunctionRef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonomorphizedProgram {
+    pub functions: Vec<HIRFunction>,
+    pub type_info: HIRTypeInfo,
+}
+
+#[derive(Debug, Clone)]
 pub struct HIRFunction {
-    pub name: String, 
-    pub def_id: DefID, 
-    pub params: Vec<(DefID, Type)>, 
+    pub name: String,
+    pub def_id: DefID,
+    pub symbol: String,
+    pub display_name: Option<String>,
+    pub params: Vec<HIRLocal>,
     pub return_type: Type,
     pub body: HIRBlock,
     pub is_extern: bool,
@@ -33,6 +74,7 @@ pub struct HIRExpr {
 pub enum HIRExprKind {
     // 1. Value References
     VarRef(DefID),
+    ConstRef { def_id: DefID, value: Constant },
 
     // 2. Literals
     IntLiteral(i64),
@@ -69,14 +111,14 @@ pub enum HIRExprKind {
 
     // 4. Operations
     Call {
-        callee: DefID,
+        callee: HIRFunctionRef,
         args: Vec<HIRExpr>,
-        generic_args: Vec<Type>, 
+        generic_args: Vec<Type>,
         trait_dispatch: Option<DefID>,
     },
 
     IntrinsicCall {
-        callee: DefID,
+        callee: HIRFunctionRef,
         kind: IntrinsicKind,
         args: Vec<HIRExpr>,
         type_args: Vec<Type>,
@@ -140,11 +182,9 @@ pub struct HIRBlock {
 #[derive(Debug, Clone)]
 pub enum HIRStmt {
     VarDecl {
-        def_id: DefID,
-        ty: Type,
+        local: HIRLocal,
         init: Option<HIRExpr>,
         has_type_annotation: bool,
-        span: Span,
     },
 
     Expr(HIRExpr),
@@ -168,13 +208,3 @@ pub enum CastKind {
     Pointer,  // Covers references to pointers, pointer decay
     NoOp,
 }
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Constant {
-    Int(i64, Type),
-    Float(f64, Type),
-    Bool(bool),
-    Char(char),
-    String(String),
-}
-

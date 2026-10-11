@@ -3,7 +3,6 @@ use std::collections::{HashMap, VecDeque};
 use errors::error::{HydraError, Span};
 use ir::{
     Constant,
-    context::{DefKind, HIRContext},
     hir::{HIRBinOp, HIRUnaryOp},
     types::Type,
 };
@@ -35,15 +34,13 @@ struct Facts {
 
 pub struct BoundsChecker<'a> {
     mir: &'a MIRFunction,
-    context: &'a HIRContext,
 }
 
 impl<'a> BoundsChecker<'a> {
 
-    pub fn new(mir: &'a MIRFunction, context: &'a HIRContext) -> Self {
-        Self {
-            mir,
-            context,
+    pub fn new(mir: &'a MIRFunction) -> Self {
+        Self { 
+            mir 
         }
     }
 
@@ -191,7 +188,7 @@ impl<'a> BoundsChecker<'a> {
                 self.check_rvalue( rval, facts, stmt.span, errors);
             }
 
-            StatementKind::Drop(place) => {
+            StatementKind::Drop { place, .. } => {
                 self.check_place( place, facts, stmt.span, errors);
             }
         }
@@ -291,35 +288,8 @@ impl<'a> BoundsChecker<'a> {
                     }
                 }
 
-                ProjectionElem::Field(index) => {
-                    ty = match ty {
-                        Type::OPTIONAL(inner) => {
-                            match *index {
-                                0 => Type::BOOL,
-                                1 => *inner,
-                                _ => return,
-                            }
-                        }
-
-                        Type::STRUCT(type_ref) => {
-                            let Some(info) = self.context.get_def(type_ref.def_id) else {
-                                return;
-                            };
-
-                            let DefKind::Struct { fields, .. } = &info.kind else {
-                                return;
-                            };
-
-                            let Some((_, field_ty, _)) = fields.get(*index) else {
-                                return;
-                            };
-
-                            field_ty.clone()
-                        }
-
-                        _ => return,
-                    };
-
+                ProjectionElem::Field { ty: field_ty, .. } => {
+                    ty = field_ty.clone();
                     slice_len = None;
                 }
 

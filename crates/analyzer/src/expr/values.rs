@@ -75,26 +75,55 @@ impl<'ctx> Analyzer<'ctx> {
             ASTExpr::Variable { id, name } => {
                 let def_id = self.name_resolver.get_resolution(*id)
                     .ok_or_else(|| self.error("S002", format!("undefined variable `{}`", name.lexeme), name.span))?;
-                
+
                 let info = self.context.get_def(def_id).unwrap();
 
-                let ty = match &info.kind {
-                    DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } | DefKind::Function { return_type: ty, .. } => ty.clone(),
-                    _ => return Err(self.error("S003", format!("`{}` cannot be used as a value", name.lexeme), name.span))
+                let (kind, ty) = match &info.kind {
+                    DefKind::Variable { ty, .. } => {
+                        (HIRExprKind::VarRef(def_id), ty.clone())
+                    }
+
+                    DefKind::Constant { ty, value, .. } => {
+                        (HIRExprKind::ConstRef { def_id, value: value.clone() }, ty.clone())
+                    }
+
+                    DefKind::Function { return_type, .. } => {
+                        (HIRExprKind::VarRef(def_id), return_type.clone())
+                    }
+
+                    _ => return Err(self.error(
+                        "S003",
+                        format!("`{}` cannot be used as a value", name.lexeme),
+                        name.span,
+                    )),
                 };
 
-                Ok(HIRExpr { kind: HIRExprKind::VarRef(def_id), ty, span })
-            },
+                Ok(HIRExpr { kind, ty, span })
+            }
 
             ASTExpr::Path { id, segments } => {
                 let def_id = self.name_resolver.get_resolution(*id)
                     .ok_or_else(|| self.error("S002", format!("undefined path `{}`", segments[0].lexeme), span))?;
-                
+
                 let info = self.context.get_def(def_id).unwrap();
-                let ty = match &info.kind {
-                    DefKind::Variable { ty, .. } | DefKind::Constant { ty, .. } | 
-                    DefKind::Function { return_type: ty, .. } => {
-                        ty.clone()
+
+                let (kind, ty) = match &info.kind {
+                    DefKind::Variable { ty, .. } => {
+                        (HIRExprKind::VarRef(def_id), ty.clone())
+                    }
+
+                    DefKind::Constant { ty, value, .. } => {
+                        (
+                            HIRExprKind::ConstRef {
+                                def_id,
+                                value: value.clone(),
+                            },
+                            ty.clone(),
+                        )
+                    }
+
+                    DefKind::Function { return_type, .. } => {
+                        (HIRExprKind::VarRef(def_id), return_type.clone())
                     }
 
                     DefKind::Struct { .. } => {
@@ -104,14 +133,21 @@ impl<'ctx> Analyzer<'ctx> {
                             info.absolute_path.join("::")
                         };
 
-                        IRType::STRUCT(TypeRef::new(def_id, symbol))
+                        (
+                            HIRExprKind::VarRef(def_id),
+                            IRType::STRUCT(TypeRef::new(def_id, symbol)),
+                        )
                     }
 
-                    _ => return Err(self.error("S003", format!("`{}` cannot be used as a value", segments[0].lexeme), span))
+                    _ => return Err(self.error(
+                        "S003",
+                        format!("`{}` cannot be used as a value", segments[0].lexeme),
+                        span,
+                    )),
                 };
 
-                Ok(HIRExpr { kind: HIRExprKind::VarRef(def_id), ty, span })
-            },
+                Ok(HIRExpr { kind, ty, span })
+            }
 
             _ => unreachable!("lower_value_expr() called with non-value expression")
         }

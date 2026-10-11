@@ -296,24 +296,10 @@ impl<'c> CodeGen<'c> {
 
             Rvalue::Aggregate(kind, operands) => {
                 let llvm_ty: BasicTypeEnum = match kind {
-                    AggregateKind::Struct(def_id) => {
-                        let info = self.hir_context.get_def(*def_id).expect("ICE: struct definition not found");
-
-                        let struct_name = if info.absolute_path.is_empty() {
-                            info.name.clone()
-                        } else {
-                            info.absolute_path.join("::")
-                        };
-
-                        self.module
-                            .get_struct_type(&struct_name)
-                            .unwrap_or_else(|| {
-                                panic!(
-                                    "ICE: struct '{}' not registered in module",
-                                    struct_name
-                                )
-                            })
-                            .as_basic_type_enum()
+                    AggregateKind::Struct(type_ref) => {
+                        self.module.get_struct_type(&type_ref.symbol).unwrap_or_else(|| {
+                            panic!("ICE: struct '{}' not registered in module", type_ref)
+                        }).as_basic_type_enum()
                     }
 
                     AggregateKind::Array(inner) => {

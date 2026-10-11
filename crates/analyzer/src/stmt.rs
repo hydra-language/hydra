@@ -65,12 +65,10 @@ impl<'ctx> Analyzer<'ctx> {
                 }
                 self.context.update_def(def_id, info);
                 
-                Ok(HIRStmt::VarDecl { 
-                    def_id, 
-                    ty: final_type,
-                    init: Some(init_expr), 
-                    has_type_annotation: type_annotation.is_some(), 
-                    span: name.span 
+                Ok(HIRStmt::VarDecl {
+                    local: self.hir_local(def_id, final_type),
+                    init: Some(init_expr),
+                    has_type_annotation: type_annotation.is_some(),
                 })
             },
 

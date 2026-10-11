@@ -1,13 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use errors::error::{self, HydraError};
-use ir::context::HIRContext;
 use mir::{BasicBlockID, LocalID, MIRFunction, Operand, Rvalue, Statement, StatementKind, Terminator};
-
-pub struct BorrowChecker<'a> {
-    mir: &'a MIRFunction,
-    context: &'a HIRContext,
-}
 
 #[derive(Debug)]
 pub struct BlockEffects {
@@ -23,12 +17,15 @@ struct Borrow {
     creation_span: error::Span,
 }
 
+pub struct BorrowChecker<'a> {
+    mir: &'a MIRFunction,
+}
+
 impl<'a> BorrowChecker<'a> {
 
-    pub fn new(mir: &'a MIRFunction, context: &'a HIRContext) -> Self {
+    pub fn new(mir: &'a MIRFunction) -> Self {
         Self { 
-            mir,
-            context
+            mir
         }
     }
 
@@ -358,7 +355,7 @@ impl<'a> BorrowChecker<'a> {
                 }
             }
 
-            StatementKind::Drop(place) => {
+            StatementKind::Drop { place, .. } => {
                 moved.insert(place.local);
             }
         }
@@ -564,7 +561,7 @@ impl<'a> BorrowChecker<'a> {
                             }
                         }
                     }
-                    StatementKind::Drop(place) => {
+                    StatementKind::Drop { place, .. } => {
                         // Dropping reads the value one last time to clean it up
                         if !kill.contains(&place.local) {
                             gen.insert(place.local);
@@ -665,7 +662,7 @@ impl<'a> BorrowChecker<'a> {
                     reads.insert(place.local);  
                 }
             }
-            StatementKind::Drop(place) => {
+            StatementKind::Drop { place, .. } => {
                 reads.insert(place.local);
             }
         }
@@ -732,14 +729,13 @@ impl<'a> BorrowChecker<'a> {
     }
 
     fn resolve_local(&self, local: LocalID) -> (String, Option<error::Span>) {
-        if let Some(def_id) = self.mir.locals[local.0].debug_def_id {
-            if let Some(info) = self.context.get_def(def_id) {
-                return (info.name.clone(), Some(info.span));
-            }
+        let decl = &self.mir.locals[local.0];
+
+        if let Some(name) = &decl.debug_name {
+            return (name.clone(), decl.debug_span);
         }
-        
-        // If it's a compiler temporary (like `_3`), just return its MIR name and no span
-        (format!("_{}", local.0), None)
+
+        (format!("_{}", local.0), decl.debug_span)
     }
 
     fn check_rvalue_moves(&self, rval: &Rvalue, moved: &HashSet<LocalID>, errors: &mut Vec<HydraError>, span: error::Span) 

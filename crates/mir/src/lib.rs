@@ -4,7 +4,7 @@ pub mod optimizer;
 pub mod bounds;
 
 use errors::error;
-use ir::types::Type;
+use ir::types::{Type, TypeRef};
 use ir::context::DefID;
 use ir::hir::{HIRBinOp, HIRUnaryOp, CastKind};
 use ir::Constant;
@@ -19,7 +19,13 @@ pub struct LocalID(pub usize); // _0 is return value, _1.._n are args/vars/tempo
 #[derive(Debug, Clone)]
 pub struct MIRProgram {
     pub functions: Vec<MIRFunction>,
-    // Structs and Globals pass through largely unchanged from HIR
+    pub structs: Vec<MIRStruct>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MIRStruct {
+    pub type_ref: TypeRef,
+    pub fields: Vec<Type>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,8 +51,9 @@ pub struct FunctionRef {
 pub struct LocalDecl {
     pub ty: Type,
     pub is_mutable: bool,
-    pub debug_def_id: Option<DefID>, // Optional: Keep track of which DefID this maps to for debugging/diagnostics
+    pub debug_def_id: Option<DefID>,
     pub debug_name: Option<String>,
+    pub debug_span: Option<error::Span>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,15 +72,18 @@ pub struct Place {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectionElem {
     Deref,
-    Field(usize),
-    Index(LocalID), // e.g., arr[i] where `i` is a local
+    Field { index: usize, ty: Type },
+    Index(LocalID),
 }
 
 // Statements execute sequentially and alter memory/locals
 #[derive(Debug, Clone)]
 pub enum StatementKind {
     Assign(Place, Rvalue),
-    Drop(Place),
+    Drop {
+        place: Place,
+        callee: FunctionRef,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -118,7 +128,7 @@ pub enum Rvalue {
 #[derive(Debug, Clone)]
 pub enum AggregateKind {
     Array(Type),
-    Struct(DefID),
+    Struct(TypeRef),
     Optional(Type),
 }
 

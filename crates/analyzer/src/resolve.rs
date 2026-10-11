@@ -5,7 +5,7 @@ use lexer::Token;
 use parser::Type;
 use parser::{ast::*, module::SourceMap};
 use parser::module::{ModuleTree, ResolvedState};
-use ir::context::{HIRContext, DefID, DefKind, SymbolInfo};
+use ir::context::{DefID, DefKind, SemanticContext, SymbolInfo};
 use errors::error::{HydraError, Span};
 
 use crate::scope::{NameResolver, Namespace, Scope};
@@ -23,7 +23,7 @@ pub type ResolutionSymbols = (NameResolver, HashMap<Vec<String>, DefID>);
 
 pub struct Resolver<'ctx> {
     program: &'ctx ModuleTree,
-    pub context: &'ctx mut HIRContext,
+    pub context: &'ctx mut SemanticContext,
     pub source_map: &'ctx SourceMap,
     pub name_resolver: NameResolver,
     pub global_symbols: HashMap<Vec<String>, DefID>,
@@ -36,7 +36,7 @@ pub struct Resolver<'ctx> {
 
 impl<'ctx> Resolver<'ctx> {
 
-    pub fn new(program: &'ctx ModuleTree, context: &'ctx mut HIRContext, source_map: &'ctx SourceMap) -> Self 
+    pub fn new(program: &'ctx ModuleTree, context: &'ctx mut SemanticContext, source_map: &'ctx SourceMap) -> Self 
     {
         Self {
             program,

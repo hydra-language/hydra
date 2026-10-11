@@ -1,25 +1,24 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use ir::context::{DefID, DefKind, HIRContext};
-use ir::hir::{HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRProgram, HIRStmt};
+use ir::context::DefID;
+use ir::hir::{
+    HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRProgram, HIRStmt, HIRTypeInfo,
+};
 use ir::types::Type;
-
-use crate::traits::DROP_TRAIT_PATH;
 
 const UNINIT_TYPE_PATH: &str = "core::mem::Uninit";
 
-pub fn retain_reachable_functions(program: &mut HIRProgram, context: &HIRContext) {
-    let function_indices: HashMap<DefID, usize> = program.functions.iter()
-        .enumerate()
+pub fn retain_reachable_functions(program: &mut HIRProgram, type_info: &HIRTypeInfo) {
+    let function_indices: HashMap<DefID, usize> = program.functions.iter().enumerate()
         .map(|(index, function)| (function.def_id, index))
         .collect();
 
-    let Some(main_def_id) = program.functions.iter().find(|function| function.name == "main").map(|function| function.def_id) else 
-    {
+    let Some(main_def_id) = program.functions.iter()
+        .find(|function| function.name == "main")
+        .map(|function| function.def_id)
+    else {
         return;
     };
-
-    let drop_trait_def_id = context.find_trait_by_path(DROP_TRAIT_PATH);
 
     let mut reachable = HashSet::new();
     let mut queue = VecDeque::from([main_def_id]);
@@ -34,12 +33,9 @@ pub fn retain_reachable_functions(program: &mut HIRProgram, context: &HIRContext
             continue;
         };
 
-        let function = &program.functions[function_index];
-
         collect_function_dependencies(
-            function,
-            context,
-            drop_trait_def_id,
+            &program.functions[function_index],
+            type_info,
             &mut queue,
             &mut visited_drop_types,
         );
@@ -50,20 +46,17 @@ pub fn retain_reachable_functions(program: &mut HIRProgram, context: &HIRContext
 
 fn collect_function_dependencies(
     function: &HIRFunction,
-    context: &HIRContext,
-    drop_trait_def_id: Option<DefID>,
+    type_info: &HIRTypeInfo,
     queue: &mut VecDeque<DefID>,
     visited_drop_types: &mut HashSet<Type>,
-) 
-{
-    for (_, ty) in &function.params {
-        collect_drop_dependencies(ty, context, drop_trait_def_id, queue, visited_drop_types);
+) {
+    for param in &function.params {
+        collect_drop_dependencies(&param.ty, type_info, queue, visited_drop_types);
     }
 
     collect_block_dependencies(
         &function.body,
-        context,
-        drop_trait_def_id,
+        type_info,
         queue,
         visited_drop_types,
     );
@@ -71,22 +64,24 @@ fn collect_function_dependencies(
 
 fn collect_block_dependencies(
     block: &HIRBlock,
-    context: &HIRContext,
-    drop_trait_def_id: Option<DefID>,
+    type_info: &HIRTypeInfo,
     queue: &mut VecDeque<DefID>,
     visited_drop_types: &mut HashSet<Type>,
-) 
-{
+) {
     for stmt in &block.stmts {
         match stmt {
-            HIRStmt::VarDecl { ty, init, .. } => {
-                collect_drop_dependencies(ty, context, drop_trait_def_id, queue, visited_drop_types);
+            HIRStmt::VarDecl { local, init, .. } => {
+                collect_drop_dependencies(
+                    &local.ty,
+                    type_info,
+                    queue,
+                    visited_drop_types,
+                );
 
                 if let Some(init) = init {
                     collect_expr_dependencies(
                         init,
-                        context,
-                        drop_trait_def_id,
+                        type_info,
                         queue,
                         visited_drop_types,
                     );
@@ -96,8 +91,7 @@ fn collect_block_dependencies(
             HIRStmt::Expr(expr) => {
                 collect_expr_dependencies(
                     expr,
-                    context,
-                    drop_trait_def_id,
+                    type_info,
                     queue,
                     visited_drop_types,
                 );
@@ -108,76 +102,152 @@ fn collect_block_dependencies(
 
 fn collect_expr_dependencies(
     expr: &HIRExpr,
-    context: &HIRContext,
-    drop_trait_def_id: Option<DefID>,
+    type_info: &HIRTypeInfo,
     queue: &mut VecDeque<DefID>,
     visited_drop_types: &mut HashSet<Type>,
 ) {
     match &expr.kind {
         HIRExprKind::Call { callee, args, .. } => {
-            queue.push_back(*callee);
+            queue.push_back(callee.def_id);
 
             for arg in args {
-                collect_expr_dependencies(arg, context, drop_trait_def_id, queue, visited_drop_types);
+                collect_expr_dependencies(
+                    arg,
+                    type_info,
+                    queue,
+                    visited_drop_types,
+                );
             }
         }
 
         HIRExprKind::IntrinsicCall { args, .. } => {
             for arg in args {
-                collect_expr_dependencies(arg, context, drop_trait_def_id, queue, visited_drop_types);
+                collect_expr_dependencies(
+                    arg,
+                    type_info,
+                    queue,
+                    visited_drop_types,
+                );
             }
         }
 
         HIRExprKind::StructInit { values, .. } => {
             for value in values {
-                collect_expr_dependencies(value, context, drop_trait_def_id, queue, visited_drop_types);
+                collect_expr_dependencies(
+                    value,
+                    type_info,
+                    queue,
+                    visited_drop_types,
+                );
             }
         }
 
         HIRExprKind::ArrayInit { elements } | HIRExprKind::SliceInit { elements } => {
             for element in elements {
-                collect_expr_dependencies(element, context, drop_trait_def_id, queue, visited_drop_types);
+                collect_expr_dependencies(
+                    element,
+                    type_info,
+                    queue,
+                    visited_drop_types,
+                );
             }
         }
 
         HIRExprKind::ArrayAccess { array, index } => {
-            collect_expr_dependencies(array, context, drop_trait_def_id, queue, visited_drop_types);
-            collect_expr_dependencies(index, context, drop_trait_def_id, queue, visited_drop_types);
+            collect_expr_dependencies(
+                array,
+                type_info,
+                queue,
+                visited_drop_types,
+            );
+
+            collect_expr_dependencies(
+                index,
+                type_info,
+                queue,
+                visited_drop_types,
+            );
         }
 
         HIRExprKind::FieldAccess { object, .. } => {
-            collect_expr_dependencies(object, context, drop_trait_def_id, queue, visited_drop_types);
+            collect_expr_dependencies(
+                object,
+                type_info,
+                queue,
+                visited_drop_types,
+            );
         }
 
         HIRExprKind::Binary { lhs, rhs, .. } => {
-            collect_expr_dependencies(lhs, context, drop_trait_def_id, queue, visited_drop_types);
-            collect_expr_dependencies(rhs, context, drop_trait_def_id, queue, visited_drop_types);
+            collect_expr_dependencies(
+                lhs,
+                type_info,
+                queue,
+                visited_drop_types,
+            );
+
+            collect_expr_dependencies(
+                rhs,
+                type_info,
+                queue,
+                visited_drop_types,
+            );
         }
 
         HIRExprKind::Unary { operand, .. } | HIRExprKind::Cast { expr: operand, .. } | 
-        HIRExprKind::Borrow { target: operand, .. } | HIRExprKind::Dereference { target: operand, .. } |
-        HIRExprKind::OptionalPresent(operand) => 
+        HIRExprKind::Borrow { target: operand, .. } | HIRExprKind::Dereference { target: operand, .. } | HIRExprKind::OptionalPresent(operand) => 
         {
-            collect_expr_dependencies(operand, context, drop_trait_def_id, queue, visited_drop_types);
+            collect_expr_dependencies(
+                operand,
+                type_info,
+                queue,
+                visited_drop_types,
+            );
         }
 
         HIRExprKind::OrElse { optional, fallback } => {
-            collect_expr_dependencies(optional, context, drop_trait_def_id, queue, visited_drop_types);
-            collect_expr_dependencies(fallback, context, drop_trait_def_id, queue, visited_drop_types);
+            collect_expr_dependencies(
+                optional,
+                type_info,
+                queue,
+                visited_drop_types,
+            );
+
+            collect_expr_dependencies(
+                fallback,
+                type_info,
+                queue,
+                visited_drop_types,
+            );
         }
 
         HIRExprKind::Assign { target, value } => {
-            collect_expr_dependencies(target, context, drop_trait_def_id, queue, visited_drop_types);
-            collect_expr_dependencies(value, context, drop_trait_def_id, queue, visited_drop_types);
+            collect_expr_dependencies(
+                target,
+                type_info,
+                queue,
+                visited_drop_types,
+            );
+
+            collect_expr_dependencies(
+                value,
+                type_info,
+                queue,
+                visited_drop_types,
+            );
         }
 
         HIRExprKind::If { cond, then_block, else_block } => {
-            collect_expr_dependencies(cond, context, drop_trait_def_id, queue, visited_drop_types);
+            collect_expr_dependencies(
+                cond,
+                type_info,
+                queue,
+                visited_drop_types,
+            );
 
             collect_block_dependencies(
                 then_block,
-                context,
-                drop_trait_def_id,
+                type_info,
                 queue,
                 visited_drop_types,
             );
@@ -185,8 +255,7 @@ fn collect_expr_dependencies(
             if let Some(else_block) = else_block {
                 collect_block_dependencies(
                     else_block,
-                    context,
-                    drop_trait_def_id,
+                    type_info,
                     queue,
                     visited_drop_types,
                 );
@@ -196,8 +265,7 @@ fn collect_expr_dependencies(
         HIRExprKind::Loop(block) => {
             collect_block_dependencies(
                 block,
-                context,
-                drop_trait_def_id,
+                type_info,
                 queue,
                 visited_drop_types,
             );
@@ -206,27 +274,31 @@ fn collect_expr_dependencies(
         HIRExprKind::Block(block) => {
             collect_block_dependencies(
                 block,
-                context,
-                drop_trait_def_id,
+                type_info,
                 queue,
                 visited_drop_types,
             );
         }
 
         HIRExprKind::Return(Some(value)) => {
-            collect_expr_dependencies(value, context, drop_trait_def_id, queue, visited_drop_types);
+            collect_expr_dependencies(
+                value,
+                type_info,
+                queue,
+                visited_drop_types,
+            );
         }
 
-        HIRExprKind::VarRef(_) | HIRExprKind::IntLiteral(_) | HIRExprKind::FloatLiteral(_) | 
-        HIRExprKind::StringLiteral(_) | HIRExprKind::CharLiteral(_) | HIRExprKind::BoolLiteral(_) | 
-        HIRExprKind::NONE | HIRExprKind::Break | HIRExprKind::Continue | HIRExprKind::Return(None) => {}
+        HIRExprKind::VarRef(_) | HIRExprKind::ConstRef { .. } | HIRExprKind::IntLiteral(_) | 
+        HIRExprKind::FloatLiteral(_) | HIRExprKind::StringLiteral(_) | HIRExprKind::CharLiteral(_) | 
+        HIRExprKind::BoolLiteral(_) | HIRExprKind::NONE | HIRExprKind::Break | HIRExprKind::Continue | 
+        HIRExprKind::Return(None) => {}
     }
 }
 
 fn collect_drop_dependencies(
     ty: &Type,
-    context: &HIRContext,
-    drop_trait_def_id: Option<DefID>,
+    type_info: &HIRTypeInfo,
     queue: &mut VecDeque<DefID>,
     visited_drop_types: &mut HashSet<Type>,
 ) {
@@ -234,13 +306,11 @@ fn collect_drop_dependencies(
         return;
     }
 
-    if let Some(drop_trait_def_id) = drop_trait_def_id {
-        if let Some(drop_method) = context.get_exact_trait_method(drop_trait_def_id, ty, "drop") {
-            queue.push_back(drop_method);
-        }
+    if let Some(drop_fn) = type_info.drop_functions.get(ty) {
+        queue.push_back(drop_fn.def_id);
     }
 
-    if is_uninit_type(ty, context) {
+    if is_uninit_type(ty) {
         return;
     }
 
@@ -248,36 +318,25 @@ fn collect_drop_dependencies(
         return;
     };
 
-    let Some(info) = context.get_def(type_ref.def_id) else {
+    let Some(struct_info) = type_info.structs.get(&type_ref.def_id) else {
         return;
     };
 
-    let DefKind::Struct { fields, .. } = &info.kind else {
-        return;
-    };
-
-    for (_, field_ty, _) in fields {
+    for field_ty in &struct_info.fields {
         collect_drop_dependencies(
             field_ty,
-            context,
-            drop_trait_def_id,
+            type_info,
             queue,
             visited_drop_types,
         );
     }
 }
 
-fn is_uninit_type(ty: &Type, context: &HIRContext) -> bool {
-    match ty {
-        Type::GENERIC_INSTANCE(type_ref, _) => type_ref.symbol == UNINIT_TYPE_PATH,
+fn is_uninit_type(ty: &Type) -> bool {
+    let type_ref = match ty {
+        Type::GENERIC_INSTANCE(type_ref, _) | Type::STRUCT(type_ref) => type_ref,
+        _ => return false,
+    };
 
-        Type::STRUCT(type_ref) => {
-            type_ref.symbol == UNINIT_TYPE_PATH
-            || context
-                .get_display_name(type_ref.def_id)
-                .is_some_and(|name| name.starts_with("core::mem::Uninit<"))
-        }
-
-        _ => false,
-    }
+    type_ref.symbol == UNINIT_TYPE_PATH || type_ref.display_symbol.as_deref().is_some_and(|name| name.starts_with("core::mem::Uninit<"))
 }

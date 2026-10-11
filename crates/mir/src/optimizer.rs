@@ -197,7 +197,7 @@ impl Optimizer {
                         }
                     }
 
-                    StatementKind::Drop(_) => {}
+                    StatementKind::Drop { .. } => {}
                 }
             }
 
@@ -384,11 +384,13 @@ impl Optimizer {
 
         let try_replace = |op: &mut Operand, aggs: &HashMap<LocalID, Vec<Operand>>| -> bool {
             if let Operand::Copy(place) | Operand::Move(place) = op {
-                if let [ProjectionElem::Field(idx)] = place.projection.as_slice() {
+                if let [ProjectionElem::Field { index, .. }] = place.projection.as_slice() {
                     let base = resolve(place.local);
+
                     if let Some(fields) = aggs.get(&base) {
-                        if let Some(field_op) = fields.get(*idx) {
+                        if let Some(field_op) = fields.get(*index) {
                             *op = field_op.clone();
+
                             return true;
                         }
                     }
@@ -581,7 +583,7 @@ impl Optimizer {
                             Self::count_projection_reads(place, &mut read_counts);
                         }
 
-                        StatementKind::Drop(place) => {
+                        StatementKind::Drop { place, .. } => {
                             *read_counts.entry(place.local).or_insert(0) += 1;
                             Self::count_projection_reads(place, &mut read_counts);
                         }
@@ -867,7 +869,7 @@ impl Optimizer {
                             *avail_local != mutated && !Self::rvalue_uses_local(avail_rval, mutated)
                         });
                     }
-                    StatementKind::Drop(place) => {
+                    StatementKind::Drop { place, .. } => {
                         // Dropping a variable poisons it as well
                         let mutated = place.local;
                         available.retain(|(avail_rval, avail_local)| {
@@ -1043,7 +1045,7 @@ impl Optimizer {
                         // that runs `shift_local` on every LocalID inside the Rvalue/Operands.
                         Self::shift_locals_in_rvalue(rval, &shift_local);
                     }
-                    StatementKind::Drop(place) => {
+                    StatementKind::Drop { place, .. } => {
                         shift_local(&mut place.local);
                     }
                 }
