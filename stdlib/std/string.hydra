@@ -1,0 +1,165 @@
+include alloc::vec::Vec;
+
+include core::mem;
+include core::mem::Uninit;
+
+include core::ptr;
+include core::primitives;
+
+include core::fmt::Display;
+include core::fmt::Formatter;
+
+include core::ops::Clone;
+include core::ops::Deref;
+include core::ops::DerefMut;
+
+include core::convert::From;
+
+pub struct String {
+    vec: Vec<u8>;
+}
+
+extension Clone on String {
+    fn clone(&self) -> String {
+        return String {
+            .vec = self.vec::clone()
+        };
+    }
+}
+
+extension Display on String {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        formatter::write_raw(
+            self.vec::ptr() as *const u8, 
+            self.vec::len()
+        );
+    }
+}
+
+extension Deref<string> on String {
+    #[inline]
+    fn deref(&self) -> &string {
+        return String::from_raw_parts(
+            self.vec::ptr() as *const u8,
+            self.vec::len()
+        );
+    }
+}
+
+extension DerefMut<string> on String {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut string {
+        return String::from_raw_parts_mut(
+            self.vec::ptr(),
+            self.vec::len()
+        );
+    }
+}
+
+extension From<&string> on String {
+    fn from(str: &string) -> String {
+        let s = String::with_capacity(str::len());
+        s::push_str(str);
+
+        return s;
+    }
+}
+
+extension String {
+    
+    pub fn new() -> String {
+        return String {
+            .vec = Vec::new()
+        };
+    }
+
+    pub fn with_capacity(cap: usize) -> String {
+        return String {
+            .vec = Vec::with_capacity(cap)
+        };
+    }
+
+    pub fn from_raw_parts(data: *const u8, len: usize) -> &string {
+        let value: Uninit<&string> = Uninit::new();
+
+        const value_ptr = value::as_mut_ptr();
+        const data_slot = value_ptr as *mut *const u8;
+        const len_slot = ptr::offset::<usize>(
+            data_slot as *mut usize,
+            1
+        );
+
+        ptr::write::<*const u8>(data_slot, data);
+        ptr::write::<usize>(len_slot, len);
+
+        return ptr::read::<&string>(
+            value_ptr as *const &string
+        );
+    }
+
+    pub fn from_raw_parts_mut(data: *const u8, len: usize) -> &mut string {
+        let value: Uninit<&string> = Uninit::new();
+
+        const value_ptr = value::as_mut_ptr();
+        const data_slot = value_ptr as *mut *const u8;
+        const len_slot = ptr::offset::<usize>(
+            data_slot as *mut usize,
+            1
+        );
+
+        ptr::write::<*const u8>(data_slot, data);
+        ptr::write::<usize>(len_slot, len);
+
+        return ptr::read::<&mut string>(
+            value_ptr as *const &mut string
+        );
+        
+    }
+
+    pub fn push(&mut self, c: char) -> void {
+        // TODO
+    }
+
+    pub fn push_str(&mut self, str: &string) -> void {
+        const bytes: &[u8] = str::as_bytes();
+
+        let i: usize = 0;
+        while i < str::len() {
+            self.vec::push(bytes[i]);
+            i += 1;
+        }
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        return ptr::slice_from_raw_parts::<u8>(
+            self.vec::ptr() as *const u8,
+            self.vec::len()
+        );
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &string {
+        return self::deref();
+    }
+
+    #[inline]
+    pub fn as_mut_str(&mut self) -> &mut string {
+        return self::deref_mut();
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        return self.vec::len();
+    }
+
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        return self.vec::capacity();
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        return self::len() == 0;
+    }
+}
