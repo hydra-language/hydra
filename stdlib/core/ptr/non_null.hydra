@@ -20,7 +20,7 @@ extension<T> NonNull<T> {
 
     pub fn dangling() -> NonNull<T> {
         return NonNull {
-            .ptr = intrinsics::__ptr_from_addr::<T>(mem::align_of::<T>())
+            .ptr = mem::align_of::<T>() as *mut T
         };
     }
 

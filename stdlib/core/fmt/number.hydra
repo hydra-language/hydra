@@ -4,6 +4,57 @@ include core::fmt::Formatter;
 include core::intrinsics;
 include core::mem::Uninit;
 
+include core::ptr;
+
+pub fn write_pointer(formatter: &mut Formatter, address: usize) -> void {
+    formatter::write("0x");
+
+    if address == 0 {
+        formatter::write("0");
+        return;
+    }
+
+    let buffer: Uninit<[u8, 16]> = Uninit::new();
+    const buffer_ptr = buffer::as_mut_ptr() as *mut u8;
+
+    let value = address;
+    let len: usize = 0;
+
+    while value != 0 {
+        const digit = value % 16;
+
+        const byte: u8 = if digit < 10 {
+            digit as u8 + 48;
+        } else {
+            digit as u8 - 10 + 97;
+        };
+
+        ptr::write::<u8>(
+            ptr::offset::<u8>(buffer_ptr, len as isize),
+            byte
+        );
+
+        value /= 16;
+        len += 1;
+    }
+
+    let i: isize = 0;
+    while i < len {
+        const index = len - i - 1;
+        const byte_ptr = ptr::offset::<u8>(
+            buffer_ptr,
+            index as isize
+        );
+
+        formatter::write_raw(
+            byte_ptr as *const u8,
+            1
+        );
+
+        i += 1;
+    }
+}
+
 fn write_i64(formatter: &mut Formatter, value: i64) -> void {
     let buffer = Uninit::<[u8, 20]>::new();
 

@@ -1,17 +1,41 @@
-include core::intrinsics;
+include core::fmt::Formatter;
+include core::fmt::Display;
+
+include core::fmt::number;
+
+extension<T> Display on *mut T {
+    #[inline]
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        number::write_pointer(
+            formatter,
+            *self as usize
+        );
+    }
+}
 
 extension<T> *mut T {
-    
+
     #[inline]
     pub fn is_null(self) -> bool {
-        return intrinsics::__ptr_is_null::<T>(self as *const T);
+        return self as usize == 0;
+    }
+}
+
+
+extension<T> Display on *const T {
+    #[inline]
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        number::write_pointer(
+            formatter,
+            *self as usize
+        );
     }
 }
 
 extension<T> *const T {
-    
+
     #[inline]
     pub fn is_null(self) -> bool {
-        return intrinsics::__ptr_is_null::<T>(self);
+        return self as usize == 0;
     }
 }

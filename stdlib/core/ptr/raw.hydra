@@ -19,17 +19,17 @@ pub fn offset<T>(ptr: *mut T, count: isize) -> *mut T {
 
 #[inline]
 pub fn null<T>() -> *const T {
-    return intrinsics::__ptr_null::<T>();
+    return 0 as *const T;
 }
 
 #[inline]
 pub fn null_mut<T>() -> *mut T {
-    return intrinsics::__ptr_null_mut::<T>();
+    return 0 as *mut T;
 }
 
 #[inline]
 pub fn is_null<T>(ptr: *const T) -> bool {
-    return intrinsics::__ptr_is_null::<T>(ptr);
+    return ptr as usize == 0;
 }
 
 #[inline]
