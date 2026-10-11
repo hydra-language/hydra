@@ -663,6 +663,11 @@ impl SourceMap {
         Ok(self.files.get(path).unwrap().as_str())
     }
 
+    pub fn path_for_id(&self, id: u32) -> Option<&Path> {
+        self.source_ids.iter()
+            .find_map(|(path, &source_id)| (source_id == id).then_some(path.as_path()))
+    }
+
     pub fn get_source_id(&self, path: &Path) -> Option<u32> {
         self.source_ids.get(path).copied()
     }

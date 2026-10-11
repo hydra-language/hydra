@@ -14,6 +14,7 @@ fn function_with_local(ty: Type) -> HIRFunction {
         name: "main".into(),
         symbol: "main".into(),
         display_name: None,
+        source_id: 0,
         def_id: DefID(0),
         params: vec![],
         return_type: Type::VOID,

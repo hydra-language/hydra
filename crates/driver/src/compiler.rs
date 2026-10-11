@@ -6,7 +6,8 @@ use borrowcheck::borrowcheck::BorrowChecker;
 
 use codegen::CodeGen;
 
-use ir::context::SemanticContext;
+use ir::context::{DefID, SemanticContext};
+use errors::error::HydraError;
 
 use mir::{
     MIRProgram, MIRStruct, bounds::BoundsChecker, builder::MIRBuilder, optimizer::{OptimizationLevel as MirOptimizationLevel, Optimizer},
@@ -27,6 +28,32 @@ use crate::{
 
 pub struct Compiler {
     session: Session,
+}
+
+fn attach_function_source(errors: &mut [HydraError], def_id: DefID, function_sources: &HashMap<DefID, u32>, source_map: &SourceMap) {
+    let Some(source_id) = function_sources.get(&def_id) else { 
+        return; 
+    };
+
+    let Some(path) = source_map.path_for_id(*source_id) else { 
+        return; 
+    };
+
+    let Some(source) = source_map.get_source(path) else { 
+        return; 
+    };
+
+    let filename = path.display().to_string();
+
+    for error in errors {
+        if error.filepath.is_none() { 
+            error.filepath = Some(filename.clone()); 
+        }
+
+        if error.source_text.is_none() { 
+            error.source_text = Some(source.to_owned()); 
+        }
+    }
 }
 
 impl Compiler {
@@ -190,6 +217,7 @@ impl Compiler {
         );
 
         let mut drop_cache = HashMap::new();
+        let mut function_sources = HashMap::new();
 
         for hir_fn in &specialized_program.functions {
             let function_start = Instant::now();
@@ -199,7 +227,9 @@ impl Compiler {
                 &mut drop_cache,
             );
 
-            mir_functions.push(builder.build_function(hir_fn.clone()));
+            let mir_fn = builder.build_function(hir_fn.clone());
+            function_sources.insert(mir_fn.def_id, hir_fn.source_id);
+            mir_functions.push(mir_fn);
 
             let function_name = hir_fn.display_name.as_deref().unwrap_or(&hir_fn.name).to_string();
 
@@ -259,6 +289,7 @@ impl Compiler {
             );
 
             if let Err(mut errors) = result {
+                attach_function_source(&mut errors, mir_fn.def_id, &function_sources, &source_map);
                 bounds_errors.append(&mut errors);
             }
         }
@@ -293,6 +324,7 @@ impl Compiler {
             );
 
             if let Err(mut errors) = result {
+                attach_function_source(&mut errors, mir_fn.def_id, &function_sources, &source_map);
                 borrow_errors.append(&mut errors);
             }
         }

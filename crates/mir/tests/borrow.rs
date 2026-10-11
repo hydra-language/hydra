@@ -55,6 +55,7 @@ impl Fixture {
             name: "test".into(),
             symbol: "test".into(),
             display_name: None,
+            source_id: 0,
             def_id: DefID(0),
             params: self.params,
             return_type: Type::VOID,

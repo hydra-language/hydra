@@ -17,6 +17,7 @@ fn build_optional(initializer: HIRExpr) -> mir::MIRFunction {
         symbol: "main".into(),
         display_name: None,
         def_id: DefID(0),
+        source_id: 0,
         params: vec![],
         return_type: Type::VOID,
         body: HIRBlock {

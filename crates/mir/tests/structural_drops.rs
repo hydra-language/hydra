@@ -59,6 +59,7 @@ fn build_payload(explicit_payload_drop: bool) -> mir::MIRFunction {
         name: "main".into(),
         symbol: "main".into(),
         display_name: None,
+        source_id: 0,
         def_id: DefID(5),
         params: vec![],
         return_type: Type::VOID,

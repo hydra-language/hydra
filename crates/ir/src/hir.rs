@@ -54,6 +54,7 @@ pub struct HIRFunction {
     pub name: String,
     pub def_id: DefID,
     pub symbol: String,
+    pub source_id: u32,
     pub display_name: Option<String>,
     pub params: Vec<HIRLocal>,
     pub return_type: Type,

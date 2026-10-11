@@ -37,6 +37,7 @@ fn orelse_branches_on_discriminant_and_extracts_payload() {
         name: "main".into(),
         symbol: "main".into(),
         display_name: None,
+        source_id: 0,
         def_id: DefID(0),
         params: vec![],
         return_type: Type::VOID,

@@ -166,6 +166,7 @@ impl<'ctx> Analyzer<'ctx> {
             def_id,
             symbol: fn_name,
             display_name,
+            source_id: (decl.id.0 >> 32) as u32,
             params: ir_params,
             return_type: ret_type,
             body: HIRBlock {

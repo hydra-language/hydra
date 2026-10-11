@@ -39,6 +39,7 @@ fn returning_void_call_does_not_assign_void_value_to_return_place() {
         symbol: "push".into(),
         display_name: None,
         def_id: DefID(2),
+        source_id: 0,
         params: vec![],
         return_type: Type::VOID,
         body: HIRBlock {
