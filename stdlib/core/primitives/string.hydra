@@ -1,0 +1,33 @@
+include core::intrinsics;
+
+include core::ptr;
+
+include core::fmt::Display;
+include core::fmt::Formatter;
+
+extension string {
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        return intrinsics::__string_len(self);
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        return self::len() == 0;
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        return ptr::slice_from_raw_parts::<u8>(
+            intrinsics::__string_ptr(self),
+            self::len()
+        );
+    }
+}
+
+extension Display on &string {
+    fn fmt(&self, formatter: &mut Formatter) -> void {
+        formatter::write(*self);
+    }
+}
