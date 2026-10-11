@@ -118,7 +118,7 @@ impl<'a> MIRBuilder<'a> {
             self.terminate_block(Terminator::Return);
         }
 
-        MIRFunction {
+        let mut mir = MIRFunction {
             name: hir_fn.name,
             display_name: hir_fn.display_name,
             def_id: hir_fn.def_id,
@@ -127,7 +127,11 @@ impl<'a> MIRBuilder<'a> {
             locals: self.locals,
             basic_blocks: self.basic_blocks,
             is_inline: hir_fn.is_inline,
-        }
+        };
+
+        crate::drop_flags::elaborate(&mut mir);
+
+        mir
     }
 
     // ========================================================================
@@ -1207,7 +1211,7 @@ impl<'a> MIRBuilder<'a> {
                 decl.debug_def_id.is_some() && self.type_needs_drop(&decl.ty)
             };
 
-            if !should_drop || self.local_is_moved(local) {
+            if !should_drop {
                 continue;
             }
 
@@ -1222,65 +1226,6 @@ impl<'a> MIRBuilder<'a> {
                 span,
             );
         }
-    }
-
-    fn local_is_moved(&self, local: LocalID) -> bool {
-        fn operand_moves(op: &Operand, local: LocalID) -> bool {
-            matches!(
-                op,
-                Operand::Move(place) if place.local == local
-            )
-        }
-
-        for block in &self.basic_blocks {
-            for stmt in &block.statements {
-                match &stmt.kind {
-                    StatementKind::Assign(_, rval) => {
-                        let moved = match rval {
-                            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(_, op, _) => {
-                                operand_moves(op, local)
-                            }
-
-                            Rvalue::BinaryOp(_, lhs, rhs) => {
-                                operand_moves(lhs, local) || operand_moves(rhs, local)
-                            }
-
-                            Rvalue::Aggregate(_, ops) => {
-                                ops.iter().any(|op| operand_moves(op, local))
-                            }
-
-                            Rvalue::Intrinsic { args, .. } => {
-                                args.iter().any(|op| operand_moves(op, local))
-                            }
-
-                            Rvalue::Ref(_, _) | Rvalue::SliceRef { .. } => false,
-                        };
-
-                        if moved {
-                            return true;
-                        }
-                    }
-
-                    StatementKind::Drop { place, .. } => {
-                        if place.local == local {
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            match &block.terminator {
-                Terminator::Call { args, .. } => {
-                    if args.iter().any(|op| operand_moves(op, local)) {
-                        return true;
-                    }
-                }
-
-                _ => {}
-            }
-        }
-
-        false
     }
 
     fn is_uninit_type(&self, ty: &Type) -> bool {

@@ -2,6 +2,8 @@ pub mod builder;
 pub mod display;
 pub mod optimizer;
 pub mod bounds;
+pub mod visit;
+pub mod drop_flags;
 
 use errors::error;
 use ir::types::{Type, TypeRef};
