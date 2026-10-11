@@ -1,243 +1,112 @@
 use std::{
     fs,
-    path::{
-        Path,
-        PathBuf,
-    },
-    sync::atomic::{
-        AtomicUsize,
-        Ordering,
-    },
+    path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
-use analyzer::{
-    Analyzer,
-    Resolver,
-};
-
+use analyzer::{Analyzer, Resolver};
 use errors::error::HydraError;
+use ir::{context::SemanticContext, hir::HIRProgram};
+use parser::module::{ModuleTree, SourceMap};
 
-use ir::{
-    context::HIRContext,
-    hir::HIRProgram,
-};
-
-use parser::module::{
-    ModuleTree,
-    SourceMap,
-};
-
-
-static NEXT_TEST_ID: AtomicUsize =
-    AtomicUsize::new(0);
-
+static NEXT_TEST_ID: AtomicUsize = AtomicUsize::new(0);
 
 struct TestProject {
     dir: PathBuf,
     entry: PathBuf,
 }
 
-
 impl TestProject {
+    fn new(source: &str) -> Self {
+        let id = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "hydrac-field-visibility-test-{}-{id}",
+            std::process::id(),
+        ));
 
-    fn new(
-        source: &str,
-    ) -> Self {
-        let id =
-            NEXT_TEST_ID.fetch_add(
-                1,
-                Ordering::Relaxed,
-            );
-
-        let dir =
-            std::env::temp_dir().join(
-                format!(
-                    "hydrac-field-visibility-test-{}-{}",
-                    std::process::id(),
-                    id,
-                ),
-            );
-
-        fs::create_dir_all(
-            &dir,
-        )
-        .expect(
-            "failed to create temporary test directory",
-        );
-
-        let entry =
-            dir.join(
-                "main.hydra"
-            );
-
-        fs::write(
-            &entry,
-            source,
-        )
-        .expect(
-            "failed to write entry source",
-        );
-
-        Self {
-            dir,
-            entry,
-        }
+        fs::create_dir_all(&dir).expect("failed to create test directory");
+        let entry = dir.join("main.hydra");
+        fs::write(&entry, source).expect("failed to write entry source");
+        Self { dir, entry }
     }
 
-
-    fn write(
-        &self,
-        relative:
-            &str,
-        source:
-            &str,
-    ) {
-        let path =
-            self.dir.join(
-                relative
-            );
-
-        if let Some(parent) =
-            path.parent()
-        {
-            fs::create_dir_all(
-                parent,
-            )
-            .expect(
-                "failed to create module directory",
-            );
+    fn write(&self, relative: &str, source: &str) {
+        let path = self.dir.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("failed to create module directory");
         }
-
-        fs::write(
-            path,
-            source,
-        )
-        .expect(
-            "failed to write module source",
-        );
+        fs::write(path, source).expect("failed to write module source");
     }
 }
-
 
 impl Drop for TestProject {
-
-    fn drop(
-        &mut self
-    ) {
-        let _ =
-            fs::remove_dir_all(
-                &self.dir
-            );
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
     }
 }
 
+fn analyze_project(project: &TestProject) -> Result<HIRProgram, Vec<HydraError>> {
+    let mut source_map = SourceMap::new();
 
-fn analyze_project(
-    project:
-        &TestProject,
-) -> Result<
-    HIRProgram,
-    Vec<HydraError>,
-> {
-    let mut source_map =
-        SourceMap::new();
+    let mut modules = ModuleTree::build(
+        &project.entry,
+        project.dir.clone(),
+        &mut source_map,
+    ).unwrap_or_else(|errors| {
+        panic!("module construction failed:\n{errors:#?}");
+    });
 
-    let mut module_tree =
-        ModuleTree::build(
-            Path::new(
-                &project.entry
-            ),
-            project.dir.clone(),
-            &mut source_map,
-        )
-        .unwrap_or_else(
-            |errors| {
-                panic!(
-                    "module construction failed:\n{errors:#?}"
-                );
-            },
-        );
+    modules.resolve_imports(&mut source_map)
+        .unwrap_or_else(|errors| {
+            panic!("import resolution failed:\n{errors:#?}");
+        });
 
-    module_tree
-        .resolve_imports(
-            &mut source_map,
-        )
-        .unwrap_or_else(
-            |errors| {
-                panic!(
-                    "import resolution failed:\n{errors:#?}"
-                );
-            },
-        );
+    modules.parse_bodies(&source_map)
+        .unwrap_or_else(|errors| {
+            panic!("body parsing failed:\n{errors:#?}");
+        });
 
-    module_tree
-        .parse_bodies(
-            &source_map,
-        )
-        .unwrap_or_else(
-            |errors| {
-                panic!(
-                    "body parsing failed:\n{errors:#?}"
-                );
-            },
-        );
-
-    let mut context =
-        HIRContext::default();
-
-    let resolver =
-        Resolver::new(
-            &module_tree,
-            &mut context,
-            &source_map,
-        );
-
-    let (
-        name_resolver,
-        global_symbols,
-    ) =
-        resolver
+    let mut context = SemanticContext::new();
+    let (name_resolver, global_symbols) =
+        Resolver::new(&modules, &mut context, &source_map)
             .resolve()
-            .unwrap_or_else(
-                |errors| {
-                    panic!(
-                        "name resolution failed:\n{errors:#?}"
-                    );
-                },
-            );
+            .unwrap_or_else(|errors| {
+                panic!("name resolution failed:\n{errors:#?}");
+            });
 
     Analyzer::new(
-        &module_tree,
-        &mut context,
+        &modules,
+        context,
         &source_map,
         name_resolver,
         global_symbols,
     )
     .analyze()
+    .map(|analyzed| analyzed.hir)
 }
 
-
-fn analyze(
-    source: &str,
-) -> Result<
-    HIRProgram,
-    Vec<HydraError>,
-> {
-    let project =
-        TestProject::new(
-            source
-        );
-
-    analyze_project(
-        &project
-    )
+fn analyze(source: &str) -> Result<HIRProgram, Vec<HydraError>> {
+    let project = TestProject::new(source);
+    analyze_project(&project)
 }
 
+fn assert_private_field_error(project: &TestProject) {
+    let errors = analyze_project(project)
+        .expect_err("external access to a private field must fail");
+
+    assert!(
+        errors.iter().any(|error| {
+            error.code == "S019"
+                && error.message.contains("field `hidden`")
+                && error.message.contains("is private")
+        }),
+        "expected private-field diagnostic, got {errors:#?}",
+    );
+}
 
 #[test]
 fn private_field_is_accessible_inside_defining_module() {
-    analyze(
-        r#"
+    analyze(r#"
 struct Value {
     hidden: i32;
 }
@@ -253,19 +122,13 @@ fn read() -> i32 {
 fn main() -> void {
     println("{}", read());
 }
-"#,
-    )
-    .expect(
-        "private field should be accessible in its defining module",
-    );
+"#)
+    .expect("private field should be accessible in its defining module");
 }
-
 
 #[test]
 fn public_field_is_accessible_from_another_module() {
-    let project =
-        TestProject::new(
-            r#"
+    let project = TestProject::new(r#"
 include data::Value;
 
 fn main() -> void {
@@ -273,102 +136,49 @@ fn main() -> void {
         .visible = 42
     };
 
-    println(
-        "{}",
-        value.visible
-    );
+    println("{}", value.visible);
 }
-"#,
-        );
+"#);
 
-    project.write(
-        "data.hydra",
-        r#"
+    project.write("data.hydra", r#"
 pub struct Value {
     pub visible: i32;
 }
-"#,
-    );
+"#);
 
-    analyze_project(
-        &project
-    )
-    .expect(
-        "public field should be accessible externally",
-    );
+    analyze_project(&project)
+        .expect("public field should be accessible externally");
 }
-
 
 #[test]
 fn private_field_read_is_rejected_from_another_module() {
-    let project =
-        TestProject::new(
-            r#"
-include data::{
-    Value,
-    make,
-};
+    let project = TestProject::new(r#"
+include data::{Value, make};
 
 fn main() -> void {
-    const value =
-        make(42);
-
-    println(
-        "{}",
-        value.hidden
-    );
+    const value = make(42);
+    println("{}", value.hidden);
 }
-"#,
-        );
+"#);
 
-    project.write(
-        "data.hydra",
-        r#"
+    project.write("data.hydra", r#"
 pub struct Value {
     hidden: i32;
 }
 
-pub fn make(
-    value: i32
-) -> Value {
+pub fn make(value: i32) -> Value {
     return Value {
         .hidden = value
     };
 }
-"#,
-    );
+"#);
 
-    let errors =
-        analyze_project(
-            &project
-        )
-        .expect_err(
-            "external access to private field must fail",
-        );
-
-    assert!(
-        errors.iter().any(
-            |error| {
-                error.code
-                    == "S019"
-                    && error.message.contains(
-                        "field `hidden`"
-                    )
-                    && error.message.contains(
-                        "is private"
-                    )
-            }
-        ),
-        "expected private-field error, got {errors:#?}",
-    );
+    assert_private_field_error(&project);
 }
-
 
 #[test]
 fn private_field_construction_is_rejected_from_another_module() {
-    let project =
-        TestProject::new(
-            r#"
+    let project = TestProject::new(r#"
 include data::Value;
 
 fn main() -> void {
@@ -376,44 +186,15 @@ fn main() -> void {
         .hidden = 42
     };
 
-    println(
-        "{}",
-        value
-    );
+    println("{}", value);
 }
-"#,
-        );
+"#);
 
-    project.write(
-        "data.hydra",
-        r#"
+    project.write("data.hydra", r#"
 pub struct Value {
     hidden: i32;
 }
-"#,
-    );
+"#);
 
-    let errors =
-        analyze_project(
-            &project
-        )
-        .expect_err(
-            "external construction through private field must fail",
-        );
-
-    assert!(
-        errors.iter().any(
-            |error| {
-                error.code
-                    == "S019"
-                    && error.message.contains(
-                        "field `hidden`"
-                    )
-                    && error.message.contains(
-                        "is private"
-                    )
-            }
-        ),
-        "expected private-field construction error, got {errors:#?}",
-    );
+    assert_private_field_error(&project);
 }

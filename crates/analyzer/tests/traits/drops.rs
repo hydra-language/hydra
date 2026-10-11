@@ -6,7 +6,7 @@ use std::{
 
 use analyzer::{Analyzer, Resolver};
 use errors::error::HydraError;
-use ir::context::HIRContext;
+use ir::context::SemanticContext;
 use parser::module::{ModuleTree, SourceMap};
 
 static NEXT_TEST_ID: AtomicUsize = AtomicUsize::new(0);
@@ -19,11 +19,9 @@ struct TestProject {
 impl TestProject {
     fn new(source: &str) -> Self {
         let id = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
-
         let dir = std::env::temp_dir().join(format!(
-            "hydrac-drop-rules-test-{}-{}",
+            "hydrac-drop-rules-test-{}-{id}",
             std::process::id(),
-            id,
         ));
 
         fs::create_dir_all(dir.join("core/ops"))
@@ -36,22 +34,16 @@ pub trait Drop {
     fn drop(&mut self) -> void;
 }
 "#,
-        )
-        .expect("failed to write Drop trait");
+        ).expect("failed to write Drop trait");
 
         let entry = dir.join("main.hydra");
-
-        let source = format!(
-            r#"
+        let source = format!(r#"
 include core::ops::drop::Drop;
 
 {source}
-"#
-        );
+"#);
 
-        fs::write(&entry, source)
-            .expect("failed to write temporary Hydra source");
-
+        fs::write(&entry, source).expect("failed to write temporary Hydra source");
         Self { dir, entry }
     }
 }
@@ -62,7 +54,7 @@ impl Drop for TestProject {
     }
 }
 
-fn analyze_result(source: &str) -> Result<HIRContext, Vec<HydraError>> {
+fn analyze_result(source: &str) -> Result<SemanticContext, Vec<HydraError>> {
     let project = TestProject::new(source);
     let mut source_map = SourceMap::new();
 
@@ -70,50 +62,35 @@ fn analyze_result(source: &str) -> Result<HIRContext, Vec<HydraError>> {
         Path::new(&project.entry),
         project.dir.clone(),
         &mut source_map,
-    )
-    .unwrap_or_else(|errors| {
+    ).unwrap_or_else(|errors| {
         panic!("module construction failed:\n{errors:#?}");
     });
 
-    module_tree
-        .resolve_imports(&mut source_map)
-        .unwrap_or_else(|errors| {
-            panic!("import resolution failed:\n{errors:#?}");
-        });
+    module_tree.resolve_imports(&mut source_map).unwrap_or_else(|errors| {
+        panic!("import resolution failed:\n{errors:#?}");
+    });
 
-    module_tree
-        .parse_bodies(&source_map)
-        .unwrap_or_else(|errors| {
-            panic!("body parsing failed:\n{errors:#?}");
-        });
+    module_tree.parse_bodies(&source_map).unwrap_or_else(|errors| {
+        panic!("body parsing failed:\n{errors:#?}");
+    });
 
-    let mut context = HIRContext::default();
+    let mut context = SemanticContext::new();
+    let (name_resolver, global_symbols) =
+        Resolver::new(&module_tree, &mut context, &source_map)
+            .resolve()
+            .unwrap_or_else(|errors| {
+                panic!("name resolution failed:\n{errors:#?}");
+            });
 
-    let resolver = Resolver::new(
+    Analyzer::new(
         &module_tree,
-        &mut context,
-        &source_map,
-    );
-
-    let (name_resolver, global_symbols) = resolver
-        .resolve()
-        .unwrap_or_else(|errors| {
-            panic!("name resolution failed:\n{errors:#?}");
-        });
-
-    let result = Analyzer::new(
-        &module_tree,
-        &mut context,
+        context,
         &source_map,
         name_resolver,
         global_symbols,
     )
-    .analyze();
-
-    match result {
-        Ok(_) => Ok(context),
-        Err(errors) => Err(errors),
-    }
+    .analyze()
+    .map(|analyzed| analyzed.context)
 }
 
 fn analyze(source: &str) {
@@ -136,8 +113,7 @@ fn assert_has_error(source: &str, code: &str) {
 
 #[test]
 fn drop_trait_implementation_is_allowed() {
-    analyze(
-        r#"
+    analyze(r#"
 struct Resource;
 
 extension Drop on Resource {
@@ -148,14 +124,12 @@ extension Drop on Resource {
 fn main() -> void {
     let resource = Resource {};
 }
-"#,
-    );
+"#);
 }
 
 #[test]
 fn inherent_method_named_drop_is_rejected() {
-    assert_has_error(
-        r#"
+    assert_has_error(r#"
 struct Resource;
 
 extension Resource {
@@ -165,30 +139,24 @@ extension Resource {
 
 fn main() -> void {
 }
-"#,
-        "S026",
-    );
+"#, "S026");
 }
 
 #[test]
 fn unrelated_trait_cannot_declare_drop_method() {
-    assert_has_error(
-        r#"
+    assert_has_error(r#"
 trait Cleanup {
     fn drop(&mut self) -> void;
 }
 
 fn main() -> void {
 }
-"#,
-        "S026",
-    );
+"#, "S026");
 }
 
 #[test]
 fn drop_trait_method_cannot_be_called_explicitly() {
-    assert_has_error(
-        r#"
+    assert_has_error(r#"
 struct Resource;
 
 extension Drop on Resource {
@@ -200,7 +168,5 @@ fn main() -> void {
     let resource = Resource {};
     resource::drop();
 }
-"#,
-        "S027",
-    );
+"#, "S027");
 }

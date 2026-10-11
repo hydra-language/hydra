@@ -1,12 +1,12 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
 use analyzer::{Analyzer, Resolver};
 use errors::error::HydraError;
-use ir::{context::HIRContext, hir::HIRProgram};
+use ir::{context::SemanticContext, hir::HIRProgram};
 use parser::module::{ModuleTree, SourceMap};
 
 static NEXT_TEST_ID: AtomicUsize = AtomicUsize::new(0);
@@ -19,29 +19,25 @@ struct TestProject {
 impl TestProject {
     fn new(source: &str) -> Self {
         let id = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
-
         let dir = std::env::temp_dir().join(format!(
-            "hydrac-arity-test-{}-{}",
+            "hydrac-arity-test-{}-{id}",
             std::process::id(),
-            id,
         ));
 
-        fs::create_dir_all(&dir).expect("failed to create temporary test directory");
-
+        fs::create_dir_all(&dir).expect("failed to create test directory");
         let entry = dir.join("main.hydra");
-        fs::write(&entry, source).expect("failed to write temporary Hydra source");
+        fs::write(&entry, source).expect("failed to write Hydra source");
 
         Self { dir, entry }
     }
 
     fn write(&self, relative: &str, source: &str) {
         let path = self.dir.join(relative);
-
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("failed to create temporary module directory");
+            fs::create_dir_all(parent).expect("failed to create module directory");
         }
 
-        fs::write(path, source).expect("failed to write temporary module");
+        fs::write(path, source).expect("failed to write module source");
     }
 }
 
@@ -53,39 +49,28 @@ impl Drop for TestProject {
 
 fn analyze_project(project: &TestProject) -> Result<HIRProgram, Vec<HydraError>> {
     let mut source_map = SourceMap::new();
-
-    let mut module_tree = ModuleTree::build(
-        Path::new(&project.entry),
+    let mut modules = ModuleTree::build(
+        &project.entry,
         project.dir.clone(),
         &mut source_map,
-    )
-    .unwrap_or_else(|errors| {
-        panic!("module construction failed:\n{errors:#?}");
-    });
+    )?;
 
-    module_tree.resolve_imports(&mut source_map).unwrap_or_else(|errors| {
-        panic!("import resolution failed:\n{errors:#?}");
-    });
+    modules.resolve_imports(&mut source_map)?;
+    modules.parse_bodies(&source_map)?;
 
-    module_tree.parse_bodies(&source_map).unwrap_or_else(|errors| {
-        panic!("body parsing failed:\n{errors:#?}");
-    });
-
-    let mut context = HIRContext::default();
-    let resolver = Resolver::new(&module_tree, &mut context, &source_map);
-
-    let (name_resolver, global_symbols) = resolver.resolve().unwrap_or_else(|errors| {
-        panic!("name resolution failed:\n{errors:#?}");
-    });
+    let mut context = SemanticContext::new();
+    let (name_resolver, global_symbols) =
+        Resolver::new(&modules, &mut context, &source_map).resolve()?;
 
     Analyzer::new(
-        &module_tree,
-        &mut context,
+        &modules,
+        context,
         &source_map,
         name_resolver,
         global_symbols,
     )
     .analyze()
+    .map(|analyzed| analyzed.hir)
 }
 
 fn analyze(source: &str) -> Result<HIRProgram, Vec<HydraError>> {
@@ -94,7 +79,8 @@ fn analyze(source: &str) -> Result<HIRProgram, Vec<HydraError>> {
 }
 
 fn assert_arity_error(source: &str, message: &str) {
-    let errors = analyze(source).expect_err("call with incorrect arity should fail");
+    let errors = analyze(source)
+        .expect_err("call with incorrect arity should fail");
 
     assert!(
         errors.iter().any(|error| error.code == "S018" && error.message == message),
@@ -103,7 +89,8 @@ fn assert_arity_error(source: &str, message: &str) {
 }
 
 fn assert_project_arity_error(project: &TestProject, message: &str) {
-    let errors = analyze_project(project).expect_err("call with incorrect arity should fail");
+    let errors = analyze_project(project)
+        .expect_err("call with incorrect arity should fail");
 
     assert!(
         errors.iter().any(|error| error.code == "S018" && error.message == message),
@@ -193,8 +180,7 @@ fn use_value(value: Value) -> i32 {
     return value::add();
 }
 
-fn main() -> void {
-}
+fn main() -> void {}
 "#,
         "method `add` expected 1 argument, found 0",
     );
@@ -218,8 +204,7 @@ fn use_value(value: Value) -> i32 {
     return value::add(1, 2);
 }
 
-fn main() -> void {
-}
+fn main() -> void {}
 "#,
         "method `add` expected 1 argument, found 2",
     );
@@ -243,8 +228,7 @@ fn use_value(value: Value) -> i32 {
     return Value::add(value);
 }
 
-fn main() -> void {
-}
+fn main() -> void {}
 "#,
         "function `Value::add` expected 2 arguments, found 1",
     );
@@ -252,23 +236,18 @@ fn main() -> void {
 
 #[test]
 fn rejects_too_few_intrinsic_arguments() {
-    let project = TestProject::new(
-        r#"
+    let project = TestProject::new(r#"
 include core::intrinsics;
 
 fn main() -> void {
     intrinsics::__ptr_read::<i32>();
 }
-"#,
-    );
+"#);
 
-    project.write(
-        "core/intrinsics.hydra",
-        r#"
+    project.write("core/intrinsics.hydra", r#"
 #[intrinsic]
 pub fn __ptr_read<T>(ptr: *const T) -> T;
-"#,
-    );
+"#);
 
     assert_project_arity_error(
         &project,
@@ -278,23 +257,18 @@ pub fn __ptr_read<T>(ptr: *const T) -> T;
 
 #[test]
 fn rejects_too_many_intrinsic_arguments() {
-    let project = TestProject::new(
-        r#"
+    let project = TestProject::new(r#"
 include core::intrinsics;
 
 fn main() -> void {
     intrinsics::__ptr_read::<i32>(0, 1);
 }
-"#,
-    );
+"#);
 
-    project.write(
-        "core/intrinsics.hydra",
-        r#"
+    project.write("core/intrinsics.hydra", r#"
 #[intrinsic]
 pub fn __ptr_read<T>(ptr: *const T) -> T;
-"#,
-    );
+"#);
 
     assert_project_arity_error(
         &project,
@@ -304,8 +278,7 @@ pub fn __ptr_read<T>(ptr: *const T) -> T;
 
 #[test]
 fn accepts_exact_function_and_method_arity() {
-    analyze(
-        r#"
+    analyze(r#"
 struct Value {
     value: i32;
 }
@@ -327,9 +300,7 @@ fn use_value(value: Value) -> i32 {
     return sum(left, right);
 }
 
-fn main() -> void {
-}
-"#,
-    )
+fn main() -> void {}
+"#)
     .expect("calls with exact arity should analyze");
 }

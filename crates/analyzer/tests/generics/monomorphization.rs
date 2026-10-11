@@ -1,356 +1,149 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use analyzer::{
-    Analyzer,
-    Resolver,
-    monomorphizer::Monomorphizer,
-};
-
+use analyzer::{Analyzer, Resolver, monomorphizer::Monomorphizer};
 use ir::{
-    context::HIRContext,
-    hir::{HIRStmt, HIRProgram},
+    context::SemanticContext,
+    hir::{HIRStmt, MonomorphizedProgram},
     types::Type,
 };
+use parser::module::{ModuleTree, SourceMap};
 
-use parser::module::{
-    ModuleTree,
-    SourceMap,
-};
+static NEXT_TEST_ID: AtomicUsize = AtomicUsize::new(0);
 
+fn monomorphize(source: &str) -> MonomorphizedProgram {
+    let id = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "hydrac-monomorphization-test-{}-{id}",
+        std::process::id(),
+    ));
+    fs::create_dir_all(&dir).expect("failed to create test directory");
 
-static NEXT_TEST_ID: AtomicUsize =
-    AtomicUsize::new(0);
+    let result = (|| {
+        let entry = dir.join("main.hydra");
+        fs::write(&entry, source).expect("failed to write source");
 
+        let mut source_map = SourceMap::new();
+        let mut modules = ModuleTree::build(&entry, dir.clone(), &mut source_map)
+            .expect("module tree should build");
+        modules.resolve_imports(&mut source_map)
+            .expect("imports should resolve");
+        modules.parse_bodies(&source_map)
+            .expect("bodies should parse");
 
-// ============================================================================
-// TEST PROJECT
-// ============================================================================
-
-struct TestProject {
-    dir: PathBuf,
-    entry: PathBuf,
-}
-
-impl TestProject {
-    fn new(source: &str) -> Self {
-        let id =
-            NEXT_TEST_ID.fetch_add(
-                1,
-                Ordering::Relaxed,
-            );
-
-        let dir =
-            std::env::temp_dir().join(format!(
-                "hydrac-analyzer-monomorphization-test-{}-{}",
-                std::process::id(),
-                id,
-            ));
-
-        fs::create_dir_all(&dir)
-            .expect(
-                "failed to create temporary test directory",
-            );
-
-        let entry =
-            dir.join("main.hydra");
-
-        fs::write(
-            &entry,
-            source,
-        )
-        .expect(
-            "failed to write temporary Hydra source",
-        );
-
-        Self {
-            dir,
-            entry,
-        }
-    }
-}
-
-impl Drop for TestProject {
-    fn drop(&mut self) {
-        let _ =
-            fs::remove_dir_all(
-                &self.dir,
-            );
-    }
-}
-
-
-// ============================================================================
-// COMPILER PIPELINE
-// ============================================================================
-
-fn monomorphize(
-    source: &str,
-) -> HIRProgram {
-    let project =
-        TestProject::new(source);
-
-    let mut source_map =
-        SourceMap::new();
-
-    let mut module_tree =
-        ModuleTree::build(
-            Path::new(&project.entry),
-            project.dir.clone(),
-            &mut source_map,
-        )
-        .unwrap_or_else(|errors| {
-            panic!(
-                "module construction failed:\n{errors:#?}"
-            );
-        });
-
-    module_tree
-        .resolve_imports(
-            &mut source_map,
-        )
-        .unwrap_or_else(|errors| {
-            panic!(
-                "import resolution failed:\n{errors:#?}"
-            );
-        });
-
-    module_tree
-        .parse_bodies(
-            &source_map,
-        )
-        .unwrap_or_else(|errors| {
-            panic!(
-                "body parsing failed:\n{errors:#?}"
-            );
-        });
-
-    let mut context =
-        HIRContext::default();
-
-    let resolver =
-        Resolver::new(
-            &module_tree,
-            &mut context,
-            &source_map,
-        );
-
-    let (
-        name_resolver,
-        global_symbols,
-    ) =
-        resolver
+        let mut context = SemanticContext::new();
+        let (resolver, symbols) = Resolver::new(&modules, &mut context, &source_map)
             .resolve()
-            .unwrap_or_else(|errors| {
-                panic!(
-                    "name resolution failed:\n{errors:#?}"
-                );
-            });
+            .expect("name resolution should succeed");
 
-    let analyzer =
-        Analyzer::new(
-            &module_tree,
-            &mut context,
-            &source_map,
-            name_resolver,
-            global_symbols,
-        );
-
-    let hir =
-        analyzer
+        let analyzed = Analyzer::new(&modules, context, &source_map, resolver, symbols)
             .analyze()
-            .unwrap_or_else(|errors| {
-                panic!(
-                    "semantic analysis failed:\n{errors:#?}"
-                );
-            });
+            .expect("semantic analysis should succeed");
 
-    Monomorphizer::new(
-        &mut context,
-        hir,
-    )
-    .run()
+        Monomorphizer::new(analyzed).run()
+    })();
+
+    let _ = fs::remove_dir_all(dir);
+    result
 }
-
-
-// ============================================================================
-// FUNCTION INSTANCES
-// ============================================================================
 
 #[test]
 fn reuses_existing_function_instance_for_same_type_arguments() {
-    let hir =
-        monomorphize(
-            r#"
-            fn identity<T>(value: T) -> T {
-                return value;
-            }
+    let program = monomorphize(r#"
+fn identity<T>(value: T) -> T {
+    return value;
+}
 
-            fn main() -> void {
-                let first = identity(1);
-                let second = identity(2);
-            }
-            "#,
-        );
+fn main() -> void {
+    let first = identity(1);
+    let second = identity(2);
+}
+"#);
 
-    let specializations =
-        hir.functions
-            .iter()
-            .filter(|function| {
-                function.name
-                    == "identity__i32"
-            })
-            .collect::<Vec<_>>();
+    let count = program.functions.iter()
+        .filter(|function| function.name == "identity__i32")
+        .count();
 
     assert_eq!(
-        specializations.len(),
-        1,
+        count, 1,
         "identical function instances should reuse the same specialization",
     );
 }
 
-
 #[test]
 fn creates_distinct_function_instances_for_different_type_arguments() {
-    let hir =
-        monomorphize(
-            r#"
-            fn identity<T>(value: T) -> T {
-                return value;
-            }
+    let program = monomorphize(r#"
+fn identity<T>(value: T) -> T {
+    return value;
+}
 
-            fn main() -> void {
-                let integer =
-                    identity(1);
+fn main() -> void {
+    let integer = identity(1);
+    let boolean = identity(true);
+}
+"#);
 
-                let boolean =
-                    identity(true);
-            }
-            "#,
-        );
+    let i32_instances = program.functions.iter()
+        .filter(|function| function.name == "identity__i32")
+        .count();
 
-    let i32_instances =
-        hir.functions
-            .iter()
-            .filter(|function| {
-                function.name
-                    == "identity__i32"
-            })
-            .count();
-
-    let bool_instances =
-        hir.functions
-            .iter()
-            .filter(|function| {
-                function.name
-                    == "identity__bool"
-            })
-            .count();
+    let bool_instances = program.functions.iter()
+        .filter(|function| function.name == "identity__bool")
+        .count();
 
     assert_eq!(
-        i32_instances,
-        1,
+        i32_instances, 1,
         "identity<i32> should produce exactly one specialization",
     );
-
     assert_eq!(
-        bool_instances,
-        1,
+        bool_instances, 1,
         "identity<bool> should produce a distinct specialization",
     );
 }
 
 #[test]
 fn generic_specializations_keep_independent_local_types() {
-    let hir =
-        monomorphize(
-            r#"
-            fn foo<T>(value: T) -> T {
-                let local = value;
-                return local;
-            }
+    let program = monomorphize(r#"
+fn foo<T>(value: T) -> T {
+    let local = value;
+    return local;
+}
 
-            fn main() -> void {
-                let integer = foo(10);
-                let boolean = foo(true);
-            }
-            "#,
-        );
+fn main() -> void {
+    let integer = foo(10);
+    let boolean = foo(true);
+}
+"#);
 
-    let i32_specialization =
-        hir.functions
-            .iter()
-            .find(|function| {
-                function.name == "foo__i32"
-            })
-            .expect(
-                "foo<i32> specialization should exist",
-            );
+    let i32_function = program.functions.iter()
+        .find(|function| function.name == "foo__i32")
+        .expect("foo<i32> specialization should exist");
 
-    let bool_specialization =
-        hir.functions
-            .iter()
-            .find(|function| {
-                function.name == "foo__bool"
-            })
-            .expect(
-                "foo<bool> specialization should exist",
-            );
+    let bool_function = program.functions.iter()
+        .find(|function| function.name == "foo__bool")
+        .expect("foo<bool> specialization should exist");
 
-    let i32_local_ty =
-        match i32_specialization
-            .body
-            .stmts
-            .first()
-            .expect(
-                "foo<i32> should contain a local declaration",
-            )
-        {
-            HIRStmt::VarDecl {
-                ty,
-                ..
-            } => ty,
+    let HIRStmt::VarDecl { local: i32_local, .. } = &i32_function.body.stmts[0] else {
+        panic!("foo<i32> should begin with a variable declaration");
+    };
 
-            other => {
-                panic!(
-                    "expected first foo<i32> statement to be a variable declaration, found {other:#?}"
-                );
-            }
-        };
-
-    let bool_local_ty =
-        match bool_specialization
-            .body
-            .stmts
-            .first()
-            .expect(
-                "foo<bool> should contain a local declaration",
-            )
-        {
-            HIRStmt::VarDecl {
-                ty,
-                ..
-            } => ty,
-
-            other => {
-                panic!(
-                    "expected first foo<bool> statement to be a variable declaration, found {other:#?}"
-                );
-            }
-        };
+    let HIRStmt::VarDecl { local: bool_local, .. } = &bool_function.body.stmts[0] else {
+        panic!("foo<bool> should begin with a variable declaration");
+    };
 
     assert_eq!(
-        i32_local_ty,
-        &Type::I32,
+        i32_local.ty,
+        Type::I32,
         "foo<i32> should specialize its local variable to i32",
     );
-
     assert_eq!(
-        bool_local_ty,
-        &Type::BOOL,
+        bool_local.ty,
+        Type::BOOL,
         "foo<bool> should specialize its local variable to bool",
     );
+
+    assert_eq!(i32_function.return_type, Type::I32);
+    assert_eq!(bool_function.return_type, Type::BOOL);
 }

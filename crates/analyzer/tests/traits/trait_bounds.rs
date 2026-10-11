@@ -1,72 +1,55 @@
-use std::fs;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    fs,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use analyzer::{Analyzer, Resolver};
 use errors::error::HydraError;
-use ir::context::HIRContext;
-use ir::hir::HIRProgram;
+use ir::{context::SemanticContext, hir::HIRProgram};
 use parser::module::{ModuleTree, SourceMap};
 
 static NEXT_TEST_DIR: AtomicUsize = AtomicUsize::new(0);
 
 fn analyze(source: &str) -> Result<HIRProgram, Vec<HydraError>> {
     let id = NEXT_TEST_DIR.fetch_add(1, Ordering::Relaxed);
-
     let root = std::env::temp_dir().join(format!(
         "hydrac-trait-bounds-{}-{id}",
         std::process::id(),
     ));
-
     let entry = root.join("main.hydra");
     let stdlib = root.join("stdlib");
 
-    fs::create_dir_all(&stdlib)
-        .expect("test directory should be created");
-
-    fs::write(&entry, source)
-        .expect("test source should be written");
+    fs::create_dir_all(&stdlib).expect("test directory should be created");
+    fs::write(&entry, source).expect("test source should be written");
 
     let result = (|| {
         let mut source_map = SourceMap::new();
-
-        let mut program = ModuleTree::build(
-            &entry,
-            stdlib,
-            &mut source_map,
-        )?;
-
+        let mut program = ModuleTree::build(&entry, stdlib, &mut source_map)?;
         program.resolve_imports(&mut source_map)?;
+        program.parse_bodies(&source_map)?;
 
-        let mut context = HIRContext::default();
-
-        let resolver = Resolver::new(
-            &program,
-            &mut context,
-            &source_map,
-        );
-
+        let mut context = SemanticContext::new();
         let (name_resolver, global_symbols) =
-            resolver.resolve()?;
+            Resolver::new(&program, &mut context, &source_map).resolve()?;
 
-        Analyzer::new(
+        let analyzed = Analyzer::new(
             &program,
-            &mut context,
+            context,
             &source_map,
             name_resolver,
             global_symbols,
-        )
-        .analyze()
+        ).analyze()?;
+
+        Ok(analyzed.hir)
     })();
 
     let _ = fs::remove_dir_all(root);
-
     result
 }
 
 #[test]
 fn generic_bound_allows_trait_method_call_and_concrete_instantiation() {
-    let result = analyze(
-        r#"
+    let result = analyze(r#"
         trait Printable {
             fn print(&self) -> void;
         }
@@ -84,8 +67,7 @@ fn generic_bound_allows_trait_method_call_and_concrete_instantiation() {
         fn main() -> void {
             show(42);
         }
-        "#,
-    );
+    "#);
 
     assert!(
         result.is_ok(),
@@ -95,8 +77,7 @@ fn generic_bound_allows_trait_method_call_and_concrete_instantiation() {
 
 #[test]
 fn generic_trait_method_call_without_bound_is_rejected() {
-    let errors = analyze(
-        r#"
+    let errors = analyze(r#"
         trait Printable {
             fn print(&self) -> void;
         }
@@ -112,11 +93,7 @@ fn generic_trait_method_call_without_bound_is_rejected() {
         fn main() -> void {
             show(42);
         }
-        "#,
-    )
-    .expect_err(
-        "generic method use without a bound should fail"
-    );
+    "#).expect_err("generic method use without a bound should fail");
 
     assert!(
         errors.iter().any(|error| error.code == "S005"),
@@ -126,8 +103,7 @@ fn generic_trait_method_call_without_bound_is_rejected() {
 
 #[test]
 fn concrete_instantiation_must_satisfy_trait_bound() {
-    let errors = analyze(
-        r#"
+    let errors = analyze(r#"
         trait Printable {
             fn print(&self) -> void;
         }
@@ -141,9 +117,7 @@ fn concrete_instantiation_must_satisfy_trait_bound() {
         fn main() -> void {
             show(Foo {});
         }
-        "#,
-    )
-    .expect_err("Foo does not implement Printable");
+    "#).expect_err("Foo does not implement Printable");
 
     assert!(
         errors.iter().any(|error| {
@@ -157,8 +131,7 @@ fn concrete_instantiation_must_satisfy_trait_bound() {
 
 #[test]
 fn extension_bound_is_available_inside_method_body() {
-    let result = analyze(
-        r#"
+    let result = analyze(r#"
         trait Printable {
             fn print(&self) -> void;
         }
@@ -186,8 +159,7 @@ fn extension_bound_is_available_inside_method_body() {
 
             wrapper::show();
         }
-        "#,
-    );
+    "#);
 
     assert!(
         result.is_ok(),
