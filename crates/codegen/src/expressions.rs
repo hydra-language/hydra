@@ -189,6 +189,22 @@ impl<'c> CodeGen<'c> {
                         ).into())
                     }
 
+                    CastKind::PointerToInteger => {
+                        Ok(self.builder.build_ptr_to_int(
+                            val.into_pointer_value(),
+                            dest_llvm_ty.into_int_type(),
+                            "ptrtoint",
+                        ).into())
+                    }
+
+                    CastKind::IntegerToPointer => {
+                        Ok(self.builder.build_int_to_ptr(
+                            val.into_int_value(),
+                            dest_llvm_ty.into_pointer_type(),
+                            "inttoptr",
+                        ).into())
+                    }
+
                     CastKind::Numeric => {
                         match (src_ty.clone(), dest_ty) {
                             (Type::F32, Type::F32) | (Type::F64, Type::F64) => {

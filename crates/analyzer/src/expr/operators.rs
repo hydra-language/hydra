@@ -78,11 +78,27 @@ impl<'ctx> Analyzer<'ctx> {
             }
 
             ASTExpr::Cast { value, target, .. } => {
-                let expr = self.lower_expr_with_type(value, None)?;
                 let target_type = self.lower_type(target)?;
+                let target_is_raw_pointer = matches!(
+                    &target_type,
+                    IRType::POINTER(_) | IRType::CONST_POINTER(_)
+                );
+
+                // integer literals used as pointer addresses are context-typed as
+                // usize, so `0 as *const T` is valid without allowing arbitrary
+                // integer-width pointer casts
+                let expr = if target_is_raw_pointer {
+                    self.lower_expr_with_type(value, Some(&IRType::USIZE))?
+                } else {
+                    self.lower_expr_with_type(value, None)?
+                };
 
                 let is_string_ref = |ty: &IRType| {
-                    matches!(ty, IRType::REF(inner) | IRType::CONST_REF(inner) if inner.as_ref() == &IRType::STRING)
+                    matches!(
+                    ty,
+                    IRType::REF(inner) | IRType::CONST_REF(inner)
+                    if inner.as_ref() == &IRType::STRING
+                )
                 };
 
                 if is_string_ref(&target_type) && expr.ty != target_type {
@@ -107,10 +123,23 @@ impl<'ctx> Analyzer<'ctx> {
                     | IRType::POINTER(_) | IRType::CONST_POINTER(_)
                 );
 
-                let target_is_raw_pointer = matches!(&target_type, IRType::POINTER(_) | IRType::CONST_POINTER(_));
+                let source_is_raw_pointer = matches!(
+                    &expr.ty,
+                    IRType::POINTER(_) | IRType::CONST_POINTER(_)
+                );
 
-                let cast_kind = if source_is_pointer_like && target_is_raw_pointer {
+                let cast_kind = if source_is_raw_pointer && target_type == IRType::USIZE {
+                    CastKind::PointerToInteger
+                } else if expr.ty == IRType::USIZE && target_is_raw_pointer {
+                    CastKind::IntegerToPointer
+                } else if source_is_pointer_like && target_is_raw_pointer {
                     CastKind::Pointer
+                } else if source_is_pointer_like || target_is_raw_pointer {
+                    return Err(self.error(
+                        "S003",
+                        format!("cannot cast `{}` to `{}`", expr.ty, target_type),
+                        span,
+                    ).with_help("raw pointer addresses must be converted through `usize`"));
                 } else {
                     CastKind::Numeric
                 };

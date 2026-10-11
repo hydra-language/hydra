@@ -5,7 +5,8 @@ use ir::types::Type;
 pub fn fold_cast(kind: CastKind, value: Constant, target: &Type) -> Option<Constant> {
     match kind {
         CastKind::NoOp => Some(value),
-        CastKind::Pointer => None,
+
+        CastKind::Pointer | CastKind::PointerToInteger | CastKind::IntegerToPointer => None,
 
         CastKind::Numeric => match (value, target) {
             (Constant::Float(value, _), Type::F32) => {

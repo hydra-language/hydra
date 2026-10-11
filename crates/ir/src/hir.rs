@@ -205,7 +205,9 @@ pub enum HIRUnaryOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastKind {
-    Numeric,  // Covers widening, truncating, int-to-float, etc.
-    Pointer,  // Covers references to pointers, pointer decay
+    Numeric,
+    Pointer,
+    PointerToInteger,
+    IntegerToPointer,
     NoOp,
 }
