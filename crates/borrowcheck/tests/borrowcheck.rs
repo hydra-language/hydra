@@ -81,6 +81,16 @@ fn assign(line: usize, local: LocalID, value: Rvalue) -> Statement {
     }
 }
 
+fn initialize_int(line: usize, local: LocalID) -> Statement {
+    assign(line, local, Rvalue::Use(int(10)))
+}
+
+fn initialize_array(line: usize, local: LocalID) -> Statement {
+    assign(line, local, Rvalue::Aggregate(
+        AggregateKind::Array(Type::I32), vec![int(10)]
+    ))
+}
+
 fn use_refs(line: usize, destination: LocalID, refs: &[LocalID]) -> Statement {
     Statement {
         kind: StatementKind::Assign(
@@ -111,9 +121,10 @@ fn shared_borrows_can_coexist() {
     let refs = fixture.local("refs", Type::ARRAY(Box::new(Type::CONST_REF(Box::new(Type::I32))), 2));
 
     let mir = fixture.finish(vec![
-        assign(1, a, Rvalue::Ref(false, place(x))),
-        assign(2, b, Rvalue::Ref(false, place(x))),
-        use_refs(3, refs, &[a, b]),
+        initialize_int(1, x),
+        assign(2, a, Rvalue::Ref(false, place(x))),
+        assign(3, b, Rvalue::Ref(false, place(x))),
+        use_refs(4, refs, &[a, b]),
     ]);
 
     let result = BorrowChecker::new(&mir).check();
@@ -129,9 +140,10 @@ fn two_live_mutable_borrows_conflict() {
     let refs = fixture.local("refs", Type::ARRAY(Box::new(Type::REF(Box::new(Type::I32))), 2));
 
     let mir = fixture.finish(vec![
-        assign(1, a, Rvalue::Ref(true, place(x))),
-        assign(2, b, Rvalue::Ref(true, place(x))),
-        use_refs(3, refs, &[a, b]),
+        initialize_int(1, x),
+        assign(2, a, Rvalue::Ref(true, place(x))),
+        assign(3, b, Rvalue::Ref(true, place(x))),
+        use_refs(4, refs, &[a, b]),
     ]);
 
     assert_error(
@@ -150,9 +162,10 @@ fn mutable_and_shared_borrow_conflict() {
     let refs = fixture.local("refs", Type::ARRAY(Box::new(Type::CONST_REF(Box::new(Type::I32))), 2));
 
     let mir = fixture.finish(vec![
-        assign(1, mutable, Rvalue::Ref(true, place(x))),
-        assign(2, shared, Rvalue::Ref(false, place(x))),
-        use_refs(3, refs, &[mutable, shared]),
+        initialize_int(1, x),
+        assign(2, mutable, Rvalue::Ref(true, place(x))),
+        assign(3, shared, Rvalue::Ref(false, place(x))),
+        use_refs(4, refs, &[mutable, shared]),
     ]);
 
     let errors = BorrowChecker::new(&mir).check()
@@ -171,9 +184,10 @@ fn cannot_assign_to_value_while_shared_borrow_is_live() {
     let use_reference = fixture.local("use_reference", Type::CONST_REF(Box::new(Type::I32)));
 
     let mir = fixture.finish(vec![
-        assign(1, reference, Rvalue::Ref(false, place(x))),
-        assign(2, x, Rvalue::Use(int(42))),
-        assign(3, use_reference, Rvalue::Use(copy(reference))),
+        initialize_int(1, x),
+        assign(2, reference, Rvalue::Ref(false, place(x))),
+        assign(3, x, Rvalue::Use(int(42))),
+        assign(4, use_reference, Rvalue::Use(copy(reference))),
     ]);
 
     assert_error(
@@ -192,9 +206,10 @@ fn cannot_read_value_while_mutably_borrowed() {
     let use_reference = fixture.local("use_reference", Type::REF(Box::new(Type::I32)));
 
     let mir = fixture.finish(vec![
-        assign(1, reference, Rvalue::Ref(true, place(x))),
-        assign(2, read_x, Rvalue::Use(copy(x))),
-        assign(3, use_reference, Rvalue::Use(copy(reference))),
+        initialize_int(1, x),
+        assign(2, reference, Rvalue::Ref(true, place(x))),
+        assign(3, read_x, Rvalue::Use(copy(x))),
+        assign(4, use_reference, Rvalue::Use(copy(reference))),
     ]);
 
     assert_error(
@@ -212,9 +227,10 @@ fn borrow_ends_after_last_use() {
     let last_use = fixture.local("last_use", Type::REF(Box::new(Type::I32)));
 
     let mir = fixture.finish(vec![
-        assign(1, reference, Rvalue::Ref(true, place(x))),
-        assign(2, last_use, Rvalue::Use(copy(reference))),
-        assign(3, x, Rvalue::Use(int(42))),
+        initialize_int(1, x),
+        assign(2, reference, Rvalue::Ref(true, place(x))),
+        assign(3, last_use, Rvalue::Use(copy(reference))),
+        assign(4, x, Rvalue::Use(int(42))),
     ]);
 
     let result = BorrowChecker::new(&mir).check();
@@ -231,10 +247,11 @@ fn copied_reference_preserves_borrow_information() {
     let refs = fixture.local("refs", Type::ARRAY(Box::new(Type::CONST_REF(Box::new(Type::I32))), 2));
 
     let mir = fixture.finish(vec![
-        assign(1, original, Rvalue::Ref(true, place(x))),
-        assign(2, alias, Rvalue::Use(copy(original))),
-        assign(3, shared, Rvalue::Ref(false, place(x))),
-        use_refs(4, refs, &[alias, shared]),
+        initialize_int(1, x),
+        assign(2, original, Rvalue::Ref(true, place(x))),
+        assign(3, alias, Rvalue::Use(copy(original))),
+        assign(4, shared, Rvalue::Ref(false, place(x))),
+        use_refs(5, refs, &[alias, shared]),
     ]);
 
     let errors = BorrowChecker::new(&mir).check()
@@ -254,8 +271,9 @@ fn using_value_after_move_is_rejected() {
     let used_again = fixture.local("used_again", ty);
 
     let mir = fixture.finish(vec![
-        assign(1, moved_into, Rvalue::Use(move_(value))),
-        assign(2, used_again, Rvalue::Use(move_(value))),
+        initialize_array(1, value),
+        assign(2, moved_into, Rvalue::Use(move_(value))),
+        assign(3, used_again, Rvalue::Use(move_(value))),
     ]);
 
     assert_error(
@@ -274,9 +292,10 @@ fn reassigning_local_after_move_reinitializes_it() {
     let used_again = fixture.local("used_again", ty);
 
     let mir = fixture.finish(vec![
-        assign(1, moved_into, Rvalue::Use(move_(value))),
-        assign(2, value, Rvalue::Aggregate(AggregateKind::Array(Type::I32), vec![int(123)])),
-        assign(3, used_again, Rvalue::Use(move_(value))),
+        initialize_array(1, value),
+        assign(2, moved_into, Rvalue::Use(move_(value))),
+        assign(3, value, Rvalue::Aggregate(AggregateKind::Array(Type::I32), vec![int(123)])),
+        assign(4, used_again, Rvalue::Use(move_(value))),
     ]);
 
     let result = BorrowChecker::new(&mir).check();
@@ -291,6 +310,7 @@ fn using_value_after_drop_is_rejected() {
     let used_again = fixture.local("used_again", ty);
 
     let mir = fixture.finish(vec![
+        initialize_array(1, value),
         Statement {
             kind: StatementKind::Drop {
                 place: place(value),
@@ -300,9 +320,9 @@ fn using_value_after_drop_is_rejected() {
                     display_symbol: None,
                 },
             },
-            span: span(1),
+            span: span(2),
         },
-        assign(2, used_again, Rvalue::Use(move_(value))),
+        assign(3, used_again, Rvalue::Use(move_(value))),
     ]);
 
     let errors = BorrowChecker::new(&mir).check()

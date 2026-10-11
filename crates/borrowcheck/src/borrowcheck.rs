@@ -1,7 +1,15 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use errors::error::{self, HydraError};
-use mir::{BasicBlockID, LocalID, MIRFunction, Operand, Rvalue, Statement, StatementKind, Terminator};
+use errors::error::{self, HydraError, Span};
+
+use mir::{
+    BasicBlockID, LocalID, MIRFunction, Operand, Place, Rvalue, Statement, StatementKind, Terminator
+};
+
+use mir::visit::{self, PlaceContext, Visitor};
+
+use crate::init::InitChecker;
+use crate::loans::LoanChecker;
 
 #[derive(Debug)]
 pub struct BlockEffects {
@@ -15,6 +23,43 @@ struct Borrow {
     target: LocalID,
     is_mut: bool,
     creation_span: error::Span,
+}
+
+struct SequentialMoveChecker<'check, 'mir, 'state> {
+    checker: &'check BorrowChecker<'mir>,
+    moved: &'state mut HashSet<LocalID>,
+    errors: &'state mut Vec<HydraError>,
+    span: error::Span,
+}
+
+impl<'check, 'mir, 'state> Visitor for SequentialMoveChecker<'check, 'mir, 'state> {
+
+    fn visit_place(&mut self, place: &Place, context: PlaceContext) {
+        if matches!(context, PlaceContext::Read | PlaceContext::Move | PlaceContext::SharedBorrow | PlaceContext::MutBorrow) && self.moved.contains(&place.local) 
+        {
+            let (name, _) = self.checker.resolve_local(place.local);
+
+            self.errors.push(self.checker.error(
+                "BC003", format!("use of moved value `{}`", name), Some(self.span),
+            ));
+        }
+
+        if context == PlaceContext::Move {
+            self.moved.insert(place.local);
+        }
+
+        visit::walk_place(self, place);
+    }
+}
+
+#[derive(Default)]
+struct AccessCollector(Vec<(Place, PlaceContext)>);
+
+impl Visitor for AccessCollector {
+    fn visit_place(&mut self, place: &Place, context: PlaceContext) {
+        self.0.push((place.clone(), context));
+        visit::walk_place(self, place);
+    }
 }
 
 pub struct BorrowChecker<'a> {
@@ -33,64 +78,31 @@ impl<'a> BorrowChecker<'a> {
         HydraError::new(code, message, span.unwrap_or_default())
     }
 
-    fn collect_borrows(&self) -> Vec<Borrow> {
-        let mut borrows = Vec::new();
-
-        // direct borrows
-        for block in &self.mir.basic_blocks {
-            for stmt in &block.statements {
-                if let StatementKind::Assign(place, Rvalue::Ref(is_mut, target)) = &stmt.kind {
-                    borrows.push(Borrow {
-                        borrower: place.local,
-                        target: target.local,
-                        is_mut: *is_mut,
-                        creation_span: stmt.span
-                    });
-                }
-            }
-        }
-
-        let mut changed = true;
-
-        while changed {
-            changed = false;
-
-            for block in &self.mir.basic_blocks {
-                for stmt in &block.statements {
-                    let StatementKind::Assign(dest, Rvalue::Use(Operand::Copy(src) | Operand::Move(src))) = &stmt.kind else {
-                        continue;
-                    };
-
-                    let Some(parent) = borrows.iter().find(|b| b.borrower == src.local).cloned() else { continue };
-
-                    let already_tracked = borrows.iter().any(|b| {
-                        b.borrower == dest.local && b.target == parent.target && b.is_mut == parent.is_mut
-                    });
-
-                    if !already_tracked {
-                        borrows.push(Borrow {
-                            borrower: dest.local,
-                            target: parent.target,
-                            is_mut: parent.is_mut,
-                            creation_span: parent.creation_span
-                        });
-
-                        changed = true;
-                    }
-                }
-            }
-        }
-
-        borrows
-    }
-
     pub fn check(&mut self) -> Result<(), Vec<HydraError>> {
         let mut errors = Vec::new();
-        let live_out = self.compute_liveness();
 
-        self.enforce_borrows(&live_out, &mut errors);
-        self.enforce_moves(&mut errors);
-        self.enforce_borrow_conflicts(&live_out, &mut errors);
+        LoanChecker::new(self.mir).check(&mut errors);
+        InitChecker::new(self.mir).check(&mut errors);
+
+        let mut seen = HashSet::new();
+
+        errors.retain(|error| {
+            let notes: Vec<_> = error.notes.iter().map(|note| (
+                note.message.clone(),
+                note.span.line,
+                note.span.column,
+                note.span.length,
+            )).collect();
+
+            seen.insert((
+                error.code,
+                error.message.clone(),
+                error.span.line,
+                error.span.column,
+                error.span.length,
+                notes,
+            ))
+        });
 
         if errors.is_empty() {
             Ok(())
@@ -161,114 +173,6 @@ impl<'a> BorrowChecker<'a> {
         live_out
     }
 
-    fn enforce_borrows(&self, live_out: &HashMap<BasicBlockID, HashSet<LocalID>>, errors: &mut Vec<HydraError>) {
-        let all_borrows = self.collect_borrows();
-
-        // 2. Check every block for violations
-        for (i, block) in self.mir.basic_blocks.iter().enumerate() {
-            let bb = BasicBlockID(i);
-            
-            // To do accurate intra-block liveness, we walk BACKWARDS from the block's live_out
-            // to compute the live set *before* each statement.
-            let mut live_at_stmt = Vec::new();
-            let mut current_live = live_out.get(&bb).unwrap().clone();
-
-            // Simulate the terminator first (since we are walking backward)
-            let (term_reads, term_writes) = self.get_terminator_reads_writes(&block.terminator);
-            for w in &term_writes { current_live.remove(w); }
-            for r in &term_reads { current_live.insert(*r); }
-
-            // Simulate statements backward
-            for stmt in block.statements.iter().rev() {
-                live_at_stmt.push(current_live.clone()); // This is liveness AFTER the statement executes
-                
-                let (stmt_reads, stmt_writes) = self.get_stmt_reads_writes(stmt);
-                for w in &stmt_writes { current_live.remove(w); }
-                for r in &stmt_reads { current_live.insert(*r); }
-            }
-            // Reverse the array so it aligns with the forward iteration of statements
-            live_at_stmt.reverse();
-
-            // 3. Now walk FORWARDS to enforce the rules!
-            for (stmt_idx, stmt) in block.statements.iter().enumerate() {
-                let live_here = &live_at_stmt[stmt_idx];
-
-                let active_borrows: Vec<&Borrow> = all_borrows.iter()
-                    .filter(|b| live_here.contains(&b.borrower))
-                    .collect();
-
-                if active_borrows.is_empty() { continue; }
-
-                let (stmt_reads, stmt_writes) = self.get_stmt_reads_writes(stmt);
-
-                for active in active_borrows {
-                    if matches!(&stmt.kind, StatementKind::Assign(_, Rvalue::Ref(..) | Rvalue::SliceRef { .. })) {
-                        continue;
-                    }
-
-                    let (target_name, _) = self.resolve_local(active.target);
-                    let (_, _) = self.resolve_local(active.borrower);
-                    
-                    // RULE 1 & 2: Cannot mutate target while borrowed
-                    if stmt_writes.contains(&active.target) {
-                        let kind = if active.is_mut { "mutably" } else { "immutably" };
-
-
-                        errors.push(self.error(
-                            "BC001",
-                            format!("cannot assign to `{}` as it is currently {} borrowed", target_name, kind),
-                            Some(stmt.span),
-                        ).with_note(
-                                format!("`{}` is {} borrowed here", target_name, kind),
-                                active.creation_span,
-                            )
-                        );
-                    }
-
-                    // RULE 2: Cannot read target if MUTABLY borrowed
-                    if active.is_mut && stmt_reads.contains(&active.target) {
-                        errors.push(self.error(
-                            "BC002",
-                            format!("cannot use `{}` because it is currently mutably borrowed", target_name),
-                            Some(stmt.span),
-                        ).with_note(
-                                format!("`{}` is mutably borrowed here", target_name),
-                                active.creation_span,
-                            )
-                        );
-                    }
-                }
-            }
-
-            let live_at_term = live_out.get(&bb).unwrap();
-            let active_borrows: Vec<&Borrow> = all_borrows.iter()
-                .filter(|b| live_at_term.contains(&b.borrower))
-                .collect();
-
-            if !active_borrows.is_empty() {
-                let (term_reads, term_writes) = self.get_terminator_reads_writes(&block.terminator);
-
-                for active in active_borrows {
-                    let (target_name, target_span) = self.resolve_local(active.target);
-                    let span = target_span.unwrap_or_default(); 
-
-                    if term_writes.contains(&active.target) {
-                        let kind = if active.is_mut { "mutably" } else { "immutably" };
-                        errors.push(self.error(
-                            "BC001", 
-                            format!("cannot assign to `{}` as it is currently {} borrowed", target_name, kind), 
-                            Some(span))
-                        );
-                    }
-
-                    if active.is_mut && term_reads.contains(&active.target) {
-                        errors.push(self.error("BC002", format!("cannot use `{}` because it is currently mutably borrowed", target_name), Some(span)));
-                    }
-                }
-            }
-        }
-    }
-
     fn enforce_moves(&self, errors: &mut Vec<HydraError>) {
         let moved_in = self.compute_moved_in();
 
@@ -279,7 +183,7 @@ impl<'a> BorrowChecker<'a> {
 
             for stmt in &block.statements {
                 if let StatementKind::Assign(_, rval) = &stmt.kind {
-                    self.check_rvalue_moves(rval, &moved, errors, stmt.span);
+                    self.check_rvalue_moves(rval, &mut moved, errors, stmt.span);
                 }
 
                 self.apply_statement_move_state(stmt, &mut moved);
@@ -450,85 +354,6 @@ impl<'a> BorrowChecker<'a> {
 
             Terminator::Return | Terminator::Unreachable => {
                 vec![]
-            }
-        }
-    }
-
-    fn enforce_borrow_conflicts(&self, live_out: &HashMap<BasicBlockID, HashSet<LocalID>>, errors: &mut Vec<HydraError>) {
-        let borrows = self.collect_borrows();
-
-        // Track reported pairs so we only flag a specific conflict once per function
-        let mut reported_conflicts = HashSet::new();
-
-        for (i, block) in self.mir.basic_blocks.iter().enumerate() {
-            let bb = BasicBlockID(i);
-
-            let mut live_at_stmt = Vec::new();
-            let mut current_live = live_out.get(&bb).unwrap().clone();
-
-            let (term_reads, term_writes) = self.get_terminator_reads_writes(&block.terminator);
-            for w in &term_writes { current_live.remove(w); }
-            for r in &term_reads { current_live.insert(*r); }
-
-            for stmt in block.statements.iter().rev() {
-                live_at_stmt.push(current_live.clone());
-                let (stmt_reads, stmt_writes) = self.get_stmt_reads_writes(stmt);
-                for w in &stmt_writes { current_live.remove(w); }
-                for r in &stmt_reads { current_live.insert(*r); }
-            }
-
-            live_at_stmt.reverse();
-
-            for (stmt_idx, _stmt) in block.statements.iter().enumerate() {
-                let live_here = &live_at_stmt[stmt_idx];
-
-                let active_borrows: Vec<&Borrow> = borrows.iter()
-                    .filter(|b| live_here.contains(&b.borrower))
-                    .collect();
-
-                for idx_a in 0..active_borrows.len() {
-                    for idx_b in (idx_a + 1)..active_borrows.len() {
-                        let a = active_borrows[idx_a];
-                        let b = active_borrows[idx_b];
-
-                        if a.borrower == b.borrower {
-                            continue;
-                        }
-
-                        if a.target != b.target { continue; }
-
-                        // Conflict if either is mutable
-                        if a.is_mut || b.is_mut {
-                            // Create canonical pair to prevent duplicates
-                            let pair = if a.borrower.0 < b.borrower.0 { 
-                                (a.borrower, b.borrower) 
-                            } else { 
-                                (b.borrower, a.borrower) 
-                            };
-
-                            if reported_conflicts.insert(pair) {
-                                let (target_name, _) = self.resolve_local(a.target);
-
-                                let msg = if a.is_mut && b.is_mut {
-                                    format!("cannot borrow `{}` as mutable more than once at a time", target_name)
-                                } else if a.is_mut {
-                                    format!("cannot borrow `{}` as immutable because it is also borrowed as mutable", target_name)
-                                } else {
-                                    format!("cannot borrow `{}` as mutable because it is also borrowed as immutable", target_name)
-                                };
-
-                                let (first, second) = if a.borrower.0 < b.borrower.0 { (a, b) } else { (b, a) };
-
-                                errors.push(self.error("BC004", msg, Some(second.creation_span))
-                                    .with_note(
-                                        format!("`{}` is first borrowed here", target_name),
-                                        first.creation_span,
-                                    )
-                                );
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -738,44 +563,15 @@ impl<'a> BorrowChecker<'a> {
         (format!("_{}", local.0), decl.debug_span)
     }
 
-    fn check_rvalue_moves(&self, rval: &Rvalue, moved: &HashSet<LocalID>, errors: &mut Vec<HydraError>, span: error::Span) 
-    {
-        let operands: Vec<&Operand> = match rval {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(_, op, _) => vec![op],
-            Rvalue::BinaryOp(_, l, r) => vec![l, r],
-            Rvalue::Ref(_, place) | Rvalue::SliceRef { place, .. }=> {
-                if moved.contains(&place.local) {
-                    let (name, def_span) = self.resolve_local(place.local);
-                    errors.push(self.error(
-                        "BC003",
-                        format!("use of moved value `{}`", name),
-                        def_span,
-                    ));
-                }
-                return;
-            }
-            Rvalue::Aggregate(_, ops) => ops.iter().collect(),
-            Rvalue::Intrinsic { args, .. } => {
-                args.iter().collect()
-            }
+    fn check_rvalue_moves(&self, rval: &Rvalue, moved: &mut HashSet<LocalID>, errors: &mut Vec<HydraError>, span: Span) {
+        let mut visitor = SequentialMoveChecker { 
+            checker: self, 
+            moved, 
+            errors, 
+            span 
         };
 
-        for op in operands {
-            match op {
-                Operand::Move(place) | Operand::Copy(place) => {
-                    if moved.contains(&place.local) {
-                        let (name, _def_span) = self.resolve_local(place.local);
-
-                        errors.push(self.error(
-                            "BC003",
-                            format!("use of moved value `{}`", name),
-                            Some(span),
-                        ));
-                    }
-                }
-                Operand::Const(_) => {}
-            }
-        }
+        visitor.visit_rvalue(rval);
     }
 
     fn record_rvalue_moves(&self, rval: &Rvalue, moved: &mut HashSet<LocalID>) {
