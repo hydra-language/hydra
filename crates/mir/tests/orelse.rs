@@ -1,143 +1,65 @@
+use std::collections::HashMap;
+
 use errors::error::Span;
 use ir::{
     Constant,
-    context::{
-        DefID,
-        DefKind,
-        HIRContext,
-        SymbolInfo,
-    },
-    hir::{
-        HIRBlock,
-        HIRExpr,
-        HIRExprKind,
-        HIRFunction,
-        HIRStmt,
-    },
+    context::DefID,
+    hir::{HIRBlock, HIRExpr, HIRExprKind, HIRFunction, HIRLocal, HIRStmt, HIRTypeInfo},
     types::Type,
 };
+
 use mir::{
-    Operand,
-    Place,
-    ProjectionElem,
-    Rvalue,
-    StatementKind,
-    Terminator,
+    Operand, ProjectionElem, Rvalue, StatementKind, Terminator,
     builder::MIRBuilder,
 };
 
-fn insert_variable(
-    context: &mut HIRContext,
-    name: &str,
-    ty: Type,
-) -> DefID {
-    context.insert_def(SymbolInfo {
-        name: name.to_string(),
-        span: Span::default(),
-        absolute_path: vec![],
-        kind: DefKind::Variable {
-            ty,
-            is_mutable: false,
-        },
-        is_pub: false,
-    })
+fn expr(kind: HIRExprKind, ty: Type) -> HIRExpr {
+    HIRExpr { kind, ty, span: Span::default() }
 }
 
-fn insert_main(
-    context: &mut HIRContext,
-) -> DefID {
-    context.insert_def(SymbolInfo {
-        name: "main".to_string(),
+fn local(def_id: DefID, name: &str, ty: Type) -> HIRLocal {
+    HIRLocal {
+        def_id,
+        name: name.into(),
+        ty,
+        is_mutable: false,
         span: Span::default(),
-        absolute_path: vec![
-            "main".to_string(),
-        ],
-        kind: DefKind::Function {
-            params: vec![],
-            annotations: vec![],
-            return_type: Type::VOID,
-            generic_params: vec![],
-            owner_generic_count: 0,
-            intrinsic: None,
-        },
-        is_pub: false,
-    })
+    }
 }
 
 #[test]
 fn orelse_branches_on_discriminant_and_extracts_payload() {
-    let mut context = HIRContext::new();
-
-    let optional_ty = Type::OPTIONAL(
-        Box::new(Type::I32),
-    );
-
-    let optional_def = insert_variable(
-        &mut context,
-        "optional",
-        optional_ty.clone(),
-    );
-
-    let result_def = insert_variable(
-        &mut context,
-        "result",
-        Type::I32,
-    );
-
-    let main_def = insert_main(
-        &mut context,
-    );
+    let optional_def = DefID(1);
+    let result_def = DefID(2);
+    let optional_ty = Type::OPTIONAL(Box::new(Type::I32));
 
     let function = HIRFunction {
-        name: "main".to_string(),
-        def_id: main_def,
+        name: "main".into(),
+        symbol: "main".into(),
+        display_name: None,
+        def_id: DefID(0),
         params: vec![],
         return_type: Type::VOID,
         body: HIRBlock {
             stmts: vec![
                 HIRStmt::VarDecl {
-                    def_id: optional_def,
-                    ty: optional_ty.clone(),
-                    init: Some(HIRExpr {
-                        kind: HIRExprKind::NONE,
-                        ty: optional_ty.clone(),
-                        span: Span::default(),
-                    }),
+                    local: local(optional_def, "optional", optional_ty.clone()),
+                    init: Some(expr(HIRExprKind::NONE, optional_ty.clone())),
                     has_type_annotation: true,
-                    span: Span::default(),
                 },
-
                 HIRStmt::VarDecl {
-                    def_id: result_def,
-                    ty: Type::I32,
-                    init: Some(HIRExpr {
-                        kind: HIRExprKind::OrElse {
-                            optional: Box::new(
-                                HIRExpr {
-                                    kind: HIRExprKind::VarRef(
-                                        optional_def,
-                                    ),
-                                    ty: optional_ty,
-                                    span: Span::default(),
-                                },
-                            ),
-
-                            fallback: Box::new(
-                                HIRExpr {
-                                    kind: HIRExprKind::IntLiteral(
-                                        7,
-                                    ),
-                                    ty: Type::I32,
-                                    span: Span::default(),
-                                },
-                            ),
+                    local: local(result_def, "result", Type::I32),
+                    init: Some(expr(
+                        HIRExprKind::OrElse {
+                            optional: Box::new(expr(
+                                HIRExprKind::VarRef(optional_def),
+                                optional_ty,
+                            )),
+                            fallback: Box::new(expr(HIRExprKind::IntLiteral(7), Type::I32)),
                         },
-
-                        ty: Type::I32,
-                        span: Span::default(),
-                    }),
+                        Type::I32,
+                    )),
                     has_type_annotation: true,
-                    span: Span::default(),
                 },
             ],
             span: Span::default(),
@@ -147,102 +69,57 @@ fn orelse_branches_on_discriminant_and_extracts_payload() {
         generic_params: vec![],
     };
 
-    let mir = MIRBuilder::new(&context)
-        .build_function(function);
+    let type_info = HIRTypeInfo::default();
+    let mut drop_cache = HashMap::new();
+    let mir = MIRBuilder::new(&type_info, &mut drop_cache).build_function(function);
 
-    let optional_local = mir
-        .locals
-        .iter()
-        .enumerate()
+    let optional_local = mir.locals.iter().enumerate()
         .find_map(|(index, local)| {
-            (local.debug_def_id == Some(optional_def))
-                .then_some(mir::LocalID(index))
+            (local.debug_def_id == Some(optional_def)).then_some(mir::LocalID(index))
         })
         .expect("expected optional MIR local");
 
-    let (
-        present_target,
-        fallback_target,
-    ) = mir
-        .basic_blocks
-        .iter()
+    let (present_target, fallback_target) = mir.basic_blocks.iter()
         .find_map(|block| {
             let Terminator::SwitchInt {
-                discriminant,
+                discriminant: Operand::Copy(place),
                 true_target,
                 false_target,
-            } = &block.terminator
-            else {
+            } = &block.terminator else {
                 return None;
             };
 
-            let Operand::Copy(place) = discriminant else {
-                return None;
-            };
-
-            if place.local != optional_local
-                || place.projection
-                    != vec![
-                        ProjectionElem::Field(0),
-                    ]
-            {
-                return None;
-            }
-
-            Some((
-                *true_target,
-                *false_target,
-            ))
+            (place.local == optional_local && matches!(
+                place.projection.as_slice(),
+                [ProjectionElem::Field { index: 0, ty: Type::BOOL }]
+            )).then_some((*true_target, *false_target))
         })
-        .expect(
-            "orelse should branch on optional discriminant",
-        );
+        .expect("orelse should branch on optional discriminant");
 
     assert!(
-        mir.basic_blocks[present_target.0]
-            .statements
-            .iter()
-            .any(|statement| {
-                let StatementKind::Assign(
-                    _,
-                    Rvalue::Use(
-                        Operand::Copy(place)
-                        | Operand::Move(place),
-                    ),
-                ) = &statement.kind
-                else {
-                    return false;
-                };
-
-                place.local == optional_local
-                    && place.projection
-                        == vec![
-                            ProjectionElem::Field(1),
-                        ]
-            }),
+        mir.basic_blocks[present_target.0].statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                StatementKind::Assign(_, Rvalue::Use(
+                    Operand::Copy(place) | Operand::Move(place)
+                )) if place.local == optional_local && matches!(
+                    place.projection.as_slice(),
+                    [ProjectionElem::Field { index: 1, ty: Type::I32 }]
+                )
+            )
+        }),
         "present branch should extract the optional payload",
     );
 
     assert!(
-        mir.basic_blocks[fallback_target.0]
-            .statements
-            .iter()
-            .any(|statement| {
-                matches!(
-                    &statement.kind,
-                    StatementKind::Assign(
-                        _,
-                        Rvalue::Use(
-                            Operand::Const(
-                                Constant::Int(
-                                    7,
-                                    Type::I32,
-                                ),
-                            ),
-                        ),
-                    )
-                )
-            }),
+        mir.basic_blocks[fallback_target.0].statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                StatementKind::Assign(_, Rvalue::Use(
+                    Operand::Const(Constant::Int(7, Type::I32))
+                ))
+            )
+        }),
         "None branch should evaluate and use the fallback",
     );
 }
