@@ -71,6 +71,10 @@ pub struct SourceMap {
     next_source_id: u32,
 }
 
+const PRELUDE_MODULES: &[&[&str]] = &[
+    &["core", "primitives"],
+];
+
 impl ModuleTree {
 
     pub fn build(entry: &Path, stdlib_root: PathBuf, source_map: &mut SourceMap)
@@ -121,11 +125,32 @@ impl ModuleTree {
         // the source file passed to 'hydrac <file>' is the only
         // initial compilation unit
         tree.load_module_file(&entry_file, vec![], source_map)?;
+        tree.load_prelude(source_map)?;
 
         let fmt_file = tree.stdlib_root.join("core").join("fmt").join("mod.hydra");
         tree.load_module_file(&fmt_file, vec!["core".to_string(), "fmt".to_string()], source_map)?;
 
         Ok(tree)
+    }
+
+    fn load_prelude(&mut self, source_map: &mut SourceMap) -> Result<(), Vec<HydraError>> {
+        for module in PRELUDE_MODULES {
+            let mut file = self.stdlib_root.clone();
+
+            for segment in *module {
+                file.push(segment);
+            }
+
+            file.push("mod.hydra");
+
+            self.load_module_file(
+                &file,
+                module.iter().map(|segment| (*segment).to_string()).collect(),
+                source_map,
+            )?;
+        }
+
+        Ok(())
     }
 
     fn module_node_mut(&mut self, module_path: &[String]) -> &mut ModuleNode {
