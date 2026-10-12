@@ -1,12 +1,13 @@
 use lexer::{
-    Lexer,
-    TokenType,
+    Lexer, NameInterner, TokenType,
 };
 
 #[test]
 fn string_literal_preserves_unicode_scalars() {
+    let mut names = NameInterner::default();
     let mut lexer = Lexer::new(
         "\"Aé你🦀\"".to_string(),
+        &mut names
     );
 
     let tokens = lexer
@@ -44,8 +45,10 @@ fn string_literal_preserves_unicode_scalars() {
 
 #[test]
 fn char_literal_preserves_unicode_scalar() {
+    let mut names = NameInterner::default();
     let mut lexer = Lexer::new(
         "'🦀'".to_string(),
+        &mut names
     );
 
     let tokens = lexer

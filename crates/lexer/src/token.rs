@@ -1,5 +1,7 @@
 use errors::error::Span;
 
+use crate::NameID;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenType {
     // -----------------------------------------------------------------------
@@ -147,5 +149,6 @@ pub enum TokenType {
 pub struct Token {
     pub token_type: TokenType,
     pub lexeme: String,
+    pub name_id: Option<NameID>,
     pub span: Span
 }

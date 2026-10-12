@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::Path};
 use std::fs;
 use std::path::PathBuf;
 use errors::error::{HydraError, Span};
-use lexer::Lexer;
+use lexer::{NameInterner, Lexer};
 
 use crate::{Item, Type};
 use crate::ast::NodeID;
@@ -11,6 +11,7 @@ use crate::parser::Parser;
 pub struct ModuleTree {
     pub root: ModuleNode,
     pub worklist: Vec<UnresolvedUse>,
+    pub names: NameInterner,
 
     // only files that are actually part of the compilation
     pub parsed_files: HashMap<PathBuf, (Vec<String>, Vec<Item>)>,
@@ -20,7 +21,6 @@ pub struct ModuleTree {
     project_root: PathBuf,
     stdlib_root: PathBuf,
 }
-
 
 pub struct ModuleNode {
     pub name: String,
@@ -118,6 +118,7 @@ impl ModuleTree {
             },
             worklist: Vec::new(),
             parsed_files: HashMap::new(),
+            names: NameInterner::default(),
             project_root,
             stdlib_root,
         };
@@ -323,7 +324,7 @@ impl ModuleTree {
         )))
     }
 
-    fn parse_file(file: &Path, current_module: &[String], source_map: &mut SourceMap) 
+    fn parse_file(file: &Path, current_module: &[String], source_map: &mut SourceMap, names: &mut NameInterner) 
         -> Result<(Vec<Item>, HashMap<String, ItemHeader>, Vec<UnresolvedUse>), Vec<HydraError>> 
     {
         let source = match source_map.load_file(file) {
@@ -338,7 +339,7 @@ impl ModuleTree {
             .get_source_id(file)
             .expect("ICE: loaded source has no source ID");
 
-        let mut lexer = Lexer::new(source.clone());
+        let mut lexer = Lexer::new(source.clone(), names);
 
         let tokens = match lexer.tokenize() {
             Ok(tokens) => tokens,
@@ -484,7 +485,7 @@ impl ModuleTree {
             return Ok(false);
         }
 
-        let (ast, headers, imports) = ModuleTree::parse_file(&file, &module_path, source_map)?;
+        let (ast, headers, imports) = ModuleTree::parse_file(&file, &module_path, source_map, &mut self.names)?;
 
         {
             let node = self.module_node_mut(&module_path);

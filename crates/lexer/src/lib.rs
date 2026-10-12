@@ -1,8 +1,10 @@
 pub mod lexer;
 pub mod token;
+pub mod interner;
 
 pub use lexer::Lexer;
 pub use token::{Token, TokenType};
+pub use interner::{NameID, NameInterner};
 
 #[cfg(test)]
 mod tests {
@@ -11,7 +13,10 @@ mod tests {
     #[test]
     fn test_simple_tokens() {
         let source = "( ) { } ;";
-        let mut lexer = Lexer::new(source.to_string());
+
+        let mut names = NameInterner::default();
+        let mut lexer = Lexer::new(source.to_string(), &mut names);
+
         let tokens = lexer.tokenize().expect("failed to tokenize");
 
         // Checking that the token types are as expected in order.
@@ -32,7 +37,10 @@ mod tests {
     #[test]
     fn test_string_literal() {
         let source = "\"hello\\nworld\"";
-        let mut lexer = Lexer::new(source.to_string());
+
+        let mut names = NameInterner::default();
+        let mut lexer = Lexer::new(source.to_string(), &mut names);
+
         let tokens = lexer.tokenize().expect("failed to tokenize");
 
         // Expect one string literal token plus EOF

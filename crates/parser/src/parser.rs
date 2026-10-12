@@ -377,7 +377,14 @@ impl Parser {
                     // semantic analyzer will resolve "Self" properly later
                     let self_type = Type::Path {
                         id: self.next_node_id(),
-                        segments: vec![Token { token_type: TokenType::IDENTIFIER("Self".to_string()), lexeme: "Self".to_string(), span: self_token.span }]
+                        segments: vec![
+                            Token { 
+                                token_type: TokenType::IDENTIFIER("Self".to_string()), 
+                                lexeme: "Self".to_string(), 
+                                name_id: None,
+                                span: self_token.span 
+                            }
+                        ]
                     };
 
                     let final_type = if is_shorthand {

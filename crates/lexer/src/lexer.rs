@@ -1,7 +1,9 @@
+use crate::NameInterner;
+
 use super::token::{Token, TokenType};
 use errors::error::{HydraError, Span};
 
-pub struct Lexer {
+pub struct Lexer<'n> {
     input: String,
     chars: Vec<char>,
     current: usize,
@@ -11,11 +13,12 @@ pub struct Lexer {
     start_line: usize,
     start_column: usize,
     byte_offsets: Vec<usize>,
+    names: &'n mut NameInterner,
 }
 
-impl Lexer {
+impl<'n> Lexer<'n> {
 
-    pub fn new(input: String) -> Self {
+    pub fn new(input: String, names: &'n mut NameInterner) -> Self {
         let chars: Vec<char> = input.chars().collect();
 
         let mut byte_offsets: Vec<usize> = input.char_indices()
@@ -28,6 +31,7 @@ impl Lexer {
             input,
             chars,
             byte_offsets,
+            names,
             current: 0,
             start: 0,
             line: 1,
@@ -62,9 +66,16 @@ impl Lexer {
             if let Some(token_type) = self.scan_token()? {
                 let lexeme = self.input[self.start_offset()..self.current_offset()].to_string();
 
+                let name_id = if matches!(&token_type, TokenType::IDENTIFIER(_)) {
+                    Some(self.names.intern(&lexeme))
+                } else {
+                    None
+                };
+
                 tokens.push(Token {
                     token_type,
-                    lexeme: lexeme.clone(),
+                    lexeme,
+                    name_id,
                     span: Span {
                         line: self.start_line,
                         column: self.start_column,
@@ -77,6 +88,7 @@ impl Lexer {
         tokens.push(Token {
             token_type: TokenType::EOF,
             lexeme: String::new(),
+            name_id: None,
             span: Span {
                 line: self.line,
                 column: self.column,
