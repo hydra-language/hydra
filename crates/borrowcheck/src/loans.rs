@@ -951,6 +951,7 @@ impl<'a> LoanChecker<'a> {
                         reads.insert(LivePlace::new(place));
                     }
                 }
+
                 _ => {
                     reads.insert(LivePlace::new(place));
                 }
@@ -975,7 +976,7 @@ impl<'a> LoanChecker<'a> {
 
                 let loan = &self.loans[id.0];
 
-                if state.origins[id.0].iter().any(|origin| !origin.external && !self.external_origin(&origin.place)) {
+                if state.origins[id.0].iter().any(|origin| self.return_origin_points_to_local(origin)) {
                     errors.push(
                         HydraError::new(
                             "BC005",
@@ -1062,20 +1063,26 @@ impl<'a> LoanChecker<'a> {
         && matches!(place.projection.first(), Some(ProjectionElem::Deref))
     }
 
-    fn overlaps_origin(&self, access: &Place, origin: &Place) -> bool {
-        let accesses_indirect_storage = access.projection.iter()
-            .any(|p| matches!(p, ProjectionElem::Deref));
-
-        // storage reached through an incoming borrowed parameter cannot alias
-        // this function's own local storage 
-        //
-        // the reference variable and its
-        // pointee are also distinct storage locations
-        if !accesses_indirect_storage && self.external_origin(origin) {
+    fn return_origin_points_to_local(&self, origin: &Origin) -> bool {
+        if origin.external || self.external_origin(&origin.place) {
             return false;
         }
 
-        places_overlap(access, origin)
+        // A raw-pointer dereference refers to its pointee, not to the
+        // local variable holding the pointer.
+        if self.raw_dereference(&origin.place) {
+            // Preserve BC005 when the pointer is known to derive from
+            // the address of a local, including a by-value parameter.
+            return (1..self.mir.locals.len()).any(|index| {
+                self.raw_pointer_may_refer_to_local(
+                    origin.place.local,
+                    LocalID(index),
+                )
+            });
+        }
+
+        // Ordinary references to function-owned storage cannot escape.
+        true
     }
 }
 
