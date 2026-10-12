@@ -1,6 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
-use ir::context::{DefID, DefKind, SemanticContext, SymbolInfo, TraitBound, TraitImpl};
+use ir::context::{
+    DefID,
+    DefKind,
+    SemanticContext,
+    SymbolInfo,
+    TraitBound,
+    TraitImpl,
+    TraitImplIndex,
+};
 
 use ir::types::{Type, TypeRef};
 use ir::instance::Instance;
@@ -16,6 +24,7 @@ use crate::solver::TraitSolver;
 struct MonomorphizationContext {
     definitions: HashMap<DefID, SymbolInfo>,
     trait_impls: Vec<TraitImpl>,
+    trait_impl_index: TraitImplIndex,
     display_names: HashMap<DefID, String>,
     symbol_names: HashMap<DefID, String>,
     next_def_id: usize,
@@ -29,6 +38,7 @@ impl MonomorphizationContext {
         Self {
             definitions: context.definitions,
             trait_impls: context.trait_impls,
+            trait_impl_index: context.trait_impl_index,
             display_names: context.display_names,
             symbol_names: context.symbol_names,
             next_def_id,
@@ -67,7 +77,15 @@ impl MonomorphizationContext {
     }
 
     fn register_trait_impl(&mut self, trait_impl: TraitImpl) {
+        let trait_def_id = trait_impl.trait_def_id;
+        let impl_index = self.trait_impls.len();
+
         self.trait_impls.push(trait_impl);
+        self.trait_impl_index.insert(trait_def_id, impl_index);
+    }
+
+    fn trait_impls_for(&self, trait_def_id: DefID) -> impl Iterator<Item = &TraitImpl> {
+        self.trait_impl_index.indices_for(trait_def_id).iter().map(|&index| &self.trait_impls[index])
     }
 
     fn set_display_name(&mut self, def_id: DefID, name: String) {
@@ -96,9 +114,21 @@ impl MonomorphizationContext {
         })
     }
 
-    fn get_exact_trait_impl_with_args(&self, trait_def_id: DefID, trait_args: &[Type],target_type: &Type) -> Option<&TraitImpl> {
-        self.trait_impls.iter().find(|trait_impl| {
-            trait_impl.trait_def_id == trait_def_id && trait_impl.trait_args == trait_args && &trait_impl.target_type == target_type
+    fn get_trait_method(&self, trait_def_id: DefID, method_name: &str) -> Option<DefID> {
+        let trait_info = self.get_def(trait_def_id)?;
+
+        let DefKind::Trait { methods, .. } = &trait_info.kind else {
+            return None;
+        };
+
+        methods.iter().copied().find(|method_def_id| {
+            self.get_def(*method_def_id).map(|method| method.name.as_str()) == Some(method_name)
+        })
+    }
+
+    fn get_exact_trait_impl_with_args(&self, trait_def_id: DefID, trait_args: &[Type], target_type: &Type) -> Option<&TraitImpl> {
+        self.trait_impls_for(trait_def_id).find(|trait_impl| {
+            trait_impl.trait_args == trait_args && &trait_impl.target_type == target_type
         })
     }
 }
@@ -414,30 +444,31 @@ impl Monomorphizer {
                 }
 
                 if let Some(trait_def_id) = *trait_dispatch {
-                    let receiver_ty = args.first().map(|arg| Self::strip_receiver_references(&arg.ty)).expect(
-                        "ICE: deferred trait call has no receiver"
-                    );
+                    let receiver_ty = args.first().map(|arg| Self::strip_receiver_references(&arg.ty)).expect("ICE: deferred trait call has no receiver");
 
-                    let method_name = self.context.get_def(callee.def_id).map(|info| info.name.clone())
-                        .expect("ICE: deferred trait method definition is missing");
+                    let trait_method_id = callee.def_id;
 
                     let solver = TraitSolver::new(
-                        &self.context.trait_impls, 
-                        self.context.find_trait_by_path(crate::traits::COPY_TRAIT_PATH)
+                        &self.context.trait_impls,
+                        &self.context.trait_impl_index,
+                        self.context.find_trait_by_path(crate::traits::COPY_TRAIT_PATH),
                     );
 
-                    let impl_method = self.context.trait_impls.iter().find_map(|trait_impl| {
-                        if trait_impl.trait_def_id != trait_def_id || !solver.trait_impl_is_applicable(trait_impl, receiver_ty, &[])
-                        {
+                    let impl_method = self.context.trait_impls_for(trait_def_id).find_map(|trait_impl| {
+                        if !solver.trait_impl_is_applicable(trait_impl, receiver_ty, &[]) {
                             return None;
                         }
 
-                        trait_impl.methods.get(&method_name).copied()
-                    }).unwrap_or_else(|| panic!(
-                        "ICE: no concrete implementation of trait method `{}` for `{}`",
-                        method_name,
-                        receiver_ty,
-                    ));
+                        trait_impl.methods.get(&trait_method_id).copied()
+                    }).unwrap_or_else(|| {
+                            let method_name = self.context.get_def(trait_method_id).map(|info| info.name.as_str()).unwrap_or("<unknown>");
+
+                            panic!(
+                                "ICE: no concrete implementation of trait method `{}` for `{}`",
+                                method_name,
+                                receiver_ty,
+                            )
+                        });
 
                     *callee = self.function_ref(impl_method);
                     *trait_dispatch = None;
@@ -771,9 +802,11 @@ impl Monomorphizer {
         let generic_instance = Type::GENERIC_INSTANCE(generic_ref, type_args.to_vec());
 
         let trait_impls = self.context.trait_impls.clone();
+        let trait_impl_index = self.context.trait_impl_index.clone();
 
         let solver = TraitSolver::new(
             &trait_impls,
+            &trait_impl_index,
             self.context.find_trait_by_path(crate::traits::COPY_TRAIT_PATH),
         );
 
@@ -812,7 +845,7 @@ impl Monomorphizer {
                 trait_def_id: bound.trait_def_id,
             }).collect::<Vec<_>>();
 
-            for (name, method_def_id) in &trait_impl.methods {
+            for (trait_method_id, method_def_id) in &trait_impl.methods {
                 let method_info = self.context.get_def(*method_def_id).unwrap().clone();
 
                 let DefKind::Function { generic_params, .. } = &method_info.kind else {
@@ -823,16 +856,13 @@ impl Monomorphizer {
 
                 let specialized_def_id = match concrete_args {
                     Some(args) if !args.is_empty() => {
-                        self.get_or_create_specialization(
-                            *method_def_id,
-                            args,
-                        )
+                        self.get_or_create_specialization(*method_def_id, args)
                     }
 
                     _ => *method_def_id,
                 };
 
-                methods.insert(name.to_string(), specialized_def_id);
+                methods.insert(*trait_method_id, specialized_def_id);
             }
 
             self.context.register_trait_impl(TraitImpl {
@@ -1133,24 +1163,23 @@ impl Monomorphizer {
             });
         }
 
-        let copy_trait = self.context.find_trait_by_path(
-            crate::traits::COPY_TRAIT_PATH,
-        );
-
-        let drop_trait = self.context.find_trait_by_path(
-            crate::traits::DROP_TRAIT_PATH,
-        );
+        let copy_trait = self.context.find_trait_by_path(crate::traits::COPY_TRAIT_PATH);
+        let drop_trait = self.context.find_trait_by_path(crate::traits::DROP_TRAIT_PATH);
 
         let mut copy_types = HashSet::new();
         let mut drop_functions = HashMap::new();
 
-        for trait_impl in &self.context.trait_impls {
-            if Some(trait_impl.trait_def_id) == copy_trait {
+        if let Some(copy_trait_id) = copy_trait {
+            for trait_impl in self.context.trait_impls_for(copy_trait_id) {
                 copy_types.insert(trait_impl.target_type.clone());
             }
+        }
 
-            if Some(trait_impl.trait_def_id) == drop_trait {
-                let drop_def_id = trait_impl.methods.get("drop").copied().unwrap_or_else(|| {
+        if let Some(drop_trait_id) = drop_trait {
+            let drop_method_id = self.context.get_trait_method(drop_trait_id, "drop").expect("ICE: Drop trait has no `drop` method");
+
+            for trait_impl in self.context.trait_impls_for(drop_trait_id) {
+                let drop_def_id = trait_impl.methods.get(&drop_method_id).copied().unwrap_or_else(|| {
                     panic!(
                         "ICE: Drop implementation for `{}` has no `drop` method",
                         trait_impl.target_type,

@@ -10,9 +10,12 @@ use ir::hir::{
     HIRExprKind,
 };
 use ir::types::{Type as IRType, TypeRef};
+use lexer::NameID;
 use parser::ast::Expr as ASTExpr;
 
 use std::collections::HashMap;
+
+use crate::analyzer::ImplRegistryKey;
 
 impl<'ctx> Analyzer<'ctx> {
 
@@ -49,10 +52,12 @@ impl<'ctx> Analyzer<'ctx> {
                         ));
                     }
 
+                    let method_id = property.name_id.expect("ICE: member method name was not interned");
                     let lhs_expr = self.lower_expr_with_type(object, None)?;
 
                     return self.lower_instance_method_call(
                         lhs_expr,
+                        method_id,
                         &property.lexeme,
                         arguments,
                         generic_args,
@@ -98,7 +103,8 @@ impl<'ctx> Analyzer<'ctx> {
                 if matches!(info.kind, DefKind::Variable { .. } | DefKind::Constant { .. }) {
                     if let ASTExpr::Path { segments, .. } = &**callee {
                         if segments.len() >= 2 {
-                            let method_name = &segments.last().unwrap().lexeme;
+                            let method = &segments.last().unwrap();
+                            let method_id = method.name_id.expect("ICE: method path was interned");
 
                             // lower_expr(Path) is safe here:
                             //
@@ -106,9 +112,11 @@ impl<'ctx> Analyzer<'ctx> {
                             // with the receiver's DefID, so this produces
                             // VarRef(math), not a reference to multiply.
                             let lhs_expr = self.lower_expr_with_type(callee, None)?;
+
                             return self.lower_instance_method_call(
                                 lhs_expr,
-                                method_name,
+                                method_id,
+                                &method.lexeme,
                                 arguments,
                                 generic_args,
                                 expected,
@@ -122,10 +130,14 @@ impl<'ctx> Analyzer<'ctx> {
 
                 let actual_def_id = if let DefKind::Struct { .. } = info.kind {
                     if let ASTExpr::Path { segments, .. } = &**callee {
-                        let method_name = &segments.last().unwrap().lexeme;
-                        let struct_name = info.absolute_path.join("::");
+                        let method = segments.last().unwrap();
+                        let method_name = &method.lexeme;
+                        let method_id = method.name_id.expect("ICE: associated function name was not interned");
 
-                        if let Some(m_def_id) = self.impl_registry.get(&struct_name).and_then(|methods| methods.get(method_name)).copied()
+                        let struct_name = info.absolute_path.join("::");
+                        let registry_key = ImplRegistryKey::Nominal(def_id);
+
+                        if let Some(m_def_id) = self.impl_registry.get(&registry_key).and_then(|methods| methods.get(&method_id)).copied()
                         {
                             m_def_id
                         } else {
@@ -142,7 +154,8 @@ impl<'ctx> Analyzer<'ctx> {
 
                             let method_def_id = self.resolve_trait_associated_function(
                                 &owner_ty,
-                                method_name,
+                                method_id,
+                                &method.lexeme,
                                 &args,
                                 span,
                             )?;
@@ -437,7 +450,8 @@ impl<'ctx> Analyzer<'ctx> {
         }
     }
 
-    fn resolve_trait_associated_function(&self, owner_ty: &IRType, method_name: &str, args: &[HIRExpr], span: Span,) -> Result<DefID, HydraError> 
+    fn resolve_trait_associated_function(&self, owner_ty: &IRType, method_id: NameID, method_name: &str, args: &[HIRExpr], span: Span) 
+        -> Result<DefID, HydraError>
     {
         let mut candidates = Vec::new();
 
@@ -446,7 +460,11 @@ impl<'ctx> Analyzer<'ctx> {
                 continue;
             }
 
-            let Some(method_def_id) = trait_impl.methods.get(method_name).copied() else {
+            let Some(trait_method_id) = self.trait_method_id(trait_impl.trait_def_id, method_id) else {
+                continue;
+            };
+
+            let Some(method_def_id) = trait_impl.methods.get(&trait_method_id).copied() else {
                 continue;
             };
 

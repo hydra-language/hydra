@@ -8,8 +8,11 @@ use ir::context::{DefID, DefKind};
 use ir::hir::{HIRExpr, HIRExprKind};
 use ir::types::Type as IRType;
 
+use lexer::NameID;
 use parser::Type;
 use parser::ast::Expr as ASTExpr;
+
+use crate::analyzer::ImplRegistryKey;
 
 #[derive(Debug, Clone, Copy)]
 struct ResolvedMethod {
@@ -27,13 +30,16 @@ impl<'ctx> Analyzer<'ctx> {
             unreachable!();
         };
 
+        let method_id = method.name_id.expect("ICE: method call name was not interned");
         let lhs_expr = self.lower_expr_with_type(object, None);
-        self.lower_instance_method_call(lhs_expr?, &method.lexeme, arguments, generic_args, expected, span)
+
+        self.lower_instance_method_call(lhs_expr?, method_id, &method.lexeme, arguments, generic_args, expected, span)
     }
 
     pub(crate) fn lower_instance_method_call(
         &mut self, 
         lhs_expr: HIRExpr, 
+        method_id: NameID,
         method_name: &str, 
         arguments: &[ASTExpr], 
         generic_args: &[Type], 
@@ -45,7 +51,12 @@ impl<'ctx> Analyzer<'ctx> {
             return self.lower_formatter_write(lhs_expr, arguments, method_name == "writeln", span);
         }
 
-        let resolution = self.resolve_instance_method(&lhs_expr.ty, method_name, span)?;
+        let resolution = self.resolve_instance_method(
+            &lhs_expr.ty,
+            method_id,
+            method_name,
+            span,
+        )?;
 
         let method_def_id = resolution.method_def_id;
 
@@ -254,20 +265,18 @@ impl<'ctx> Analyzer<'ctx> {
         })
     }
 
-    fn resolve_instance_method(&self, receiver_ty: &IRType, method_name: &str, span: Span) -> Result<ResolvedMethod, HydraError> {
-        let registry_key = self.get_impl_registry_key(receiver_ty);
+    fn resolve_instance_method(&self, receiver_ty: &IRType, method_id: NameID, method_name: &str, span: Span) -> Result<ResolvedMethod, HydraError> 
+    {
+        let registry_key = ImplRegistryKey::of(receiver_ty);
 
-        //
-        // inherent methods always win.
-        //
-        if !registry_key.is_empty() {
-            if let Some(method_def_id) = self.impl_registry.get(&registry_key).and_then(|methods| methods.get(method_name)).copied()
+        if let Some(registry_key) = registry_key {
+            if let Some(method_def_id) = self.impl_registry.get(&registry_key).and_then(|methods| methods.get(&method_id)).copied()
             {
                 return Ok(ResolvedMethod {
                     method_def_id,
                     trait_def_id: None,
                     deferred_trait_dispatch: false,
-                })
+                });
             }
         }
 
@@ -309,35 +318,37 @@ impl<'ctx> Analyzer<'ctx> {
                 continue;
             }
 
-            let Some(method_def_id) = self.context.get_trait_method(
+            let Some(trait_method_id) = self.trait_method_id(
                 bound.trait_def_id,
-                method_name,
+                method_id,
             ) else {
                 continue;
             };
+
+            candidates.push(ResolvedMethod {
+                method_def_id: trait_method_id,
+                trait_def_id: Some(bound.trait_def_id),
+                deferred_trait_dispatch: true,
+            });
 
             if candidates.iter().any(|candidate: &ResolvedMethod| {
                 candidate.trait_def_id == Some(bound.trait_def_id)
             }) {
                 continue;
             }
-
-            candidates.push(ResolvedMethod {
-                method_def_id,
-                trait_def_id: Some(bound.trait_def_id),
-                deferred_trait_dispatch: true,
-            });
         }
 
         // Concrete/blanket implementations come second.
         for trait_impl in &matching_impls {
-            let Some(method_def_id) = trait_impl.methods.get(method_name).copied() else {
+            let Some(trait_method_id) = self.trait_method_id(trait_impl.trait_def_id, method_id) else {
                 continue;
             };
 
-            if candidates.iter().any(|candidate: &ResolvedMethod| {
-                candidate.trait_def_id == Some(trait_impl.trait_def_id)
-            }) {
+            let Some(method_def_id) = trait_impl.methods.get(&trait_method_id).copied() else {
+                continue;
+            };
+
+            if candidates.iter().any(|candidate: &ResolvedMethod| candidate.trait_def_id == Some(trait_impl.trait_def_id)) {
                 continue;
             }
 
@@ -378,8 +389,9 @@ impl<'ctx> Analyzer<'ctx> {
 
         match candidates.as_slice() {
             [] => {
-                let has_inherent_methods = !registry_key.is_empty() &&
-                self.impl_registry.contains_key(&registry_key);
+                let has_inherent_methods = registry_key.is_some_and(|registry_key| {
+                    self.impl_registry.contains_key(&registry_key)
+                });
 
                 if !has_inherent_methods && matching_impls.is_empty() {
                     return Err(self.error(

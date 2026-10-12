@@ -283,43 +283,33 @@ impl<'ctx> Analyzer<'ctx> {
     fn make_display_fmt_call(&self, display_trait_def_id: DefID, value_ty: &IRType, self_arg: HIRExpr, formatter: HIRExpr, span: Span) 
         -> Result<HIRExpr, HydraError> 
     {
-        let concrete_method = self.context.trait_impls.iter().find_map(|trait_impl| {
-            if trait_impl.trait_def_id != display_trait_def_id {
+        let fmt_trait_method_id = self.context.get_trait_method(display_trait_def_id, "fmt").ok_or_else(|| {
+            self.error("S002", "`Display` is missing required method `fmt`", span)
+        })?;
+
+        let concrete_method = self.context.trait_impls_for(display_trait_def_id).find_map(|trait_impl| {
+            if !self.trait_solver().trait_impl_is_applicable(trait_impl, value_ty, &self.current_trait_bounds) {
                 return None;
             }
 
-            if !self.trait_solver().trait_impl_is_applicable(trait_impl, value_ty, &self.current_trait_bounds) 
-            {
-                return None;
-            }
-
-            trait_impl.methods.get("fmt").copied()
+            trait_impl.methods.get(&fmt_trait_method_id).copied()
         });
 
-        let (callee, trait_dispatch) =
-            if let Some(method_def_id) = concrete_method {
-                (method_def_id, None)
-            } else {
-                let method_def_id = self.context.get_trait_method(display_trait_def_id, "fmt").ok_or_else(|| {
-                    self.error(
-                        "S002",
-                        "`Display` is missing required method `fmt`",
-                        span,
-                    )
-                })?;
-
-                //
-                // the trait requirement may only be known from:
-                //
-                //     where T: Display
-                //
-                // in that case there is intentionally no concrete method
-                // yet
-                //  
-                // monomorphization resolves this call once T is known
-                //
-                (method_def_id, Some(display_trait_def_id))
-            };
+        let (callee, trait_dispatch) = if let Some(method_def_id) = concrete_method {
+            (method_def_id, None)
+        } else {
+            //
+            // the trait requirement may only be known from:
+            //
+            //     where T: Display
+            //
+            // in that case there is intentionally no concrete method
+            // yet
+            //  
+            // monomorphization resolves this call once T is known
+            //
+            (fmt_trait_method_id, Some(display_trait_def_id))
+        };
 
         let formatter_arg = self.formatter_mut_arg(formatter, span)?;
 

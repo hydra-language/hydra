@@ -7,7 +7,7 @@ use ir::{
 use crate::{traits, utils};
 use parser::{ast::Type as ASTType, ExtensionDecl, Item};
 
-use crate::Analyzer;
+use crate::{analyzer::ImplRegistryKey, Analyzer};
 
 impl<'ctx> Analyzer<'ctx> {
 
@@ -94,11 +94,16 @@ impl<'ctx> Analyzer<'ctx> {
                     continue;
                 }
 
-                let type_methods = self.impl_registry.entry(registry_key.clone()).or_default();
+                let Some(registry_key) = ImplRegistryKey::of(&target_ty) else {
+                    continue;
+                };
+
+                let type_methods = self.impl_registry.entry(registry_key).or_default();
 
                 for method in &decl.methods {
                     if let Some(def_id) = self.name_resolver.get_resolution(method.id) {
-                        type_methods.insert(method.name.lexeme.clone(), def_id);
+                        let name_id = method.name.name_id.expect("ICE: extension method name was not interned");
+                        type_methods.insert(name_id, def_id);
                     }
                 }
             }
@@ -134,26 +139,36 @@ impl<'ctx> Analyzer<'ctx> {
             .zip(trait_args.iter().cloned())
             .collect();
 
-        let mut implementation_methods = HashMap::new();
-
-        for method in &decl.methods {
-            if let Some(def_id) = self.name_resolver.get_resolution(method.id) {
-                implementation_methods.insert(
-                    method.name.lexeme.clone(),
-                    def_id,
-                );
-            }
-        }
-
         let error_count = self.errors.len();
         let mut registered_methods = HashMap::new();
+
+        for method in &decl.methods {
+            let Some(impl_method_id) = self.name_resolver.get_resolution(method.id) else {
+                continue;
+            };
+
+            let name_id = method.name.name_id
+                .expect("ICE: trait implementation method name was not interned");
+
+            let Some(trait_method_id) = self.trait_method_id(
+                trait_def_id,
+                name_id,
+            ) else {
+                continue;
+            };
+
+            registered_methods.insert(
+                trait_method_id,
+                impl_method_id,
+            );
+        }
 
         for trait_method_id in trait_method_ids {
             let Some(trait_method) = self.context.get_def(trait_method_id).cloned() else {
                 continue;
             };
 
-            let Some(&impl_method_id) = implementation_methods.get(&trait_method.name) else {
+            let Some(&impl_method_id) = registered_methods.get(&trait_method_id) else {
                 self.errors.push(self.error(
                     "S021",
                     format!(
@@ -172,11 +187,6 @@ impl<'ctx> Analyzer<'ctx> {
                 impl_method_id,
                 &target_ty,
                 &trait_generic_substitutions,
-            );
-
-            registered_methods.insert(
-                trait_method.name,
-                impl_method_id,
             );
         }
 
@@ -331,8 +341,7 @@ impl<'ctx> Analyzer<'ctx> {
                 let span = crate::utils::get_type_span(&decl.target_type);
 
                 if let Some(drop_trait_def_id) = drop_trait_def_id {
-                    let implements_drop = self.context.trait_impls.iter().any(|trait_impl| {
-                        trait_impl.trait_def_id == drop_trait_def_id && 
+                    let implements_drop = self.context.trait_impls_for(drop_trait_def_id).any(|trait_impl| {
                         Self::trait_impl_targets_overlap(&target_ty, &trait_impl.target_type)
                     });
 
@@ -423,8 +432,7 @@ impl<'ctx> Analyzer<'ctx> {
             }
 
             IRType::STRUCT(_) | IRType::GENERIC_INSTANCE(_, _) => {
-                self.context.trait_impls.iter().any(|trait_impl| {
-                    trait_impl.trait_def_id == copy_trait_def_id &&
+                self.context.trait_impls_for(copy_trait_def_id).any(|trait_impl| {
                     Self::trait_impl_target_matches(&trait_impl.target_type, ty)
                 })
             }
@@ -707,7 +715,7 @@ impl<'ctx> Analyzer<'ctx> {
     pub(crate) fn extension_parent_path(&self, target_ty: &IRType, target_trait: Option<&ASTType>) -> Result<String, HydraError> {
         let target_name = match target_ty {
             IRType::GENERIC(name) => name.clone(),
-            _ => self.get_impl_registry_key(target_ty),
+            _ => Self::extension_target_name(target_ty),
         };
 
         if target_name.is_empty() {
@@ -728,6 +736,43 @@ impl<'ctx> Analyzer<'ctx> {
         };
 
         Ok(format!("{target_name}::<{trait_name}>"))
+    }
+
+    fn extension_target_name(ty: &IRType) -> String {
+        match ty {
+            IRType::STRUCT(type_ref) |
+            IRType::GENERIC_INSTANCE(type_ref, _) => type_ref.symbol.clone(),
+
+            IRType::SLICE(_) => "slice".to_string(),
+            IRType::ARRAY(_, _) | IRType::INFERRED_ARRAY(_) => "array".to_string(),
+
+            IRType::I8 => "i8".to_string(),
+            IRType::I16 => "i16".to_string(),
+            IRType::I32 => "i32".to_string(),
+            IRType::I64 => "i64".to_string(),
+            IRType::ISIZE => "isize".to_string(),
+
+            IRType::U8 => "u8".to_string(),
+            IRType::U16 => "u16".to_string(),
+            IRType::U32 => "u32".to_string(),
+            IRType::U64 => "u64".to_string(),
+            IRType::USIZE => "usize".to_string(),
+
+            IRType::F32 => "f32".to_string(),
+            IRType::F64 => "f64".to_string(),
+
+            IRType::BOOL => "bool".to_string(),
+            IRType::CHAR => "char".to_string(),
+            IRType::STRING => "string".to_string(),
+
+            IRType::POINTER(_) => "ptr_mut".to_string(),
+            IRType::CONST_POINTER(_) => "ptr_const".to_string(),
+
+            IRType::REF(inner) |
+            IRType::CONST_REF(inner) => Self::extension_target_name(inner),
+
+            _ => String::new(),
+        }
     }
 
     pub(crate) fn get_impl_registry_key(&self, ty: &IRType) -> String {

@@ -84,7 +84,23 @@ pub struct TraitImpl {
     pub trait_args: Vec<Type>,
     pub target_type: Type,
     pub bounds: Vec<TraitBound>,
-    pub methods: HashMap<String, DefID>,
+    pub methods: HashMap<DefID, DefID>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TraitImplIndex {
+    by_trait: HashMap<DefID, Vec<usize>>,
+}
+
+impl TraitImplIndex {
+
+    pub fn insert(&mut self, trait_def_id: DefID, impl_index: usize) {
+        self.by_trait.entry(trait_def_id).or_default().push(impl_index);
+    }
+
+    pub fn indices_for(&self, trait_def_id: DefID) -> &[usize] {
+        self.by_trait.get(&trait_def_id).map(Vec::as_slice).unwrap_or(&[])
+    }
 }
 
 #[derive(Default, Debug)]
@@ -92,6 +108,7 @@ pub struct SemanticContext {
     pub definitions: HashMap<DefID, SymbolInfo>,
     next_def_id: usize,
     pub trait_impls: Vec<TraitImpl>,
+    pub trait_impl_index: TraitImplIndex,
     pub display_names: HashMap<DefID, String>,
     pub symbol_names: HashMap<DefID, String>,
 }
@@ -157,7 +174,15 @@ impl SemanticContext {
     }
 
     pub fn register_trait_impl(&mut self, trait_impl: TraitImpl) {
+        let trait_def_id = trait_impl.trait_def_id;
+        let impl_index = self.trait_impls.len();
+
         self.trait_impls.push(trait_impl);
+        self.trait_impl_index.insert(trait_def_id, impl_index);
+    }
+
+    pub fn trait_impls_for(&self, trait_def_id: DefID) -> impl Iterator<Item = &TraitImpl> {
+        self.trait_impl_index.indices_for(trait_def_id).iter().map(|&index| &self.trait_impls[index])
     }
 
     pub fn set_display_name(&mut self, def_id: DefID, name: String) {
@@ -177,18 +202,12 @@ impl SemanticContext {
     }
 
     pub fn get_exact_trait_impl(&self, trait_def_id: DefID, target_type: &Type) -> Option<&TraitImpl> {
-        self.trait_impls
-            .iter()
-            .find(|impl_| impl_.trait_def_id == trait_def_id && &impl_.target_type == target_type)
+        self.trait_impls_for(trait_def_id).find(|trait_impl| &trait_impl.target_type == target_type)
     }
 
     pub fn get_exact_trait_impl_with_args(&self, trait_def_id: DefID, trait_args: &[Type], target_type: &Type) -> Option<&TraitImpl> 
     {
-        self.trait_impls.iter().find(|trait_impl| {
-            trait_impl.trait_def_id == trait_def_id && 
-            trait_impl.trait_args == trait_args && 
-            &trait_impl.target_type == target_type
-        })
+        self.trait_impls_for(trait_def_id).find(|trait_impl| trait_impl.trait_args == trait_args && &trait_impl.target_type == target_type)
     }
 
     pub fn find_trait_by_path(&self, path: &str) -> Option<DefID> {
@@ -201,10 +220,8 @@ impl SemanticContext {
         })
     }
 
-    pub fn get_exact_trait_method(&self, trait_def_id: DefID, target_type: &Type, method_name: &str) -> Option<DefID> {
-        self.get_exact_trait_impl(trait_def_id, target_type)
-            .and_then(|trait_impl| trait_impl.methods.get(method_name))
-            .copied()
+    pub fn get_exact_trait_impl_method(&self, trait_def_id: DefID, target_type: &Type, trait_method_id: DefID) -> Option<DefID> {
+        self.get_exact_trait_impl(trait_def_id, target_type).and_then(|trait_impl| trait_impl.methods.get(&trait_method_id)).copied()
     }
 
     pub fn get_trait_method(&self, trait_def_id: DefID, method_name: &str) -> Option<DefID> {
@@ -262,18 +279,10 @@ impl SemanticContext {
             return false;
         }
 
-        let result = self.trait_impls.iter().any(|trait_impl| {
-            if trait_impl.trait_def_id != trait_def_id {
-                return false;
-            }
-
+        let result = self.trait_impls_for(trait_def_id).any(|trait_impl| {
             let mut substitutions = HashMap::new();
 
-            if !Self::match_trait_impl_target(
-                &trait_impl.target_type,
-                target_type,
-                &mut substitutions,
-            ) {
+            if !Self::match_trait_impl_target(&trait_impl.target_type, target_type, &mut substitutions) {
                 return false;
             }
 

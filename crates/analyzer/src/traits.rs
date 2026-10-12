@@ -19,6 +19,7 @@ impl<'ctx> Analyzer<'ctx> {
     pub(crate) fn trait_solver(&self) -> TraitSolver<'_> {
         TraitSolver::new(
             &self.context.trait_impls,
+            &self.context.trait_impl_index,
             self.context.find_trait_by_path(COPY_TRAIT_PATH),
         )
     }

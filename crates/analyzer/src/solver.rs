@@ -1,17 +1,28 @@
 use std::collections::{HashMap, HashSet};
 
-use ir::{context::{DefID, TraitBound, TraitImpl}, types::Type};
-
+use ir::{
+    context::{DefID, TraitBound, TraitImpl, TraitImplIndex},
+    types::Type,
+};
 
 pub(crate) struct TraitSolver<'a> {
     trait_impls: &'a [TraitImpl],
+    trait_impl_index: &'a TraitImplIndex,
     copy_trait: Option<DefID>,
 }
 
 impl<'a> TraitSolver<'a> {
 
-    pub fn new(trait_impls: &'a [TraitImpl], copy_trait: Option<DefID>) -> Self {
-        Self { trait_impls, copy_trait }
+    pub fn new(trait_impls: &'a [TraitImpl], trait_impl_index: &'a TraitImplIndex, copy_trait: Option<DefID>) -> Self {
+        Self {
+            trait_impls,
+            trait_impl_index,
+            copy_trait,
+        }
+    }
+
+    fn trait_impls_for(&self, trait_def_id: DefID) -> impl Iterator<Item = &TraitImpl> {
+        self.trait_impl_index.indices_for(trait_def_id).iter().map(|&index| &self.trait_impls[index])
     }
 
     pub fn type_implements_trait(&self, ty: &Type, trait_def_id: DefID, assumptions: &[TraitBound]) -> bool {
@@ -35,11 +46,7 @@ impl<'a> TraitSolver<'a> {
             return false;
         }
 
-        let result = self.trait_impls.iter().any(|trait_impl| {
-            if trait_impl.trait_def_id != trait_def_id {
-                return false;
-            }
-
+        let result = self.trait_impls_for(trait_def_id).any(|trait_impl| {
             let mut substitutions = HashMap::new();
 
             if !Self::match_trait_impl_target(&trait_impl.target_type, ty, &mut substitutions) {

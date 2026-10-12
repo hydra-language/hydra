@@ -141,8 +141,11 @@ impl<'ctx> Analyzer<'ctx> {
             )
         })?;
 
-        let matching_impls = self.context.trait_impls.iter().filter(|trait_impl| {
-            trait_impl.trait_def_id == trait_def_id &&
+        let trait_method_id = self.context.get_trait_method(trait_def_id, method_name).ok_or_else(|| {
+            self.error("S022", format!("trait is missing required method `{method_name}`"), span)
+        })?;
+
+        let matching_impls = self.context.trait_impls_for(trait_def_id).filter(|trait_impl| {
             self.trait_solver().trait_impl_is_applicable(
                 trait_impl,
                 &target_expr.ty,
@@ -182,12 +185,8 @@ impl<'ctx> Analyzer<'ctx> {
             }
         };
 
-        let method_def_id = trait_impl.methods.get(method_name).copied().ok_or_else(|| {
-            self.error(
-                "S022",
-                format!("trait implementation is missing method `{method_name}`"),
-                span,
-            )
+        let method_def_id = trait_impl.methods.get(&trait_method_id).copied().ok_or_else(|| {
+            self.error("S022", format!("trait implementation is missing method `{method_name}`"), span)
         })?;
 
         let method_info = self.context.get_def(method_def_id).cloned().ok_or_else(|| {

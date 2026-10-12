@@ -13,28 +13,15 @@ impl<'ctx> Analyzer<'ctx> {
 
     pub(crate) fn populate_function_signatures(&mut self) {
         // snapshot because lower_type() requires &mut self.
-        let files: Vec<_> = self.program
-            .parsed_files
-            .iter()
-            .map(|(filepath, (module_path, items))| {
-                (
-                    filepath.clone(),
-                    module_path.clone(),
-                    items.clone(),
-                )
-            })
-            .collect();
+        let files: Vec<_> = self.program.parsed_files.iter().map(|(filepath, (module_path, items))| {
+            (filepath.clone(), module_path.clone(), items.clone())
+        }).collect();
 
         for (filepath, module_path, items) in files {
             self.current_module = module_path.clone();
-            self.current_filepath =
-                filepath.display().to_string();
+            self.current_filepath = filepath.display().to_string();
 
-            self.current_source = self
-                .source_map
-                .get_source(&filepath)
-                .unwrap_or("")
-                .to_string();
+            self.current_source = self.source_map.get_source(&filepath).unwrap_or("").to_string();
 
             for item in &items {
                 match item {
@@ -110,11 +97,12 @@ impl<'ctx> Analyzer<'ctx> {
                                 continue;
                             };
 
+                            let name_id = method.name.name_id.expect("ICE: trait method name was not interned");
+
+                            self.trait_methods_by_name.insert((trait_def_id, name_id), method_id);
+
                             if method.name.lexeme == "drop" {
-                                let trait_def_id = self
-                                    .name_resolver
-                                    .get_resolution(decl.id)
-                                    .unwrap();
+                                let trait_def_id = self.name_resolver.get_resolution(decl.id).unwrap();
 
                                 if !self.is_drop_trait(trait_def_id) {
                                     self.errors.push(self.error(

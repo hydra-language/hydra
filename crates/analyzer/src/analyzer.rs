@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use lexer::NameID;
 use parser::ast::*;
 use parser::module::{ModuleTree, SourceMap};
 
@@ -13,6 +14,64 @@ use errors::error::{HydraError, Span};
 
 use crate::scope::NameResolver;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ImplRegistryKey {
+    Nominal(DefID),
+    Slice,
+    Array,
+
+    I8, I16, I32, I64, Isize,
+    U8, U16, U32, U64, Usize,
+    F32, F64,
+
+    Bool,
+    Char,
+    String,
+
+    MutPtr,
+    ConstPtr,
+}
+
+impl ImplRegistryKey {
+
+    pub(crate) fn of(ty: &IRType) -> Option<Self> {
+        match ty {
+            IRType::STRUCT(type_ref) |
+            IRType::GENERIC_INSTANCE(type_ref, _) => Some(Self::Nominal(type_ref.def_id)),
+
+            IRType::SLICE(_) => Some(Self::Slice),
+            IRType::ARRAY(_, _) | IRType::INFERRED_ARRAY(_) => Some(Self::Array),
+
+            IRType::I8 => Some(Self::I8),
+            IRType::I16 => Some(Self::I16),
+            IRType::I32 => Some(Self::I32),
+            IRType::I64 => Some(Self::I64),
+            IRType::ISIZE => Some(Self::Isize),
+
+            IRType::U8 => Some(Self::U8),
+            IRType::U16 => Some(Self::U16),
+            IRType::U32 => Some(Self::U32),
+            IRType::U64 => Some(Self::U64),
+            IRType::USIZE => Some(Self::Usize),
+
+            IRType::F32 => Some(Self::F32),
+            IRType::F64 => Some(Self::F64),
+
+            IRType::BOOL => Some(Self::Bool),
+            IRType::CHAR => Some(Self::Char),
+            IRType::STRING => Some(Self::String),
+
+            IRType::POINTER(_) => Some(Self::MutPtr),
+            IRType::CONST_POINTER(_) => Some(Self::ConstPtr),
+
+            IRType::REF(inner) |
+            IRType::CONST_REF(inner) => Self::of(inner),
+
+            _ => None,
+        }
+    }
+}
+
 pub struct AnalyzedProgram {
     pub hir: HIRProgram,
     pub context: SemanticContext,
@@ -24,7 +83,9 @@ pub struct Analyzer<'ctx> {
     pub source_map: &'ctx SourceMap,
     pub name_resolver: NameResolver,
     pub global_symbols: HashMap<Vec<String>, DefID>,
-    pub impl_registry: HashMap<String, HashMap<String, DefID>>,
+
+    pub(crate) impl_registry: HashMap<ImplRegistryKey, HashMap<NameID, DefID>>,
+    pub(crate) trait_methods_by_name: HashMap<(DefID, NameID), DefID>,
 
     pub current_return_type: Option<IRType>,
     pub current_self_type: Option<IRType>,
@@ -53,6 +114,7 @@ impl<'ctx> Analyzer<'ctx> {
             name_resolver,
             global_symbols,
             impl_registry: HashMap::new(),
+            trait_methods_by_name: HashMap::new(),
             current_return_type: None,
             current_self_type: None,
             current_filepath: String::new(),
@@ -200,6 +262,10 @@ impl<'ctx> Analyzer<'ctx> {
         }
     }
 
+    pub(crate) fn trait_method_id(&self, trait_def_id: DefID, name_id: NameID) -> Option<DefID> {
+        self.trait_methods_by_name.get(&(trait_def_id, name_id)).copied()
+    }
+
     pub(crate) fn hir_local(&self, def_id: DefID, ty: IRType) -> HIRLocal {
         let info = self.context.get_def(def_id).unwrap_or_else(|| {
             panic!("ICE: missing definition for HIR local {}", def_id)
@@ -258,5 +324,38 @@ impl<'ctx> Analyzer<'ctx> {
         };
 
         defining_module == self.current_module.as_slice()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ImplRegistryKey;
+    use ir::{context::DefID, types::{Type, TypeRef}};
+
+    #[test]
+    fn impl_registry_key_uses_nominal_def_id_not_symbol() {
+        let first = Type::STRUCT(TypeRef::new(DefID(7), "first::Thing".into()));
+        let renamed = Type::GENERIC_INSTANCE(
+            TypeRef::new(DefID(7), "renamed::Thing".into()),
+            vec![Type::I32],
+        );
+        let different = Type::STRUCT(TypeRef::new(DefID(8), "first::Thing".into()));
+
+        assert_eq!(ImplRegistryKey::of(&first), Some(ImplRegistryKey::Nominal(DefID(7))));
+        assert_eq!(ImplRegistryKey::of(&renamed), Some(ImplRegistryKey::Nominal(DefID(7))));
+        assert_ne!(ImplRegistryKey::of(&first), ImplRegistryKey::of(&different));
+    }
+
+    #[test]
+    fn impl_registry_key_preserves_receiver_classes() {
+        assert_eq!(ImplRegistryKey::of(&Type::ARRAY(Box::new(Type::I32), 4)), Some(ImplRegistryKey::Array));
+        assert_eq!(ImplRegistryKey::of(&Type::ARRAY(Box::new(Type::U8), 32)), Some(ImplRegistryKey::Array));
+        assert_eq!(ImplRegistryKey::of(&Type::REF(Box::new(Type::I32))), Some(ImplRegistryKey::I32));
+        assert_eq!(ImplRegistryKey::of(&Type::CONST_REF(Box::new(Type::I32))), Some(ImplRegistryKey::I32));
+        assert_ne!(
+            ImplRegistryKey::of(&Type::POINTER(Box::new(Type::I32))),
+            ImplRegistryKey::of(&Type::CONST_POINTER(Box::new(Type::I32))),
+        );
+        assert_eq!(ImplRegistryKey::of(&Type::OPTIONAL(Box::new(Type::I32))), None);
     }
 }
