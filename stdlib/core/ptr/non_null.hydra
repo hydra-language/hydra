@@ -18,6 +18,7 @@ extension<T> NonNull<T> {
         };
     }
 
+    #[inline]
     pub fn dangling() -> NonNull<T> {
         return NonNull {
             .ptr = mem::align_of::<T>() as *mut T
@@ -31,12 +32,12 @@ extension<T> NonNull<T> {
     }
 
     #[inline]
-    pub fn as_ptr(&self) -> *mut T {
-        return self.ptr;
+    pub fn as_ptr(&self) -> *const T {
+        return self.ptr as *const T;
     }
 
     #[inline]
-    pub fn as_const_ptr(&self) -> *const T {
-        return self.ptr as *const T;
+    pub fn as_ptr_mut(&self) -> *mut T {
+        return self.ptr;
     }
 }

@@ -121,14 +121,14 @@ extension<T> Display on Vec<T> where T : Display {
 extension<T> Deref<[T]> on Vec<T> {
     #[inline]
     fn deref(&self) -> &[T] {
-        return Vec::slice_from_raw_parts(self.ptr::as_const_ptr(), self.len);
+        return Vec::slice_from_raw_parts(self.ptr::as_ptr(), self.len);
     }
 }
 
 extension<T> DerefMut<[T]> on Vec<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut [T] {
-        return Vec::slice_from_raw_parts_mut(self.ptr::as_const_ptr(), self.len);
+        return Vec::slice_from_raw_parts_mut(self.ptr::as_ptr(), self.len);
     }
 }
 
@@ -212,7 +212,7 @@ extension<T> Vec<T> {
             self::grow();
         }
 
-        const dst = ptr::offset::<T>(self.ptr::as_ptr(), self.len as isize);
+        const dst = ptr::offset::<T>(self.ptr::as_ptr_mut(), self.len as isize);
         ptr::write::<T>(dst, value);
 
         self.len += 1;
@@ -227,14 +227,14 @@ extension<T> Vec<T> {
 
         if mem::size_of::<T>() == 0 {
             const value = ptr::read::<T>(
-                self.ptr::as_ptr() as *const T
+                self.ptr::as_ptr_mut() as *const T
             );
 
             return value;
         }
 
         const element_ptr = ptr::offset::<T>(
-            self.ptr::as_ptr(),
+            self.ptr::as_ptr_mut(),
             self.len as isize
         );
 
@@ -274,7 +274,7 @@ extension<T> Vec<T> {
         let i = 0;
         while i < self.len {
             const src = ptr::offset::<T>(
-                self.ptr::as_ptr(), 
+                self.ptr::as_ptr_mut(), 
                 i as isize
             );
 
@@ -296,7 +296,7 @@ extension<T> Vec<T> {
                 mem::align_of::<T>()
             );
 
-            Allocator::dealloc(self.ptr::as_ptr() as *mut u8, old_layout);
+            Allocator::dealloc(self.ptr::as_ptr_mut() as *mut u8, old_layout);
         }
 
         self.ptr = NonNull::new_unchecked(new_ptr);
@@ -313,6 +313,15 @@ extension<T> Vec<T> {
     }
 
     #[inline]
+    pub fn get_mut(&mut self, index: usize) -> (&mut T)? {
+        if index >= self.len {
+            return None;
+        }
+
+        return self::get_unchecked_mut(index);
+    }
+
+    #[inline]
     pub fn get_unchecked(&self, index: usize) -> &T {
         const element_ptr = ptr::offset::<T>(
             self.ptr::as_ptr(),
@@ -323,12 +332,22 @@ extension<T> Vec<T> {
     }
 
     #[inline]
+    pub fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
+        const element_ptr = ptr::offset::<T>(
+            self.ptr::as_ptr_mut(),
+            index as isize
+        );
+
+        return &mut *element_ptr;
+    }
+
+    #[inline]
     pub fn slice_from_raw_parts(p: *const T, len: usize) -> &[T] {
         return ptr::slice_from_raw_parts::<T>(p, len);
     }
 
     #[inline]
-    pub fn slice_from_raw_parts_mut(p: *const T, len: usize) -> &mut [T] {
+    pub fn slice_from_raw_parts_mut(p: *mut T, len: usize) -> &mut [T] {
         return ptr::slice_from_raw_parts_mut::<T>(p, len);
     }
 
@@ -358,7 +377,12 @@ extension<T> Vec<T> {
     }
 
     #[inline]
-    pub fn ptr(&self) -> *mut T {
+    pub fn ptr(&self) -> *const T {
         return self.ptr::as_ptr();
+    }
+
+    #[inline]
+    pub fn ptr_mut(&mut self) -> *mut T {
+        return self.ptr::as_ptr_mut();
     }
 }

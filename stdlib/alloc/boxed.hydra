@@ -17,7 +17,7 @@ pub struct Box<T> {
 extension<T> Drop on Box<T> {
     fn drop(&mut self) -> void {
         const layout = Layout::new::<T>();
-        const pointer = self.ptr::as_const_ptr();
+        const pointer = self.ptr::as_ptr();
         const value = ptr::read::<T>(pointer);
 
         mem::drop(value);
@@ -28,13 +28,13 @@ extension<T> Drop on Box<T> {
 
 extension<T> Deref<T> on Box<T> {
     fn deref(&self) -> &T {
-        return &*self.ptr::as_const_ptr();
+        return &*self.ptr::as_ptr();
     }
 }
 
 extension<T> DerefMut<T> on Box<T> {
     fn deref_mut(&mut self) -> &mut T {
-        return &mut *self.ptr::as_ptr();
+        return &mut *self.ptr::as_ptr_mut();
     }
 }
 
@@ -52,16 +52,16 @@ extension<T> Box<T> {
         };
     }
 
-    pub fn as_ptr(&self) -> *mut T {
+    pub fn as_ptr(&self) -> *const T {
         return self.ptr::as_ptr();
     }
 
-    pub fn as_const_ptr(&self) -> *const T {
-        return self.ptr::as_const_ptr();
+    pub fn as_ptr_mut(&self) -> *mut T {
+        return self.ptr::as_ptr_mut();
     }
 
     pub fn into_inner(self) -> T {
-        const p = self.ptr::as_const_ptr();
+        const p = self.ptr::as_ptr();
         const value = ptr::read::<T>(p);
 
         return value;
